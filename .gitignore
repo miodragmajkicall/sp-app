@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Virtual envs
+.venv/
+venv/
+
+# Editors/IDE
+.vscode/
+.idea/
+
+# Tests/coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project secrets / build artefacts
+backend/.env
+backend/alembic/__pycache__/
+backend/alembic/versions/__pycache__/
