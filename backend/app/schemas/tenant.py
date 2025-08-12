@@ -14,3 +14,7 @@ class TenantOut(BaseModel):
 
     class Config:
         from_attributes = True  # Pydantic v2: radi sa SQLAlchemy modelom
+
+class TenantUpdate(BaseModel):
+    code: str | None = Field(default=None, min_length=2, max_length=20)
+    name: str | None = None
