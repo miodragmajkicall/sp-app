@@ -1,0 +1,28 @@
+from typing import List
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.orm import Session
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+
+from app.db import get_db
+from app.models import Tenant
+from app.schemas.tenant import TenantCreate, TenantOut
+
+router = APIRouter(prefix="/tenants", tags=["tenants"])
+
+@router.post("", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
+def create_tenant(payload: TenantCreate, db: Session = Depends(get_db)):
+    t = Tenant(code=payload.code, name=payload.name)
+    db.add(t)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="code already exists")
+    db.refresh(t)
+    return t
+
+@router.get("", response_model=List[TenantOut])
+def list_tenants(db: Session = Depends(get_db)):
+    rows = db.execute(select(Tenant).order_by(Tenant.created_at.desc())).scalars().all()
+    return rows

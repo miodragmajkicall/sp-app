@@ -1,6 +1,8 @@
 from fastapi import FastAPI
 from .config import settings
 from .db import ping
+from .routes import tenants as tenants_routes
+
 
 app = FastAPI(title=settings.PROJECT_NAME)
 
@@ -15,3 +17,6 @@ def db_health():
         return {"db": "ok" if ok else "fail"}
     except Exception as e:
         return {"db": "fail", "error": str(e)}
+    
+app.include_router(tenants_routes.router)
+
