@@ -26,3 +26,11 @@ def create_tenant(payload: TenantCreate, db: Session = Depends(get_db)):
 def list_tenants(db: Session = Depends(get_db)):
     rows = db.execute(select(Tenant).order_by(Tenant.created_at.desc())).scalars().all()
     return rows
+from uuid import UUID
+
+@router.get("/{tenant_id}", response_model=TenantOut)
+def get_tenant(tenant_id: UUID, db: Session = Depends(get_db)):
+    t = db.get(Tenant, tenant_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="tenant not found")
+    return t
