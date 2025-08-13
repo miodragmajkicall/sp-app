@@ -1,5 +1,5 @@
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -53,4 +53,15 @@ def update_tenant(tenant_id: UUID, payload: TenantUpdate, db: Session = Depends(
         raise HTTPException(status_code=400, detail="code already exists")
     db.refresh(t)
     return t
+
+@router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_tenant(tenant_id: UUID, db: Session = Depends(get_db)):
+    t = db.get(Tenant, tenant_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="tenant not found")
+
+    db.delete(t)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
 
