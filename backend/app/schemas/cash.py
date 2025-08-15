@@ -1,37 +1,20 @@
-# backend/app/schemas/cash.py
-from __future__ import annotations
-
 from datetime import date, datetime
-from typing import Literal, Optional
-from pydantic import BaseModel, Field, ConfigDict, condecimal
-
-Kind = Literal["income", "expense"]
+from decimal import Decimal
+from pydantic import BaseModel
 
 class CashEntryCreate(BaseModel):
-    tenant_code: str = Field(min_length=1, max_length=64)
-    entry_date: date
-    kind: Kind
-    amount: condecimal(max_digits=12, decimal_places=2, gt=0)
-    description: Optional[str] = None
-
-    # samo da dobijemo lijep primjer u Swagger-u
-    model_config = ConfigDict(json_schema_extra={
-        "examples": [{
-            "tenant_code": "acme",
-            "entry_date": "2025-08-15",
-            "kind": "income",
-            "amount": "120.50",
-            "description": "Prodaja #1001",
-        }]
-    })
-
-class CashEntry(BaseModel):
-    id: str
     tenant_code: str
     entry_date: date
-    kind: Kind
-    amount: condecimal(max_digits=12, decimal_places=2)
-    description: Optional[str] = None
+    kind: str            # 'income' ili 'expense'
+    amount: Decimal
+    description: str | None = None
+
+class CashEntryRead(CashEntryCreate):
+    id: str
     created_at: datetime
 
-    model_config = ConfigDict(from_attributes=True)
+class CashSummary(BaseModel):
+    tenant_code: str
+    year: int
+    month: int
+    balance: Decimal
