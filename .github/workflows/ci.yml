@@ -2,49 +2,68 @@ name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ main, "feature/**" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ main ]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  tests:
+  backend:
+    name: Backend CI
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Postavi Python
+      - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
 
-      - name: Pripremi .env za backend
-        run: cp backend/.env.example backend/.env
-
-      - name: Instaliraj dev dependency-je (pytest, httpx)
-        run: pip install -r backend/requirements-dev.txt
-
-      - name: Pokreni Docker Compose
-        run: docker compose up -d
-
-      - name: Sačekaj da API bude spreman
+      - name: Install host Python deps
         run: |
-          for i in {1..30}; do
-            curl -fsS http://localhost:8000/health && break
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+          pip install -r backend/requirements-dev.txt
+
+      - name: Start stack (Docker Compose)
+        run: |
+          docker compose up -d
+          docker compose ps
+
+      - name: Wait for API to be ready
+        shell: bash
+        run: |
+          echo "Waiting for API on :8000 (health + db/health)..."
+          for i in {1..60}; do
+            if curl -fsS http://localhost:8000/health >/dev/null \
+            && curl -fsS http://localhost:8000/db/health >/dev/null; then
+              echo "✅ API is up"
+              exit 0
+            fi
             sleep 2
           done
+          echo "::error::API not ready in time"; docker compose logs api
+          exit 1
 
-      # ⬇️ OVO JE NOVI, POSEBAN KORAK
-      - name: Pokreni migracije (alembic upgrade)
-        run: docker compose exec -T api alembic upgrade head
+      - name: Run migrations + seed
+        run: |
+          docker compose exec -T api alembic upgrade head
+          docker compose exec -T api python -m app.seed
 
-      - name: Pokreni testove
+      - name: Run backend tests
         run: pytest -q backend/tests
 
-      - name: Ispiši logove ako test padne
+      - name: Print logs on failure
         if: failure()
-        run: docker compose logs api db --no-color | tail -n 200
+        run: docker compose logs --tail=200 api db || true
 
-      - name: Ugasi stack
+      - name: Shutdown stack
         if: always()
-        run: docker compose down
+        run: docker compose down -v
