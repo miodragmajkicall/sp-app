@@ -1,4 +1,6 @@
 import { useEffect, useState } from "react";
+import Cashbook from "./Cashbook.jsx";
+
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:8000";
 
@@ -90,6 +92,8 @@ export default function App() {
 
       {/* TENANTS LIST + CREATE */}
       <h2>Tenants</h2>
+      <Cashbook />
+
 
       <form onSubmit={onCreate} style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
         <label>
