@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [ main, "feature/**" ]
+    branches: [ main, "feature/**", "fix/**" ]
   pull_request:
     branches: [ main ]
 
@@ -37,6 +37,23 @@ jobs:
         docker compose up -d
         docker compose ps
 
+    - name: Wait for Postgres (inside db container)
+      shell: bash
+      run: |
+        echo "Waiting for Postgres to accept connections..."
+        USER="${POSTGRES_USER:-postgres}"
+        DB="${POSTGRES_DB:-postgres}"
+        for i in {1..60}; do
+          if docker compose exec -T db pg_isready -U "$USER" -d "$DB" -h 127.0.0.1 >/dev/null 2>&1; then
+            echo "✅ Postgres is ready"
+            exit 0
+          fi
+          sleep 2
+        done
+        echo "::error::Postgres not ready in time"
+        docker compose logs db || true
+        exit 1
+
     - name: Wait for API to be ready (HTTP only)
       shell: bash
       run: |
@@ -48,7 +65,7 @@ jobs:
           fi
           sleep 1
         done
-        echo "::error::API /health not ready in time"; docker compose logs api
+        echo "::error::API /health not ready in time"; docker compose logs api || true
         exit 1
 
     - name: Run migrations + seed
@@ -67,7 +84,7 @@ jobs:
           fi
           sleep 2
         done
-        echo "::error::/db/health never became ready"; docker compose logs api db
+        echo "::error::/db/health never became ready"; docker compose logs api db || true
         exit 1
 
     - name: Run backend tests
