@@ -1,10 +1,16 @@
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 
-from app.db import get_session
+# --- Fallback za dependency iz db modula ---
+# Neka instalacije koriste get_session, neke get_db; podržimo obje bez mijenjanja db.py
+try:
+    from app.db import get_session as _get_session_dep  # preferirano ime
+except Exception:  # pragma: no cover
+    from app.db import get_db as _get_session_dep  # fallback
+
 from app.models import CashEntry
 from app.schemas.cash import (
     CashEntryCreate,
@@ -25,20 +31,20 @@ def _get_cash_or_404(db: Session, cash_id: int) -> CashEntry:
 
 # ---------- CRUD ----------
 @router.get("/", response_model=List[CashEntryRead])
-def list_cash(db: Session = Depends(get_session)) -> List[CashEntry]:
+def list_cash(db: Session = Depends(_get_session_dep)) -> List[CashEntry]:
     """Lista svih zapisa (po ID silazno)."""
     stmt = select(CashEntry).order_by(CashEntry.id.desc())
     return list(db.execute(stmt).scalars().all())
 
 
 @router.get("/{cash_id}", response_model=CashEntryRead)
-def get_cash(cash_id: int, db: Session = Depends(get_session)) -> CashEntry:
+def get_cash(cash_id: int, db: Session = Depends(_get_session_dep)) -> CashEntry:
     """Vraća jedan zapis po ID-u."""
     return _get_cash_or_404(db, cash_id)
 
 
 @router.post("/", response_model=CashEntryRead, status_code=status.HTTP_201_CREATED)
-def create_cash(payload: CashEntryCreate, db: Session = Depends(get_session)) -> CashEntry:
+def create_cash(payload: CashEntryCreate, db: Session = Depends(_get_session_dep)) -> CashEntry:
     """Kreira novi zapis."""
     data = payload.model_dump() if hasattr(payload, "model_dump") else payload.dict()
     obj = CashEntry(**data)
@@ -52,7 +58,7 @@ def create_cash(payload: CashEntryCreate, db: Session = Depends(get_session)) ->
 def patch_cash(
     cash_id: int,
     payload: CashEntryUpdate,
-    db: Session = Depends(get_session),
+    db: Session = Depends(_get_session_dep),
 ) -> CashEntry:
     """
     Parcijalna izmjena (PATCH).
@@ -74,7 +80,7 @@ def patch_cash(
 
 
 @router.delete("/{cash_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_cash(cash_id: int, db: Session = Depends(get_session)) -> Response:
+def delete_cash(cash_id: int, db: Session = Depends(_get_session_dep)) -> Response:
     """Briše zapis (204 No Content ako je uspjelo)."""
     obj = _get_cash_or_404(db, cash_id)
     db.delete(obj)
