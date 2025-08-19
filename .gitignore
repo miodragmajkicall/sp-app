@@ -1,25 +1,12 @@
-# Python
 __pycache__/
-*.py[cod]
-
-# Virtual envs
+*.pyc
+.env
 .venv/
-venv/
-
-# Editors/IDE
-.vscode/
+.env.*
+.cache/
 .idea/
-
-# Tests/coverage
-.pytest_cache/
-.coverage
-htmlcov/
-
-# OS
-.DS_Store
-Thumbs.db
-
-# Project secrets / build artefacts
-backend/.env
-backend/alembic/__pycache__/
-backend/alembic/versions/__pycache__/
+.vscode/
+**/__pycache__/
+dist/
+build/
+*.sqlite3
