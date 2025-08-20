@@ -5,11 +5,17 @@ from .config import settings
 from .db import ping
 from .routes import tenants as tenants_routes
 from .routes import cash as cash_routes  # novo
+from app.routes.db_health import router as db_health_router
+
+
 
 app = FastAPI(title=settings.PROJECT_NAME)
 
 from .routes import cash as cash_routes
 app.include_router(cash_routes.router)
+app.include_router(db_health_router)
+
+
 
 
 app.add_middleware(
