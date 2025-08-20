@@ -5,7 +5,6 @@ from .config import settings
 from .db import ping
 from .routes import tenants as tenants_routes
 from .routes import cash as cash_routes  # novo
-from app.routes.db_health import router as db_health_router
 
 
 
@@ -13,9 +12,23 @@ app = FastAPI(title=settings.PROJECT_NAME)
 
 from .routes import cash as cash_routes
 app.include_router(cash_routes.router)
-app.include_router(db_health_router)
 
+from fastapi import HTTPException
 
+@app.get("/db/health", tags=["health"])
+def db_health():
+    """
+    Provjera konekcije prema bazi.
+    Vraća 200 ako db.ping() uspije, inače 503.
+    """
+    try:
+        from app import db as dbmod  # lazy import da izbjegnemo ciklični import
+        ping_fn = getattr(dbmod, "ping", None)
+        if callable(ping_fn) and ping_fn():
+            return {"status": "ok", "db": "up"}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"db error: {e!r}")
+    raise HTTPException(status_code=503, detail="db not reachable")
 
 
 app.add_middleware(
