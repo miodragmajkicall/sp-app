@@ -1,32 +1,33 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
-from pydantic import BaseModel, field_validator
+from typing import Optional
+
+from pydantic import BaseModel, ConfigDict
 
 
 class CashEntryBase(BaseModel):
+    tenant_code: Optional[str] = None
     entry_date: date
     kind: str
     amount: Decimal
+    description: Optional[str] = None
 
-    @field_validator("kind")
-    @classmethod
-    def normalize_kind(cls, v: str) -> str:
-        key = str(v).strip().lower()
-        mapping = {"income": "income", "expense": "expense", "in": "income", "out": "expense"}
-        if key not in mapping:
-            raise ValueError("kind must be 'income' or 'expense' (or IN/OUT)")
-        return mapping[key]
+    model_config = ConfigDict(from_attributes=True)
 
 
 class CashEntryCreate(CashEntryBase):
     pass
 
 
-class CashEntryRead(CashEntryBase):
-    id: int
-    tenant_code: str
+class CashEntryUpdate(BaseModel):
+    entry_date: Optional[date] = None
+    kind: Optional[str] = None
+    amount: Optional[Decimal] = None
+    description: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+
+class CashEntryRead(CashEntryBase):
+    id: str
+    created_at: datetime
