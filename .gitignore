@@ -1,12 +1,31 @@
+# Python
 __pycache__/
 *.pyc
-.env
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Virtual env
 .venv/
-.env.*
-.cache/
+env/
+venv/
+
+# IDE/OS
+.DS_Store
 .idea/
 .vscode/
-**/__pycache__/
+
+# Env files
+!.env.example
+.env
+.env.*
+
+# Build/artifacts
 dist/
 build/
-*.sqlite3
+*.log
+
+# Alembic backup
+alembic.ini.bak
