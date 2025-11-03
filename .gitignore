@@ -18,7 +18,6 @@ venv/
 .vscode/
 
 # Env files
-!.env.example
 .env
 .env.*
 
@@ -29,3 +28,8 @@ build/
 
 # Alembic backup
 alembic.ini.bak
+
+# Env files
+.env
+.env.*
+!.env.example
