@@ -1,130 +1,84 @@
-# app/routes/cash.py
-from __future__ import annotations
-
-import uuid
-from datetime import datetime, timezone
+# /home/miso/dev/sp-app/sp-app/app/routes/cash.py
+from datetime import date
+from decimal import Decimal
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from app.db import get_session as _get_session_dep
-from app.models import CashEntry
-from app.schemas.cash import CashEntryCreate, CashEntryRead, CashEntryUpdate
+from ..db import get_db
+from ..models import CashEntry, Tenant
 
 router = APIRouter(prefix="/cash", tags=["cash"])
 
 
-def _require_tenant(x_tenant_code: Optional[str]) -> str:
-    """Obavezno prisustvo tenant headera."""
+# -- helper: ensure tenant exists (auto-create if missing)
+def ensure_tenant(db: Session, tenant_code: str) -> Tenant:
+    if not tenant_code:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Missing X-Tenant-Code header")
+    tenant = db.query(Tenant).filter(Tenant.code == tenant_code).first()
+    if tenant is None:
+        tenant = Tenant(code=tenant_code, name=tenant_code)
+        db.add(tenant)
+        db.flush()  # validate FK before inserting CashEntry
+    return tenant
+
+
+# -- Schemas (ako već imaš u app/schemas, slobodno zamijeni importima)
+class CashCreate(BaseModel):
+    entry_date: date
+    kind: str
+    amount: Decimal
+    note: Optional[str] = Field(None, alias="description")
+
+    class Config:
+        populate_by_name = True
+
+
+class CashRead(BaseModel):
+    id: int
+    tenant_code: str
+    entry_date: date
+    kind: str
+    amount: Decimal
+    description: Optional[str]
+    created_at: Optional[str]
+
+
+@router.get("/", response_model=List[CashRead])
+def list_cash(
+    db: Session = Depends(get_db),
+    x_tenant_code: Optional[str] = Header(default=None, convert_underscores=False),
+):
     if not x_tenant_code:
         raise HTTPException(status_code=400, detail="Missing X-Tenant-Code header")
-    return x_tenant_code
-
-
-@router.get("/", response_model=List[CashEntryRead])
-def list_cash(
-    db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None),
-) -> List[CashEntry]:
-    tenant = _require_tenant(x_tenant_code)
-    stmt = (
-        select(CashEntry)
-        .where(CashEntry.tenant_code == tenant)
+    return (
+        db.query(CashEntry)
+        .filter(CashEntry.tenant_code == x_tenant_code)
         .order_by(CashEntry.created_at.desc())
+        .all()
     )
-    return list(db.execute(stmt).scalars().all())
 
 
-@router.get("/{cash_id}", response_model=CashEntryRead)
-def get_cash(
-    cash_id: str,
-    db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None),
-) -> CashEntry:
-    tenant = _require_tenant(x_tenant_code)
-    stmt = select(CashEntry).where(
-        CashEntry.id == cash_id, CashEntry.tenant_code == tenant
-    )
-    obj = db.execute(stmt).scalars().first()
-    if not obj:
-        raise HTTPException(status_code=404, detail="Cash entry not found")
-    return obj
-
-
-@router.post("/", response_model=CashEntryRead, status_code=status.HTTP_201_CREATED)
+@router.post("/", status_code=200)
 def create_cash(
-    payload: CashEntryCreate,
-    db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None),
-) -> CashEntry:
-    """
-    Ključna promjena: ako payload sadrži `tenant_code: null` (ili ga nema),
-    **PREPISUJEMO** vrijednost iz headera umjesto setdefault (koji ne radi kad je ključ prisutan s None).
-    Takođe generišemo `id` ako nije poslan i `created_at` ako nije popunjen.
-    """
-    tenant = _require_tenant(x_tenant_code)
+    payload: CashCreate,
+    db: Session = Depends(get_db),
+    x_tenant_code: Optional[str] = Header(default=None, convert_underscores=False),
+):
+    ensure_tenant(db, x_tenant_code)
 
-    data = payload.model_dump()
+    description = payload.note if payload.note is not None else payload.__dict__.get("description")
 
-    # Forsiraj tenant iz headera ako nema ili je None/prazno u payloadu
-    if not data.get("tenant_code"):
-        data["tenant_code"] = tenant
-
-    # Generiši id ako nije dat (izbjeći SAWarning za PK bez generatora)
-    if not data.get("id"):
-        data["id"] = str(uuid.uuid4())
-
-    # Postavi created_at ako nije dat
-    if not data.get("created_at"):
-        data["created_at"] = datetime.now(timezone.utc)
-
-    obj = CashEntry(**data)
-    db.add(obj)
-    db.commit()
-    db.refresh(obj)
-    return obj
-
-
-@router.patch("/{cash_id}", response_model=CashEntryRead)
-def patch_cash(
-    cash_id: str,
-    payload: CashEntryUpdate,
-    db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None),
-) -> CashEntry:
-    tenant = _require_tenant(x_tenant_code)
-    stmt = select(CashEntry).where(
-        CashEntry.id == cash_id, CashEntry.tenant_code == tenant
+    entry = CashEntry(
+        tenant_code=x_tenant_code,
+        entry_date=payload.entry_date,
+        kind=payload.kind,
+        amount=payload.amount,
+        description=description,
     )
-    obj = db.execute(stmt).scalars().first()
-    if not obj:
-        raise HTTPException(status_code=404, detail="Cash entry not found")
-
-    for k, v in payload.model_dump(exclude_unset=True).items():
-        setattr(obj, k, v)
-
-    db.add(obj)
+    db.add(entry)
     db.commit()
-    db.refresh(obj)
-    return obj
-
-
-@router.delete("/{cash_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_cash(
-    cash_id: str,
-    db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None),
-) -> Response:
-    tenant = _require_tenant(x_tenant_code)
-    stmt = select(CashEntry).where(
-        CashEntry.id == cash_id, CashEntry.tenant_code == tenant
-    )
-    obj = db.execute(stmt).scalars().first()
-    if not obj:
-        raise HTTPException(status_code=404, detail="Cash entry not found")
-
-    db.delete(obj)
-    db.commit()
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
+    db.refresh(entry)
+    return {"id": entry.id}
