@@ -1,54 +1,35 @@
-# backend/app/db.py
-import os
-from typing import Optional, Generator
+from __future__ import annotations
 
-from fastapi import Header
-from sqlalchemy import create_engine, text
+import os
+from typing import Generator
+
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 
-# DATABASE_URL iz env-a ili default iz docker-compose-a
+# DATABASE_URL npr: postgresql+psycopg2://user:pass@db:5432/app
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql+psycopg2://sp_app:sp_app@db:5432/sp_app",
+    "postgresql+psycopg2://postgres:postgres@db:5432/postgres",
 )
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
+# echo=False da ne spamuje logove; po želji uključi
+engine = create_engine(DATABASE_URL, echo=False, future=True)
+
+# autoflush=False i autocommit=False su standardni defaulti
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
 
 
-def get_session(
-    tenant_code: Optional[str] = Header(
-        default=None,
-        alias="X-Tenant-Code",
-        convert_underscores=False,
-    )
-) -> Generator[Session, None, None]:
+def get_session() -> Generator[Session, None, None]:
     """
-    FastAPI dependency: otvara DB session i, ako je prosleđen X-Tenant-Code,
-    postavlja search_path na '<tenant_code>, public'.
+    FastAPI dependency: vrati *Session* (ne contextmanager).
+    FastAPI će korektno pozvati finally blok; ovdje radimo commit/rollback.
     """
-    db = SessionLocal()
+    db: Session = SessionLocal()
     try:
-        if tenant_code:
-            db.execute(text("SET search_path TO :schema, public"), {"schema": tenant_code})
         yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
-
-
-# Legacy alias (ako negdje postoji stari import get_db)
-def get_db(
-    tenant_code: Optional[str] = Header(
-        default=None,
-        alias="X-Tenant-Code",
-        convert_underscores=False,
-    )
-) -> Generator[Session, None, None]:
-    yield from get_session(tenant_code)
-
-
-def ping() -> bool:
-    """Jednostavan DB health check (koristi se u /health)."""
-    with engine.connect() as conn:
-        conn.execute(text("SELECT 1"))
-    return True
