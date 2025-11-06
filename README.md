@@ -1,8 +1,8 @@
-# sp-app — Cash API quickstart
+# sp-app
 
-Minimalni vodič za lokalni razvoj i testiranje **cash** modula.
+Minimalni monorepo za FastAPI + Postgres demo (multi-tenant preko `X-Tenant-Code`).
 
-## Pokretanje
+## Quick start (Docker)
 
 ```bash
 docker compose up -d
