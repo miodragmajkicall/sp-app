@@ -131,9 +131,11 @@ def create_cash(
     response_model_exclude_none=True,
     summary="List cash entries",
     description=(
-        "Vraća listu svih zapisa za dati tenant (`X-Tenant-Code`). "
-        "Sortirano po `entry_date`, pa `id`. "
-        "Opcioni query parametri `from` i `to` (YYYY-MM-DD) ograničavaju interval po `entry_date`."
+        "Vraća listu zapisa za tenant (`X-Tenant-Code`).\n\n"
+        "**Filteri:**\n"
+        "- `from`, `to` (YYYY-MM-DD) — ograniče interval po `entry_date`.\n"
+        "- `limit` (1–200, default 100), `offset` (>= 0) — paginacija.\n\n"
+        "Sort: `entry_date`, pa `id`."
     ),
 )
 def list_cash(
@@ -141,6 +143,8 @@ def list_cash(
     x_tenant_code: str = Header(..., alias="X-Tenant-Code"),
     from_date: Optional[str] = Query(None, alias="from"),
     to_date: Optional[str] = Query(None, alias="to"),
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ):
     q = (
         db.query(CashEntry)
@@ -151,7 +155,12 @@ def list_cash(
     if to_date:
         q = q.filter(CashEntry.entry_date <= to_date)
 
-    rows = q.order_by(CashEntry.entry_date, CashEntry.id).all()
+    rows = (
+        q.order_by(CashEntry.entry_date, CashEntry.id)
+         .limit(limit)
+         .offset(offset)
+         .all()
+    )
     return [CashEntryRead.model_validate(r) for r in rows]
 
 # ------------------------ SUMMARY (MORA BITI IZNAD /{entry_id}) --------------
