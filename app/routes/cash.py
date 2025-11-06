@@ -130,18 +130,28 @@ def create_cash(
     response_model=List[CashEntryRead],
     response_model_exclude_none=True,
     summary="List cash entries",
-    description="Vraća listu svih zapisa za dati tenant (`X-Tenant-Code`). Sortirano po `entry_date`, pa `id`.",
+    description=(
+        "Vraća listu svih zapisa za dati tenant (`X-Tenant-Code`). "
+        "Sortirano po `entry_date`, pa `id`. "
+        "Opcioni query parametri `from` i `to` (YYYY-MM-DD) ograničavaju interval po `entry_date`."
+    ),
 )
 def list_cash(
     db: Session = Depends(get_session),
     x_tenant_code: str = Header(..., alias="X-Tenant-Code"),
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date: Optional[str] = Query(None, alias="to"),
 ):
-    rows = (
+    q = (
         db.query(CashEntry)
         .filter(CashEntry.tenant_code == x_tenant_code)
-        .order_by(CashEntry.entry_date, CashEntry.id)
-        .all()
     )
+    if from_date:
+        q = q.filter(CashEntry.entry_date >= from_date)
+    if to_date:
+        q = q.filter(CashEntry.entry_date <= to_date)
+
+    rows = q.order_by(CashEntry.entry_date, CashEntry.id).all()
     return [CashEntryRead.model_validate(r) for r in rows]
 
 # ------------------------ SUMMARY (MORA BITI IZNAD /{entry_id}) --------------
