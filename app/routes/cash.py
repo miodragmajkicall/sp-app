@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import logging
 from typing import List, Optional
+from decimal import Decimal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, status
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from pydantic import BaseModel
-from decimal import Decimal
 
 from ..db import get_session
 from ..models import CashEntry
@@ -82,6 +82,7 @@ _patch_openapi = {
     }
 }
 
+# ------------------------ CREATE & LIST --------------------------------------
 
 @router.post(
     "/",
@@ -143,6 +144,68 @@ def list_cash(
     )
     return [CashEntryRead.model_validate(r) for r in rows]
 
+# ------------------------ SUMMARY (MORA BITI IZNAD /{entry_id}) --------------
+
+@router.get(
+    "/summary",
+    response_model=CashSummaryRead,
+    summary="Cash summary (income, expense, net, counts)",
+    description=(
+        "Vraća zbirne iznose i brojeve zapisa za dati tenant. "
+        "Opcioni query parametri `from` i `to` (YYYY-MM-DD) ograničavaju interval po `entry_date`."
+    ),
+)
+def cash_summary(
+    db: Session = Depends(get_session),
+    x_tenant_code: str = Header(..., alias="X-Tenant-Code"),
+    from_date: Optional[str] = Query(None, alias="from"),
+    to_date: Optional[str] = Query(None, alias="to"),
+):
+    q = db.query(
+        CashEntry.kind,
+        func.count(CashEntry.id).label("cnt"),
+        func.coalesce(func.sum(CashEntry.amount), 0).label("total"),
+    ).filter(CashEntry.tenant_code == x_tenant_code)
+
+    if from_date:
+        q = q.filter(CashEntry.entry_date >= from_date)
+    if to_date:
+        q = q.filter(CashEntry.entry_date <= to_date)
+
+    rows = q.group_by(CashEntry.kind).all()
+
+    income_total = Decimal("0.00")
+    expense_total = Decimal("0.00")
+    income_count = 0
+    expense_count = 0
+
+    for kind, cnt, total in rows:
+        if kind == "income":
+            income_total = Decimal(str(total)).quantize(Decimal("0.01"))
+            income_count = int(cnt or 0)
+        elif kind == "expense":
+            expense_total = Decimal(str(total)).quantize(Decimal("0.01"))
+            expense_count = int(cnt or 0)
+
+    net_total = (income_total - expense_total).quantize(Decimal("0.01"))
+
+    return CashSummaryRead(
+        tenant_code=x_tenant_code,
+        from_date=from_date,
+        to_date=to_date,
+        income_total=income_total,
+        expense_total=expense_total,
+        net_total=net_total,
+        income_count=income_count,
+        expense_count=expense_count,
+    )
+
+# ------------------------ BY-ID (ISPOD /summary) -----------------------------
+
+class DeleteResultModel(BaseModel):
+    id: int
+    deleted: bool
+
 
 @router.get(
     "/{entry_id}",
@@ -169,11 +232,6 @@ def get_cash_by_id(
     return CashEntryRead.model_validate(obj)
 
 
-class DeleteResultModel(BaseModel):
-    id: int
-    deleted: bool
-
-
 @router.delete(
     "/{entry_id}",
     response_model=DeleteResultModel,
@@ -198,7 +256,7 @@ def delete_cash_by_id(
         raise HTTPException(status_code=404, detail="Cash entry not found for tenant.")
 
     db.delete(obj)
-    db.flush()  # pošalji DELETE odmah
+    db.flush()
     return DeleteResultModel(id=entry_id, deleted=True)
 
 
@@ -249,60 +307,3 @@ def patch_cash_by_id(
         raise HTTPException(status_code=500, detail="Update failed.") from e
 
     return CashEntryRead.model_validate(obj)
-
-
-@router.get(
-    "/summary",
-    response_model=CashSummaryRead,
-    summary="Cash summary (income, expense, net, counts)",
-    description=(
-        "Vraća zbirne iznose i brojeve zapisa za dati tenant. "
-        "Opcioni query parametri `from` i `to` (YYYY-MM-DD) ograničavaju interval po `entry_date`."
-    ),
-)
-def cash_summary(
-    db: Session = Depends(get_session),
-    x_tenant_code: str = Header(..., alias="X-Tenant-Code"),
-    from_date: Optional[str] = Query(None, alias="from"),
-    to_date: Optional[str] = Query(None, alias="to"),
-):
-    # priprema baznog query-ja sa tenant scopingom
-    q = db.query(
-        CashEntry.kind,
-        func.count(CashEntry.id).label("cnt"),
-        func.coalesce(func.sum(CashEntry.amount), 0).label("total"),
-    ).filter(CashEntry.tenant_code == x_tenant_code)
-
-    # opcioni datumski filteri
-    if from_date:
-        q = q.filter(CashEntry.entry_date >= from_date)
-    if to_date:
-        q = q.filter(CashEntry.entry_date <= to_date)
-
-    rows = q.group_by(CashEntry.kind).all()
-
-    income_total = Decimal("0.00")
-    expense_total = Decimal("0.00")
-    income_count = 0
-    expense_count = 0
-
-    for kind, cnt, total in rows:
-        if kind == "income":
-            income_total = Decimal(str(total)).quantize(Decimal("0.01"))
-            income_count = int(cnt or 0)
-        elif kind == "expense":
-            expense_total = Decimal(str(total)).quantize(Decimal("0.01"))
-            expense_count = int(cnt or 0)
-
-    net_total = (income_total - expense_total).quantize(Decimal("0.01"))
-
-    return CashSummaryRead(
-        tenant_code=x_tenant_code,
-        from_date=from_date,  # FastAPI konvertuje u date u OpenAPI-u; ovdje ih vraćamo kao string/date kompatibilno
-        to_date=to_date,
-        income_total=income_total,
-        expense_total=expense_total,
-        net_total=net_total,
-        income_count=income_count,
-        expense_count=expense_count,
-    )
