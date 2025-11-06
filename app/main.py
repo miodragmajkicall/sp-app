@@ -1,20 +1,23 @@
-# backend/app/main.py
-from fastapi import FastAPI
-from .db import ping
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+from sqlalchemy.exc import IntegrityError
+
 from .routes import cash as cash_routes
 
-app = FastAPI(title="sp-app API")
+app = FastAPI(title="sp-app API", version="0.1.0")
 
-# Rute
-app.include_router(cash_routes.router)
 
-# Health
 @app.get("/health")
 def health():
-    try:
-        ping()
-        return {"status": "ok"}
-    except Exception as exc:
-        # Nemoj iznositi detalje konekcije u response; dovoljan je 500 sa "error"
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail="db error") from exc
+    return {"status": "ok"}
+
+
+@app.exception_handler(IntegrityError)
+async def integrity_error_handler(request: Request, exc: IntegrityError):
+    return JSONResponse(
+        status_code=422,
+        content={"detail": "Integrity error: provjeri polja (npr. kind, amount, tenant_code)."},
+    )
+
+
+app.include_router(cash_routes.router)

@@ -1,0 +1,4 @@
+services:
+  api:
+    volumes:
+      - /home/miso/dev/sp-app/sp-app/app:/app/app:rw
