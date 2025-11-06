@@ -1,6 +1,9 @@
-# sp-app
-![CI](https://github.com/miodragmajkicall/sp-app/actions/workflows/ci.yml/badge.svg)
+# sp-app — Cash API quickstart
 
+Minimalni vodič za lokalni razvoj i testiranje **cash** modula.
 
-## CI
-Green check required before merge.
+## Pokretanje
+
+```bash
+docker compose up -d
+curl -sS http://localhost:8000/health
