@@ -23,22 +23,22 @@ def _require_tenant(x_tenant_code: Optional[str]) -> str:
 @router.get("/", response_model=List[CashEntryRead])
 def list_cash(
     db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
 ) -> List[CashEntry]:
     tenant = _require_tenant(x_tenant_code)
     stmt = (
         select(CashEntry)
         .where(CashEntry.tenant_code == tenant)
-        .order_by(CashEntry.created_at.desc())
+        .order_by(CashEntry.created_at.desc(), CashEntry.id.desc())
     )
     return list(db.execute(stmt).scalars().all())
 
 
 @router.get("/{cash_id}", response_model=CashEntryRead)
 def get_cash(
-    cash_id: str,
+    cash_id: int,
     db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
 ) -> CashEntry:
     tenant = _require_tenant(x_tenant_code)
     stmt = select(CashEntry).where(
@@ -54,32 +54,25 @@ def get_cash(
 def create_cash(
     payload: CashEntryCreate,
     db: Session = Depends(_get_session_dep),
-    x_tenant_code: str = Header(..., alias="X-Tenant-Code"),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
 ) -> CashEntry:
-    # Header je obavezan; forsiramo tenant_code bez setdefault (prepisujemo uvijek)
     tenant = _require_tenant(x_tenant_code)
     data = payload.model_dump()
-
-    # Uvijek prepiši tenant_code iz headera (izbjegava slučaj gdje je u payloadu None)
-    data["tenant_code"] = tenant
-
-    # created_at prepuštamo server_default-u u modelu; čistimo ako je eventualno u payloadu
-    data.pop("created_at", None)
-
+    data.setdefault("tenant_code", tenant)
+    data.setdefault("created_at", datetime.now(timezone.utc))
     obj = CashEntry(**data)
     db.add(obj)
-    # Dobij id bez izlaska iz transakcije
-    db.flush()
+    db.commit()
     db.refresh(obj)
     return obj
 
 
 @router.patch("/{cash_id}", response_model=CashEntryRead)
 def patch_cash(
-    cash_id: str,
+    cash_id: int,
     payload: CashEntryUpdate,
     db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
 ) -> CashEntry:
     tenant = _require_tenant(x_tenant_code)
     stmt = select(CashEntry).where(
@@ -90,22 +83,19 @@ def patch_cash(
         raise HTTPException(status_code=404, detail="Cash entry not found")
 
     for k, v in payload.model_dump(exclude_unset=True).items():
-        # tenant_code se nikad ne mijenja patch-em
-        if k == "tenant_code":
-            continue
         setattr(obj, k, v)
 
     db.add(obj)
-    db.flush()
+    db.commit()
     db.refresh(obj)
     return obj
 
 
 @router.delete("/{cash_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_cash(
-    cash_id: str,
+    cash_id: int,
     db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
 ) -> Response:
     tenant = _require_tenant(x_tenant_code)
     stmt = select(CashEntry).where(
@@ -116,5 +106,5 @@ def delete_cash(
         raise HTTPException(status_code=404, detail="Cash entry not found")
 
     db.delete(obj)
-    db.flush()
+    db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
