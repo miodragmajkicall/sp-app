@@ -1,20 +1,13 @@
-# backend/app/main.py
 from fastapi import FastAPI
-from .db import ping
+from .routes import health as health_routes
+from .routes import tenants as tenants_routes
+from .routes import debug as debug_routes
 from .routes import cash as cash_routes
 
-app = FastAPI(title="sp-app API")
+app = FastAPI(title="sp-app API", version="0.1.0")
 
-# Rute
+# redoslijed nije kritičan, ali health prvo radi brzog pinga
+app.include_router(health_routes.router)
+app.include_router(tenants_routes.router)
+app.include_router(debug_routes.router)
 app.include_router(cash_routes.router)
-
-# Health
-@app.get("/health")
-def health():
-    try:
-        ping()
-        return {"status": "ok"}
-    except Exception as exc:
-        # Nemoj iznositi detalje konekcije u response; dovoljan je 500 sa "error"
-        from fastapi import HTTPException
-        raise HTTPException(status_code=500, detail="db error") from exc

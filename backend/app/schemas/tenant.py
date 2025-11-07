@@ -1,20 +1,15 @@
-from datetime import datetime
-from uuid import UUID
+from __future__ import annotations
+
 from pydantic import BaseModel, Field
 
 class TenantCreate(BaseModel):
-    code: str = Field(min_length=2, max_length=20)
-    name: str
+    code: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1)
 
-class TenantOut(BaseModel):
-    id: UUID
+class TenantRead(BaseModel):
+    id: str
     code: str
     name: str
-    created_at: datetime
-
-    class Config:
-        from_attributes = True  # Pydantic v2: radi sa SQLAlchemy modelom
 
 class TenantUpdate(BaseModel):
-    code: str | None = Field(default=None, min_length=2, max_length=20)
     name: str | None = None

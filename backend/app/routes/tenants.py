@@ -1,67 +1,62 @@
+from __future__ import annotations
+
 from typing import List
-from fastapi import APIRouter, Depends, HTTPException, status, Response
-from sqlalchemy.orm import Session
+from uuid import uuid4
+
+from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
-from uuid import UUID
-from app.db import get_db
+from sqlalchemy.orm import Session
+
+from app.db import get_session
 from app.models import Tenant
-from app.schemas.tenant import TenantCreate, TenantOut, TenantUpdate
+from app.schemas.tenant import TenantCreate, TenantRead, TenantUpdate
 
-router = APIRouter(prefix="/tenants", tags=["tenants"])
+router = APIRouter(tags=["tenants"])
 
-@router.post("", response_model=TenantOut, status_code=status.HTTP_201_CREATED)
-def create_tenant(payload: TenantCreate, db: Session = Depends(get_db)):
-    t = Tenant(code=payload.code, name=payload.name)
+@router.post("/tenants", status_code=201, response_model=TenantRead)
+def create_tenant(payload: TenantCreate, db: Session = Depends(get_session)):
+    tid = uuid4().hex
+    t = Tenant(id=tid, code=payload.code.strip(), name=payload.name.strip())
     db.add(t)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=400, detail="code already exists")
+        # test dopušta 400 ili 409; vraćamo 409 da ostanemo dosljedni
+        raise HTTPException(status_code=409, detail="Tenant code already exists")
     db.refresh(t)
-    return t
+    return TenantRead(id=t.id, code=t.code, name=t.name)
 
-@router.get("", response_model=List[TenantOut])
-def list_tenants(db: Session = Depends(get_db)):
-    rows = db.execute(select(Tenant).order_by(Tenant.created_at.desc())).scalars().all()
-    return rows
-from uuid import UUID
+@router.get("/tenants", response_model=List[TenantRead])
+def list_tenants(db: Session = Depends(get_session)):
+    rows = db.execute(select(Tenant).order_by(Tenant.created_at.asc())).scalars().all()
+    return [TenantRead(id=r.id, code=r.code, name=r.name) for r in rows]
 
-@router.get("/{tenant_id}", response_model=TenantOut)
-def get_tenant(tenant_id: UUID, db: Session = Depends(get_db)):
+@router.get("/tenants/{tenant_id}", response_model=TenantRead)
+def get_tenant(tenant_id: str, db: Session = Depends(get_session)):
     t = db.get(Tenant, tenant_id)
     if not t:
-        raise HTTPException(status_code=404, detail="tenant not found")
-    return t
+        raise HTTPException(status_code=404, detail="Tenant not found")
+    return TenantRead(id=t.id, code=t.code, name=t.name)
 
-@router.patch("/{tenant_id}", response_model=TenantOut)
-def update_tenant(tenant_id: UUID, payload: TenantUpdate, db: Session = Depends(get_db)):
+@router.patch("/tenants/{tenant_id}", response_model=TenantRead)
+def patch_tenant(tenant_id: str, payload: TenantUpdate, db: Session = Depends(get_session)):
     t = db.get(Tenant, tenant_id)
     if not t:
-        raise HTTPException(status_code=404, detail="tenant not found")
-
-    if payload.code is not None:
-        t.code = payload.code
+        raise HTTPException(status_code=404, detail="Tenant not found")
     if payload.name is not None:
-        t.name = payload.name
-
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=400, detail="code already exists")
+        t.name = payload.name.strip()
+    db.add(t)
+    db.commit()
     db.refresh(t)
-    return t
+    return TenantRead(id=t.id, code=t.code, name=t.name)
 
-@router.delete("/{tenant_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_tenant(tenant_id: UUID, db: Session = Depends(get_db)):
+@router.delete("/tenants/{tenant_id}", status_code=204)
+def delete_tenant(tenant_id: str, db: Session = Depends(get_session)):
     t = db.get(Tenant, tenant_id)
     if not t:
-        raise HTTPException(status_code=404, detail="tenant not found")
-
+        raise HTTPException(status_code=404, detail="Tenant not found")
     db.delete(t)
     db.commit()
-    return Response(status_code=status.HTTP_204_NO_CONTENT)
-
-
+    return None

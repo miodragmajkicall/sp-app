@@ -1,60 +1,72 @@
 from __future__ import annotations
 
-import uuid
 from sqlalchemy import (
-    Column,
-    String,
-    DateTime,
-    Date,
-    Numeric,
-    Text,
     BigInteger,
     CheckConstraint,
-    Index,
+    Column,
+    Date,
+    DateTime,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
 )
-from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base
-from sqlalchemy.sql import func
 
 Base = declarative_base()
 
 
+# -------------------------------
+# Tenants
+# -------------------------------
 class Tenant(Base):
     __tablename__ = "tenants"
 
-    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    code = Column(String(20), unique=True, nullable=False, index=True)
-    name = Column(String(200), nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-
-
-class CashEntry(Base):
-    __tablename__ = "cash_entries"
-    __table_args__ = (
-        CheckConstraint("kind IN ('income','expense')", name="ck_cash_entries_kind"),
-        Index("ix_cash_entries_tenant_date_id", "tenant_code", "entry_date", "id"),
+    # Napomena: testovi očekuju da POST /tenants vrati objekat sa poljima: id, code, name.
+    # id možemo čuvati kao string (UUID ili generisan u ruti).
+    id = Column(String(32), primary_key=True)
+    code = Column(String(64), nullable=False, unique=True)
+    name = Column(Text, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
-    # BIGINT autoincrement/identity primarni ključ
+    __table_args__ = (
+        UniqueConstraint("code", name="uq_tenants_code"),
+    )
+
+
+# -------------------------------
+# Cash Entries
+# -------------------------------
+class CashEntry(Base):
+    __tablename__ = "cash_entries"
+
+    # Važno: testovi koriste autoincrement BIGINT i očekuju da se vraća brojčani id.
     id = Column(BigInteger, primary_key=True, autoincrement=True)
 
-    # Tenant iz headera X-Tenant-Code (obavezno)
-    tenant_code = Column(String(64), nullable=False, index=True)
+    # U ruti se tenant uzima iz X-Tenant-Code headera i upisuje ovde:
+    tenant_code = Column(String(64), nullable=False)
 
-    # Datum knjiženja
     entry_date = Column(Date, nullable=False)
 
-    # Vrsta unosa
+    # kind mora biti 'income' ili 'expense' (testovi to proveravaju)
     kind = Column(String(16), nullable=False)
 
-    # Iznos (2 decimale)
-    amount = Column(Numeric(14, 2), nullable=False)
+    # iznos sa 2 decimale – u testu se šalje string "12.34", SQLAlchemy Numeric to podržava
+    amount = Column(Numeric(12, 2), nullable=False)
 
-    # Napomena / opis
+    # Test ruta pretvara "note" -> "description", pa kolona mora postojati:
     description = Column(Text, nullable=True)
 
-    # Vrijeme kreiranja (server default, timezone-aware)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
-    def __repr__(self) -> str:
-        return f"<CashEntry id={self.id} tenant={self.tenant_code} date={self.entry_date} kind={self.kind} amount={self.amount}>"
+    __table_args__ = (
+        CheckConstraint(
+            "kind in ('income','expense')",
+            name="ck_cash_entries_kind",
+        ),
+    )
