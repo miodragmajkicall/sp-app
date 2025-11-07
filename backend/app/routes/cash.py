@@ -54,15 +54,22 @@ def get_cash(
 def create_cash(
     payload: CashEntryCreate,
     db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None),
+    x_tenant_code: str = Header(..., alias="X-Tenant-Code"),
 ) -> CashEntry:
+    # Header je obavezan; forsiramo tenant_code bez setdefault (prepisujemo uvijek)
     tenant = _require_tenant(x_tenant_code)
     data = payload.model_dump()
-    data.setdefault("tenant_code", tenant)
-    data.setdefault("created_at", datetime.now(timezone.utc))
+
+    # Uvijek prepiši tenant_code iz headera (izbjegava slučaj gdje je u payloadu None)
+    data["tenant_code"] = tenant
+
+    # created_at prepuštamo server_default-u u modelu; čistimo ako je eventualno u payloadu
+    data.pop("created_at", None)
+
     obj = CashEntry(**data)
     db.add(obj)
-    db.commit()
+    # Dobij id bez izlaska iz transakcije
+    db.flush()
     db.refresh(obj)
     return obj
 
@@ -83,10 +90,13 @@ def patch_cash(
         raise HTTPException(status_code=404, detail="Cash entry not found")
 
     for k, v in payload.model_dump(exclude_unset=True).items():
+        # tenant_code se nikad ne mijenja patch-em
+        if k == "tenant_code":
+            continue
         setattr(obj, k, v)
 
     db.add(obj)
-    db.commit()
+    db.flush()
     db.refresh(obj)
     return obj
 
@@ -106,5 +116,5 @@ def delete_cash(
         raise HTTPException(status_code=404, detail="Cash entry not found")
 
     db.delete(obj)
-    db.commit()
+    db.flush()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
