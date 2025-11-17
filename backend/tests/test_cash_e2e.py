@@ -61,11 +61,17 @@ def test_cash_summary_basic():
     """
     tenant_headers = {"X-Tenant-Code": "t-summary"}
 
-    # Očistimo startni state za ovaj tenant (nije striktno nužno, ali je bezbjednije)
+    # 1) Očistimo sve postojeće unose za ovog tenanta,
+    #    kako bi test bio idempotentan (radi i kada se baza ne resetuje između run-ova).
     r = client.get("/cash/", headers=tenant_headers)
-    assert r.status_code in (200, 404, 422)
+    assert r.status_code == 200, r.text
+    existing_rows = r.json()
+    for row in existing_rows:
+        rid = row["id"]
+        rd = client.delete(f"/cash/{rid}", headers=tenant_headers)
+        assert rd.status_code == 204, rd.text
 
-    # kreiramo 3 unosa:
+    # 2) kreiramo 3 unosa:
     # income 100.00
     payload1 = {
         "entry_date": "2025-11-01",
@@ -96,16 +102,16 @@ def test_cash_summary_basic():
     r = client.post("/cash/", json=payload3, headers=tenant_headers)
     assert r.status_code == 201, r.text
 
-    # poziv summary endpointa bez datumske filtracije
+    # 3) poziv summary endpointa bez datumske filtracije
     r = client.get("/cash/summary", headers=tenant_headers)
     assert r.status_code == 200, r.text
     data = r.json()
 
     assert set(data.keys()) == {"income", "expense", "net"}
 
-    income = Decimal(data["income"])
-    expense = Decimal(data["expense"])
-    net = Decimal(data["net"])
+    income = Decimal(str(data["income"]))
+    expense = Decimal(str(data["expense"]))
+    net = Decimal(str(data["net"]))
 
     assert income == Decimal("110.00")
     assert expense == Decimal("40.00")
