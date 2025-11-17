@@ -32,9 +32,19 @@ class CashEntryCreate(BaseModel):
 class CashEntryUpdate(BaseModel):
     model_config = BaseConfig
 
-    entry_date: Optional[date] = Field(None, description="Ažurirani datum knjiženja.")
-    kind: Optional[Literal["income", "expense"]] = Field(None, description="Ažurirana vrsta.")
-    amount: Optional[Decimal] = Field(None, gt=0, description="Ažurirani iznos (> 0).")
+    entry_date: Optional[date] = Field(
+        None,
+        description="Ažurirani datum knjiženja.",
+    )
+    kind: Optional[Literal["income", "expense"]] = Field(
+        None,
+        description="Ažurirana vrsta.",
+    )
+    amount: Optional[Decimal] = Field(
+        None,
+        gt=0,
+        description="Ažurirani iznos (> 0).",
+    )
     description: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("note", "description"),
@@ -47,7 +57,10 @@ class CashEntryRead(BaseModel):
     model_config = BaseConfig
 
     # >>> VAŽNO: id je sada INT (BIGINT u bazi)
-    id: int = Field(..., description="Primarni ključ (autoincrement BIGINT).")
+    id: int = Field(
+        ...,
+        description="Primarni ključ (autoincrement BIGINT).",
+    )
     entry_date: date
     kind: Literal["income", "expense"]
     amount: Decimal
@@ -58,3 +71,20 @@ class CashEntryRead(BaseModel):
         description="Napomena (ako postoji).",
     )
     created_at: datetime
+
+
+class CashSummaryRead(BaseModel):
+    model_config = BaseConfig
+
+    income: Decimal = Field(
+        ...,
+        description="Ukupan prihod (income) za zadani period i tenant.",
+    )
+    expense: Decimal = Field(
+        ...,
+        description="Ukupan rashod (expense) za zadani period i tenant.",
+    )
+    net: Decimal = Field(
+        ...,
+        description="Neto rezultat (income - expense) za zadani period i tenant.",
+    )
