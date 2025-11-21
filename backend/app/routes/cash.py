@@ -132,7 +132,7 @@ def get_cash_summary(
 @router.get(
     "/",
     response_model=List[CashEntryRead],
-    summary="Lista svih cash unosa za tenanta",
+    summary="Lista cash unosa za tenanta (uz opcione filtere i paginaciju)",
 )
 def list_cash(
     db: Session = Depends(_get_session_dep),
@@ -144,19 +144,69 @@ def list_cash(
             "Obavezno: svaki tenant ima svoj logički 'konto'."
         ),
     ),
+    date_from: Optional[date] = Query(
+        None,
+        description=(
+            "Početni datum filtera (YYYY-MM-DD, uključivo).\n"
+            "Ako nije zadat, ne primjenjuje se donja granica po datumu."
+        ),
+        examples=["2025-01-01"],
+    ),
+    date_to: Optional[date] = Query(
+        None,
+        description=(
+            "Završni datum filtera (YYYY-MM-DD, uključivo).\n"
+            "Ako nije zadat, ne primjenjuje se gornja granica po datumu."
+        ),
+        examples=["2025-01-31"],
+    ),
+    limit: Optional[int] = Query(
+        None,
+        ge=1,
+        le=1000,
+        description=(
+            "Maksimalan broj zapisa koji se vraća.\n"
+            "Ako nije zadato, vraćaju se svi zapisi (bez limita)."
+        ),
+        examples=[100],
+    ),
+    offset: Optional[int] = Query(
+        None,
+        ge=0,
+        description=(
+            "Broj zapisa koje treba preskočiti prije vraćanja rezultata.\n"
+            "Koristi se za paginaciju zajedno sa `limit`.\n"
+            "Ako nije zadato, ne primjenjuje se offset."
+        ),
+        examples=[0],
+    ),
 ) -> List[CashEntry]:
     """
-    Vraća listu svih cash unosa za datog tenanta.
+    Vraća listu cash unosa za datog tenanta, uz opcione datumske filtere i paginaciju.
 
-    Rezultati su sortirani od najnovijeg ka najstarijem
+    Podrazumijevano (ako `limit` i `offset` nisu zadati) vraća *sve* zapise
+    za tenanta, sortirane od najnovijeg ka najstarijem
     (po `created_at` i `id` u opadajućem redoslijedu).
     """
     tenant = _require_tenant(x_tenant_code)
+
     stmt = (
         select(CashEntry)
         .where(CashEntry.tenant_code == tenant)
-        .order_by(CashEntry.created_at.desc(), CashEntry.id.desc())
     )
+
+    if date_from is not None:
+        stmt = stmt.where(CashEntry.entry_date >= date_from)
+    if date_to is not None:
+        stmt = stmt.where(CashEntry.entry_date <= date_to)
+
+    stmt = stmt.order_by(CashEntry.created_at.desc(), CashEntry.id.desc())
+
+    if offset is not None:
+        stmt = stmt.offset(offset)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+
     return list(db.execute(stmt).scalars().all())
 
 
