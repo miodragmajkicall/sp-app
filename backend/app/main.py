@@ -4,6 +4,7 @@ from .routes import health as health_routes
 from .routes import tenants as tenants_routes
 from .routes import debug as debug_routes
 from .routes import cash as cash_routes
+from .routes import invoices as invoices_routes
 
 tags_metadata = [
     {
@@ -25,6 +26,13 @@ tags_metadata = [
         ),
     },
     {
+        "name": "invoices",
+        "description": (
+            "Fakture po tenantu – kreiranje, pregled i brisanje faktura sa stavkama, "
+            "uključujući izračun osnovice, PDV-a i ukupnog iznosa."
+        ),
+    },
+    {
         "name": "debug",
         "description": (
             "Interni i pomoćni endpointi za razvoj i debug. "
@@ -41,8 +49,9 @@ app = FastAPI(
         "API pokriva:\n"
         "- registraciju i upravljanje tenantima (klijentima aplikacije)\n"
         "- vođenje evidencije prihoda i rashoda po tenantu (cashbook modul)\n"
+        "- izdavanje faktura sa stavkama i PDV obračunom (invoices modul)\n"
         "- health-check endpointi za potrebe monitoringa i CI/CD\n\n"
-        "Dokumentacija je organizovana po tagovima: **health**, **tenants**, **cash** i **debug**."
+        "Dokumentacija je organizovana po tagovima: **health**, **tenants**, **cash**, **invoices** i **debug**."
     ),
     openapi_tags=tags_metadata,
 )
@@ -52,3 +61,4 @@ app.include_router(health_routes.router)
 app.include_router(tenants_routes.router)
 app.include_router(debug_routes.router)
 app.include_router(cash_routes.router)
+app.include_router(invoices_routes.router)
