@@ -16,10 +16,18 @@ from app.schemas.cash import (
     CashSummaryRead,
 )
 
-router = APIRouter(prefix="/cash", tags=["cash"])
+router = APIRouter(
+    prefix="/cash",
+    tags=["cash"],
+)
 
 
 def _require_tenant(x_tenant_code: Optional[str]) -> str:
+    """
+    Interna pomoćna funkcija koja osigurava da je X-Tenant-Code header postavljen.
+
+    Ako header nedostaje, baca HTTP 400.
+    """
     if not x_tenant_code:
         raise HTTPException(status_code=400, detail="Missing X-Tenant-Code header")
     return x_tenant_code
@@ -27,11 +35,11 @@ def _require_tenant(x_tenant_code: Optional[str]) -> str:
 
 def _ensure_tenant_exists(db: Session, code: str) -> None:
     """
-    Pobrini se da u bazi postoji red u tenants sa zadatim code.
+    Pobrini se da u bazi postoji red u tabeli tenants sa zadatim `code`.
 
     - Ako tenant već postoji: ne radi ništa.
     - Ako ne postoji: kreira se minimalni tenant sa:
-        id = code (odrezan na 32 karaktera)
+        id   = code (odrezan na 32 karaktera)
         code = prosleđeni kod
         name = "Tenant {code}"
     """
@@ -50,21 +58,38 @@ def _ensure_tenant_exists(db: Session, code: str) -> None:
     db.refresh(tenant)
 
 
-@router.get("/summary", response_model=CashSummaryRead)
+@router.get(
+    "/summary",
+    response_model=CashSummaryRead,
+    summary="Suma prihoda, rashoda i neto rezultata",
+)
 def get_cash_summary(
     db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description=(
+            "Šifra tenanta za kojeg se obračunava rezime.\n"
+            "Primjer: `frizer-mika`, `tenant-001`."
+        ),
+    ),
     date_from: Optional[date] = Query(
         None,
         description="Početni datum filtera (YYYY-MM-DD, uključivo).",
+        examples=["2025-01-01"],
     ),
     date_to: Optional[date] = Query(
         None,
         description="Završni datum filtera (YYYY-MM-DD, uključivo).",
+        examples=["2025-01-31"],
     ),
 ) -> CashSummaryRead:
     """
-    Vraća zbir prihoda, rashoda i neto rezultat za zadatog tenanta i opcioni datumski opseg.
+    Vraća zbir prihoda, rashoda i neto rezultat za zadatog tenanta
+    i opcioni datumski opseg.
+
+    Ako `date_from` i `date_to` nisu zadati, koristi se kompletan raspon
+    dostupnih zapisa za datog tenanta.
     """
     tenant = _require_tenant(x_tenant_code)
 
@@ -104,11 +129,28 @@ def get_cash_summary(
     return CashSummaryRead(income=income, expense=expense, net=net)
 
 
-@router.get("/", response_model=List[CashEntryRead])
+@router.get(
+    "/",
+    response_model=List[CashEntryRead],
+    summary="Lista svih cash unosa za tenanta",
+)
 def list_cash(
     db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description=(
+            "Šifra tenanta čije unose vraćamo.\n"
+            "Obavezno: svaki tenant ima svoj logički 'konto'."
+        ),
+    ),
 ) -> List[CashEntry]:
+    """
+    Vraća listu svih cash unosa za datog tenanta.
+
+    Rezultati su sortirani od najnovijeg ka najstarijem
+    (po `created_at` i `id` u opadajućem redoslijedu).
+    """
     tenant = _require_tenant(x_tenant_code)
     stmt = (
         select(CashEntry)
@@ -118,12 +160,26 @@ def list_cash(
     return list(db.execute(stmt).scalars().all())
 
 
-@router.get("/{cash_id}", response_model=CashEntryRead)
+@router.get(
+    "/{cash_id}",
+    response_model=CashEntryRead,
+    summary="Dohvati pojedinačni cash unos po ID-u",
+)
 def get_cash(
     cash_id: int,
     db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem zapis mora pripadati.",
+    ),
 ) -> CashEntry:
+    """
+    Vraća jedan cash unos za zadati `cash_id` i tenanta.
+
+    Ako zapis ne postoji ili ne pripada zadatom tenant-u,
+    vraća se HTTP 404.
+    """
     tenant = _require_tenant(x_tenant_code)
     stmt = select(CashEntry).where(
         CashEntry.id == cash_id,
@@ -135,12 +191,39 @@ def get_cash(
     return obj
 
 
-@router.post("/", response_model=CashEntryRead, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/",
+    response_model=CashEntryRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Kreiraj novi cash unos",
+)
 def create_cash(
     payload: CashEntryCreate,
     db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta za kojeg se kreira novi cash unos.",
+    ),
 ) -> CashEntry:
+    """
+    Kreira novi cash unos (prihod ili rashod) za zadatog tenanta.
+
+    Tenant se određuje iz `X-Tenant-Code` headera i ne nalazi se u tijelu zahtjeva.
+
+    Primjer zahtjeva:
+
+    - Header: `X-Tenant-Code: frizer-mika`
+    - Body:
+      ```json
+      {
+        "entry_date": "2025-01-15",
+        "kind": "income",
+        "amount": "100.00",
+        "note": "Gotovina iz kase"
+      }
+      ```
+    """
     tenant = _require_tenant(x_tenant_code)
 
     # Prvo osiguramo da postoji odgovarajući tenant u tabeli tenants,
@@ -158,13 +241,27 @@ def create_cash(
     return obj
 
 
-@router.patch("/{cash_id}", response_model=CashEntryRead)
+@router.patch(
+    "/{cash_id}",
+    response_model=CashEntryRead,
+    summary="Djelimično ažuriranje postojećeg cash unosa",
+)
 def patch_cash(
     cash_id: int,
     payload: CashEntryUpdate,
     db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem zapis mora pripadati.",
+    ),
 ) -> CashEntry:
+    """
+    Djelimično ažurira postojeći cash unos (PATCH).
+
+    Šalju se samo polja koja se mijenjaju.
+    Ako zapis ne postoji ili ne pripada tenant-u, vraća se HTTP 404.
+    """
     tenant = _require_tenant(x_tenant_code)
     stmt = select(CashEntry).where(
         CashEntry.id == cash_id,
@@ -183,12 +280,26 @@ def patch_cash(
     return obj
 
 
-@router.delete("/{cash_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{cash_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Obriši postojeći cash unos",
+)
 def delete_cash(
     cash_id: int,
     db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem zapis mora pripadati.",
+    ),
 ) -> Response:
+    """
+    Briše postojeći cash unos.
+
+    Ako zapis ne postoji ili ne pripada zadatom tenant-u, vraća se HTTP 404.
+    Uspješno brisanje vraća HTTP 204 bez tijela odgovora.
+    """
     tenant = _require_tenant(x_tenant_code)
     stmt = select(CashEntry).where(
         CashEntry.id == cash_id,
