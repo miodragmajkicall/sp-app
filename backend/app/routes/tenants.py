@@ -12,6 +12,11 @@ from app.db import get_session
 from app.models import Tenant
 from app.schemas.tenant import TenantCreate, TenantRead, TenantUpdate
 
+# Napomena:
+# "Tenant" predstavlja jednog klijenta / poslovni subjekt u sistemu (npr. frizerski salon,
+# pekaru, obrt...). Svi njegovi podaci (cash unosi, fakture, izvještaji)
+# se logički vežu za taj tenant preko polja `tenant_code` ili `tenant_id`.
+
 router = APIRouter(tags=["tenants"])
 
 
