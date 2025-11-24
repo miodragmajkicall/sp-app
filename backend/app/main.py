@@ -5,6 +5,7 @@ from .routes import tenants as tenants_routes
 from .routes import debug as debug_routes
 from .routes import cash as cash_routes
 from .routes import invoices as invoices_routes
+from .routes import tax as tax_routes
 
 tags_metadata = [
     {
@@ -33,6 +34,19 @@ tags_metadata = [
         ),
     },
     {
+        "name": "tax",
+        "description": (
+            "DUMMY modul za mjesečni porezni obračun po tenantu.\n\n"
+            "Ovaj modul koristi pojednostavljene (dummy) porezne stope i služi za razvoj i testiranje:\n"
+            "- sumarizacija mjesečnih prihoda i rashoda,\n"
+            "- izračun oporezive osnovice,\n"
+            "- izračun poreza i doprinosa,\n"
+            "- prikaz ukupne obaveze za uplatu.\n\n"
+            "**Napomena:** Ovo nije pravni savjet niti tačan model poreskog sistema, "
+            "već razvojni alat u okviru sp-app API-ja."
+        ),
+    },
+    {
         "name": "debug",
         "description": (
             "Interni i pomoćni endpointi za razvoj i debug. "
@@ -50,8 +64,10 @@ app = FastAPI(
         "- registraciju i upravljanje tenantima (klijentima aplikacije)\n"
         "- vođenje evidencije prihoda i rashoda po tenantu (cashbook modul)\n"
         "- izdavanje faktura sa stavkama i PDV obračunom (invoices modul)\n"
+        "- DUMMY porezni modul za razvoj i simulaciju mjesečnih obračuna (tax modul)\n"
         "- health-check endpointi za potrebe monitoringa i CI/CD\n\n"
-        "Dokumentacija je organizovana po tagovima: **health**, **tenants**, **cash**, **invoices** i **debug**."
+        "Dokumentacija je organizovana po tagovima: **health**, **tenants**, **cash**, "
+        "**invoices**, **tax** i **debug**."
     ),
     openapi_tags=tags_metadata,
 )
@@ -62,3 +78,4 @@ app.include_router(tenants_routes.router)
 app.include_router(debug_routes.router)
 app.include_router(cash_routes.router)
 app.include_router(invoices_routes.router)
+app.include_router(tax_routes.router)
