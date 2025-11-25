@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Column,
     Date,
     DateTime,
     ForeignKey,
+    Integer,
     Numeric,
     String,
     Text,
@@ -102,7 +104,8 @@ class Invoice(Base):
 
     __table_args__ = (
         UniqueConstraint(
-            "tenant_code", "invoice_number",
+            "tenant_code",
+            "invoice_number",
             name="uq_invoice_number_per_tenant",
         ),
     )
@@ -151,4 +154,58 @@ class InvoiceItem(Base):
         CheckConstraint("quantity > 0", name="ck_item_quantity_positive"),
         CheckConstraint("unit_price >= 0", name="ck_item_unit_price_nonneg"),
         CheckConstraint("vat_rate >= 0", name="ck_item_vat_rate_nonneg"),
+    )
+
+
+# ======================================================
+#  TAX MONTHLY RESULTS
+# ======================================================
+class TaxMonthlyResult(Base):
+    """
+    Persistirani mjesečni obračun poreza/doprinosa po tenantu.
+
+    Svaka kombinacija (tenant_code, year, month) može postojati
+    maksimalno jednom – jedinstven ključ služi i kao mehanizam
+    zaključavanja finalizovanog mjeseca.
+    """
+
+    __tablename__ = "tax_monthly_results"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    tenant_code = Column(
+        String(64),
+        ForeignKey("tenants.code", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    year = Column(Integer, nullable=False)
+    month = Column(Integer, nullable=False)
+
+    total_income = Column(Numeric(14, 2), nullable=False)
+    total_expense = Column(Numeric(14, 2), nullable=False)
+    taxable_base = Column(Numeric(14, 2), nullable=False)
+    income_tax = Column(Numeric(14, 2), nullable=False)
+    contributions_total = Column(Numeric(14, 2), nullable=False)
+    total_due = Column(Numeric(14, 2), nullable=False)
+
+    currency = Column(String(8), nullable=False, default="BAM")
+
+    # Za budućnost – trenutno ćemo uvijek snimati finalizovan obračun,
+    # ali polje ostavljamo kao bool flag radi fleksibilnosti.
+    is_final = Column(Boolean, nullable=False, default=True)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_code",
+            "year",
+            "month",
+            name="uq_tax_monthly_results_tenant_year_month",
+        ),
     )
