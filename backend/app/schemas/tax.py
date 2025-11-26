@@ -257,3 +257,94 @@ class MonthlyTaxStatusResponse(BaseModel):
             "da li je mjesec finalizovan i da li postoji obračun."
         ),
     )
+
+
+class YearlyTaxSummaryRead(BaseModel):
+    """
+    Reprezentacija GODIŠNJEG poreznog obračuna za jednog tenanta.
+
+    Ovaj model sabira finalizovane mjesečne rezultate iz `tax_monthly_results`
+    i vraća zbirne vrijednosti za cijelu godinu.
+    """
+
+    model_config = BaseConfig
+
+    year: int = Field(
+        ...,
+        ge=2000,
+        le=2100,
+        description="Godina za koju je urađen godišnji obračun.",
+        examples=[2025],
+    )
+    tenant_code: str = Field(
+        ...,
+        description="Šifra tenanta na kojeg se odnosi godišnji obračun.",
+        examples=["t-demo"],
+    )
+
+    months_included: int = Field(
+        ...,
+        ge=0,
+        le=12,
+        description=(
+            "Broj mjeseci koji su bili uključeni u godišnji obračun.\n"
+            "Tipično je to broj finalizovanih mjeseci u datoj godini."
+        ),
+        examples=[12],
+    )
+
+    total_income: Decimal = Field(
+        ...,
+        ge=0,
+        description=(
+            "Zbir svih `total_income` vrijednosti iz finalizovanih mjesečnih obračuna "
+            "za dati period."
+        ),
+        examples=[Decimal("60000.00")],
+    )
+    total_expense: Decimal = Field(
+        ...,
+        ge=0,
+        description=(
+            "Zbir svih `total_expense` vrijednosti iz finalizovanih mjesečnih obračuna "
+            "za dati period."
+        ),
+        examples=[Decimal("18000.00")],
+    )
+    taxable_base: Decimal = Field(
+        ...,
+        description=(
+            "Zbir svih mjesečnih `taxable_base` vrijednosti za godinu.\n"
+            "Za DUMMY model dovoljno je da se sabiraju već izračunate mjesečne osnovice."
+        ),
+        examples=[Decimal("42000.00")],
+    )
+    income_tax: Decimal = Field(
+        ...,
+        description=(
+            "Zbir svih mjesečnih `income_tax` vrijednosti za godinu.\n"
+            "Ovo predstavlja ukupni porez na dohodak za godinu."
+        ),
+        examples=[Decimal("4200.00")],
+    )
+    contributions_total: Decimal = Field(
+        ...,
+        description=(
+            "Zbir svih mjesečnih `contributions_total` vrijednosti za godinu.\n"
+            "Predstavlja ukupne doprinose (PIO, zdravstveno, nezaposlenost, itd.)."
+        ),
+        examples=[Decimal("10800.00")],
+    )
+    total_due: Decimal = Field(
+        ...,
+        description=(
+            "Zbir svih mjesečnih `total_due` vrijednosti (porez + doprinosi) "
+            "za godinu."
+        ),
+        examples=[Decimal("15000.00")],
+    )
+    currency: str = Field(
+        "BAM",
+        description="Valuta u kojoj su izraženi svi iznosi godišnjeg obračuna.",
+        examples=["BAM"],
+    )

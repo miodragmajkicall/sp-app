@@ -15,6 +15,7 @@ from app.schemas.tax import (
     MonthlyTaxStatusResponse,
     MonthlyTaxSummaryRead,
     TaxDummyConfig,
+    YearlyTaxSummaryRead,
 )
 
 router = APIRouter(
@@ -790,4 +791,121 @@ def monthly_tax_status(
         year=year,
         tenant_code=tenant,
         items=items,
+    )
+
+
+@router.get(
+    "/tax/yearly/preview",
+    response_model=YearlyTaxSummaryRead,
+    summary="Godišnji porezni obračun (preview) na osnovu finalizovanih mjeseci",
+    description=(
+        "Vraća **godišnji** porezni obračun za jednog tenanta na osnovu "
+        "finalizovanih mjesečnih rezultata u tabeli `tax_monthly_results`.\n\n"
+        "Logika:\n"
+        "- pročita sve zapise za (tenant_code, year) sa `is_final = true`\n"
+        "- sabere polja: `total_income`, `total_expense`, `taxable_base`, "
+        "`income_tax`, `contributions_total`, `total_due`\n"
+        "- vrati zbirne vrijednosti za cijelu godinu\n\n"
+        "Ako nema finalizovanih mjeseci za zadatu godinu, vraća se 0 za sve iznose "
+        "i `months_included = 0`."
+    ),
+    responses={
+        200: {
+            "description": "Uspješan preview godišnjeg poreznog obračuna.",
+        },
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
+                "Primjer poruke: `Missing X-Tenant-Code header`."
+            ),
+        },
+        422: {
+            "description": (
+                "Validation error – npr. godina van opsega ili pogrešan format "
+                "query parametara."
+            )
+        },
+    },
+)
+def yearly_tax_preview(
+    year: int = Query(
+        ...,
+        ge=2000,
+        le=2100,
+        description="Godina za koju se traži godišnji obračun.",
+        examples=[2025],
+    ),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description=(
+            "Šifra tenanta za kojeg se računa godišnji obračun.\n"
+            "Primjer: `frizer-mika`, `t-demo`."
+        ),
+    ),
+    db: Session = Depends(_get_session_dep),
+) -> YearlyTaxSummaryRead:
+    """
+    Godišnji porezni obračun na osnovu finalizovanih mjesečnih rezultata.
+
+    Ne radi novi proračun po formuli, već **sabira** već izračunate
+    mjesečne vrijednosti iz `tax_monthly_results` (DUMMY model).
+    """
+    tenant = _require_tenant(x_tenant_code)
+
+    rows = (
+        db.execute(
+            select(TaxMonthlyResult).where(
+                TaxMonthlyResult.tenant_code == tenant,
+                TaxMonthlyResult.year == year,
+                TaxMonthlyResult.is_final.is_(True),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    if not rows:
+        # Nema finalizovanih mjeseci – vraćamo "prazan" godišnji obračun
+        return YearlyTaxSummaryRead(
+            year=year,
+            tenant_code=tenant,
+            months_included=0,
+            total_income=Decimal("0.00"),
+            total_expense=Decimal("0.00"),
+            taxable_base=Decimal("0.00"),
+            income_tax=Decimal("0.00"),
+            contributions_total=Decimal("0.00"),
+            total_due=Decimal("0.00"),
+            currency="BAM",
+        )
+
+    total_income = Decimal("0.00")
+    total_expense = Decimal("0.00")
+    taxable_base = Decimal("0.00")
+    income_tax = Decimal("0.00")
+    contributions_total = Decimal("0.00")
+    total_due = Decimal("0.00")
+    currency = rows[0].currency or "BAM"
+
+    for row in rows:
+        total_income += row.total_income
+        total_expense += row.total_expense
+        taxable_base += row.taxable_base
+        income_tax += row.income_tax
+        contributions_total += row.contributions_total
+        total_due += row.total_due
+
+    return YearlyTaxSummaryRead(
+        year=year,
+        tenant_code=tenant,
+        months_included=len(rows),
+        total_income=total_income,
+        total_expense=total_expense,
+        taxable_base=taxable_base,
+        income_tax=income_tax,
+        contributions_total=contributions_total,
+        total_due=total_due,
+        currency=currency,
     )
