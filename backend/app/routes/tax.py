@@ -192,6 +192,7 @@ def _aggregate_monthly_income_and_expense(
         "`GET /tax/monthly/preview?year=2025&month=1&total_income=5000&total_expense=1500` "
         "sa headerom `X-Tenant-Code: t-demo`."
     ),
+    operation_id="tax_monthly_preview",
     responses={
         200: {
             "description": "Uspješna simulacija mjesečnog poreznog obračuna.",
@@ -219,6 +220,11 @@ def _aggregate_monthly_income_and_expense(
                 "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
                 "Primjer poruke: `Missing X-Tenant-Code header`."
             ),
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Missing X-Tenant-Code header"}
+                }
+            },
         },
         422: {
             "description": (
@@ -313,6 +319,7 @@ def preview_monthly_tax(
         "`GET /tax/monthly/auto?year=2025&month=1` "
         "sa headerom `X-Tenant-Code: t-demo`."
     ),
+    operation_id="tax_monthly_auto",
     responses={
         200: {
             "description": (
@@ -343,6 +350,11 @@ def preview_monthly_tax(
                 "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
                 "Primjer poruke: `Missing X-Tenant-Code header`."
             ),
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Missing X-Tenant-Code header"}
+                }
+            },
         },
         422: {
             "description": (
@@ -452,10 +464,15 @@ def auto_monthly_tax(
         "u tabelu `tax_monthly_results`.\n\n"
         "Ako za isti `(tenant_code, year, month)` već postoji zapis, finalize "
         "se odbija sa HTTP 400.\n\n"
+        "Nakon finalizacije:\n"
+        "- svi pokušaji **izmjene ili brisanja** podataka koji utiču na taj period "
+        "(fakture / cash unosi u tom mjesecu) biće blokirani i vratiće HTTP 400 "
+        "sa porukom tipa `Cannot modify data for finalized tax period YYYY-MM`.\n\n"
         "Primjer poziva:\n"
         "`POST /tax/monthly/finalize?year=2025&month=1` "
         "sa headerom `X-Tenant-Code: t-demo`."
     ),
+    operation_id="tax_monthly_finalize",
     responses={
         200: {
             "description": (
@@ -489,6 +506,22 @@ def auto_monthly_tax(
                 "- period je već finalizovan → "
                 "`Monthly tax result for this period is already finalized`."
             ),
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "missing_tenant": {
+                            "summary": "Nedostaje X-Tenant-Code",
+                            "value": {"detail": "Missing X-Tenant-Code header"},
+                        },
+                        "already_finalized": {
+                            "summary": "Mjesec već finalizovan",
+                            "value": {
+                                "detail": "Monthly tax result for this period is already finalized"
+                            },
+                        },
+                    }
+                }
+            },
         },
         422: {
             "description": (
@@ -535,8 +568,8 @@ def finalize_monthly_tax(
 
     Nakon što je mjesec finalizovan:
     - /tax/monthly/auto će vraćati persistirani rezultat (bez novog preračuna).
-    - U narednim fazama ćemo dodati validaciju u invoices/cash module kako bi
-      se spriječile izmjene podataka za već finalizovane periode.
+    - pokušaji izmjene/brisanja faktura i cash unosa u tom mjesecu na nivou
+      modela će biti blokirani (globalni business lock u modelima).
     """
     tenant = _require_tenant(x_tenant_code)
     cfg = TAX_DUMMY_CONFIG
@@ -619,6 +652,7 @@ def finalize_monthly_tax(
         "mapiran u `MonthlyTaxSummaryRead` model.\n\n"
         "Ako za dati period nema finalizovanih obračuna, vraća se prazna lista."
     ),
+    operation_id="tax_monthly_history",
     responses={
         200: {
             "description": (
@@ -631,6 +665,11 @@ def finalize_monthly_tax(
                 "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
                 "Primjer poruke: `Missing X-Tenant-Code header`."
             ),
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Missing X-Tenant-Code header"}
+                }
+            },
         },
         422: {
             "description": (
@@ -705,6 +744,7 @@ def monthly_tax_history(
         "postoji bilo kakav obračun (`has_data`).\n\n"
         "Ovo je idealno za kalendarski prikaz u UI-ju (npr. 'koji mjeseci su zaključani')."
     ),
+    operation_id="tax_monthly_status",
     responses={
         200: {
             "description": (
@@ -717,6 +757,11 @@ def monthly_tax_history(
                 "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
                 "Primjer poruke: `Missing X-Tenant-Code header`."
             ),
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Missing X-Tenant-Code header"}
+                }
+            },
         },
         422: {
             "description": (
@@ -799,7 +844,7 @@ def monthly_tax_status(
     response_model=YearlyTaxSummaryRead,
     summary="Godišnji porezni obračun (preview) na osnovu finalizovanih mjeseci",
     description=(
-        "Vraća **godišnji** porezni obračun za jednog tenanta na osnovu "
+        "Vraća **godišnji** porezni obračun za jednog tenenta na osnovu "
         "finalizovanih mjesečnih rezultata u tabeli `tax_monthly_results`.\n\n"
         "Logika:\n"
         "- pročita sve zapise za (tenant_code, year) sa `is_final = true`\n"
@@ -809,6 +854,7 @@ def monthly_tax_status(
         "Ako nema finalizovanih mjeseci za zadatu godinu, vraća se 0 za sve iznose "
         "i `months_included = 0`."
     ),
+    operation_id="tax_yearly_preview",
     responses={
         200: {
             "description": "Uspješan preview godišnjeg poreznog obračuna.",
@@ -819,6 +865,11 @@ def monthly_tax_status(
                 "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
                 "Primjer poruke: `Missing X-Tenant-Code header`."
             ),
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Missing X-Tenant-Code header"}
+                }
+            },
         },
         422: {
             "description": (
@@ -925,8 +976,12 @@ def yearly_tax_preview(
         "Ako za dati `(tenant_code, year)` već postoji zapis u `tax_yearly_results`, "
         "poziv se odbija sa HTTP 400.\n"
         "Ako nema nijednog finalizovanog mjeseca za tu godinu, finalize se takođe "
-        "odbija (HTTP 400)."
+        "odbija (HTTP 400).\n\n"
+        "Nakon godišnje finalizacije:\n"
+        "- podaci na nivou mjeseca ostaju zaključani (već zaključani mjesečni periodi),\n"
+        "- godišnji rezultat se tretira kao referentni summary za izvještaje i uplate."
     ),
+    operation_id="tax_yearly_finalize",
     responses={
         200: {
             "description": (
@@ -945,6 +1000,31 @@ def yearly_tax_preview(
                 "- nema finalizovanih mjesečnih rezultata za godinu → "
                 "`No finalized monthly tax results for this year; cannot finalize yearly tax result`"
             ),
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "missing_tenant": {
+                            "summary": "Nedostaje X-Tenant-Code",
+                            "value": {"detail": "Missing X-Tenant-Code header"},
+                        },
+                        "already_finalized": {
+                            "summary": "Godišnji rezultat već finalizovan",
+                            "value": {
+                                "detail": "Yearly tax result for this year is already finalized"
+                            },
+                        },
+                        "no_monthly_data": {
+                            "summary": "Nema finalizovanih mjeseci za godinu",
+                            "value": {
+                                "detail": (
+                                    "No finalized monthly tax results for this year; "
+                                    "cannot finalize yearly tax result"
+                                )
+                            },
+                        },
+                    }
+                }
+            },
         },
         422: {
             "description": (

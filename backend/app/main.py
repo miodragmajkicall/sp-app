@@ -1,4 +1,5 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from .routes import health as health_routes
 from .routes import tenants as tenants_routes
@@ -6,6 +7,8 @@ from .routes import debug as debug_routes
 from .routes import cash as cash_routes
 from .routes import invoices as invoices_routes
 from .routes import tax as tax_routes
+from .models import FinalizedPeriodModificationError
+from .schemas.tax import ErrorResponse
 
 tags_metadata = [
     {
@@ -71,6 +74,26 @@ app = FastAPI(
     ),
     openapi_tags=tags_metadata,
 )
+
+
+@app.exception_handler(FinalizedPeriodModificationError)
+async def finalized_period_modification_handler(
+    request: Request, exc: FinalizedPeriodModificationError
+) -> JSONResponse:
+    """
+    Globalni handler koji business lock grešku pretvara u jasan 400 odgovor.
+    """
+    payload = ErrorResponse(
+        detail=(
+            f"Cannot modify data for finalized tax period "
+            f"{exc.year:04d}-{exc.month:02d}."
+        )
+    )
+    return JSONResponse(
+        status_code=400,
+        content=payload.model_dump(),
+    )
+
 
 # redoslijed nije kritičan, ali health prvo radi brzog pinga
 app.include_router(health_routes.router)

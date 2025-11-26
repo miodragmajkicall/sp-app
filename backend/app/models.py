@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from sqlalchemy import (
     BigInteger,
     Boolean,
@@ -14,10 +16,29 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    event,
 )
-from sqlalchemy.orm import declarative_base, relationship
+from sqlalchemy.orm import declarative_base, relationship, object_session
 
 Base = declarative_base()
+
+
+class FinalizedPeriodModificationError(Exception):
+    """
+    Business greška koja označava pokušaj izmjene ili brisanja podataka
+    koji pripadaju već finalizovanom poreznom mjesecu.
+    """
+
+    def __init__(self, tenant_code: str, year: int, month: int) -> None:
+        self.tenant_code = tenant_code
+        self.year = year
+        self.month = month
+        message = (
+            f"Cannot modify data for finalized tax period "
+            f"{year:04d}-{month:02d} for tenant {tenant_code}."
+        )
+        super().__init__(message)
+
 
 # ======================================================
 #  TENANTS
@@ -261,3 +282,88 @@ class TaxYearlyResult(Base):
             name="uq_tax_yearly_results_tenant_year",
         ),
     )
+
+
+# ======================================================
+#  BUSINESS LOCKS ZA FINALIZOVANE MJESECE
+# ======================================================
+
+
+def _ensure_month_not_finalized(obj: object, date_value: date | None) -> None:
+    """
+    Provjerava da li je mjesec za dati tenant_code i datum već finalizovan
+    u tabeli tax_monthly_results. Ako jeste → baca FinalizedPeriodModificationError.
+
+    :param obj: SQLAlchemy instance (Invoice ili CashEntry) sa tenant_code fieldom.
+    :param date_value: issue_date / entry_date koji određuje (year, month).
+    """
+    if date_value is None:
+        return
+
+    sess = object_session(obj)
+    if sess is None:
+        # Nema aktivne sesije – nema ni provjere.
+        return
+
+    tenant_code = getattr(obj, "tenant_code", None)
+    if not tenant_code:
+        # Ako model iz nekog razloga nema tenant_code, ne zaključavamo.
+        return
+
+    year = date_value.year
+    month = date_value.month
+
+    exists = (
+        sess.query(TaxMonthlyResult)
+        .filter(
+            TaxMonthlyResult.tenant_code == tenant_code,
+            TaxMonthlyResult.year == year,
+            TaxMonthlyResult.month == month,
+            TaxMonthlyResult.is_final.is_(True),
+        )
+        .first()
+        is not None
+    )
+
+    if exists:
+        raise FinalizedPeriodModificationError(
+            tenant_code=tenant_code,
+            year=year,
+            month=month,
+        )
+
+
+@event.listens_for(Invoice, "before_update")
+def _invoice_before_update(mapper, connection, target: Invoice) -> None:
+    """
+    Blokira izmjenu fakture ako pripada već finalizovanom poreznom mjesecu.
+    """
+    if target.issue_date:
+        _ensure_month_not_finalized(target, target.issue_date)
+
+
+@event.listens_for(Invoice, "before_delete")
+def _invoice_before_delete(mapper, connection, target: Invoice) -> None:
+    """
+    Blokira brisanje fakture ako pripada već finalizovanom poreznom mjesecu.
+    """
+    if target.issue_date:
+        _ensure_month_not_finalized(target, target.issue_date)
+
+
+@event.listens_for(CashEntry, "before_update")
+def _cash_entry_before_update(mapper, connection, target: CashEntry) -> None:
+    """
+    Blokira izmjenu cash unosa ako pripada već finalizovanom poreznom mjesecu.
+    """
+    if target.entry_date:
+        _ensure_month_not_finalized(target, target.entry_date)
+
+
+@event.listens_for(CashEntry, "before_delete")
+def _cash_entry_before_delete(mapper, connection, target: CashEntry) -> None:
+    """
+    Blokira brisanje cash unosa ako pripada već finalizovanom poreznom mjesecu.
+    """
+    if target.entry_date:
+        _ensure_month_not_finalized(target, target.entry_date)
