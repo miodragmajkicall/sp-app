@@ -191,7 +191,7 @@ class TaxMonthlyResult(Base):
 
     currency = Column(String(8), nullable=False, default="BAM")
 
-    # Za budućnost – trenutno ćemo uvijek snimati finalizovan obračun,
+    # Za budućnost – trenutno uvijek snimamo finalizovan obračun,
     # ali polje ostavljamo kao bool flag radi fleksibilnosti.
     is_final = Column(Boolean, nullable=False, default=True)
 
@@ -207,5 +207,57 @@ class TaxMonthlyResult(Base):
             "year",
             "month",
             name="uq_tax_monthly_results_tenant_year_month",
+        ),
+    )
+
+
+# ======================================================
+#  TAX YEARLY RESULTS
+# ======================================================
+class TaxYearlyResult(Base):
+    """
+    Persistirani GODIŠNJI obračun poreza/doprinosa po tenantu.
+
+    Svaka kombinacija (tenant_code, year) može postojati maksimalno jednom.
+    Ovaj zapis predstavlja zaključani godišnji rezultat, izveden iz
+    finalizovanih mjeseci u `tax_monthly_results`.
+    """
+
+    __tablename__ = "tax_yearly_results"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    tenant_code = Column(
+        String(64),
+        ForeignKey("tenants.code", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    year = Column(Integer, nullable=False)
+    months_included = Column(Integer, nullable=False)
+
+    total_income = Column(Numeric(14, 2), nullable=False)
+    total_expense = Column(Numeric(14, 2), nullable=False)
+    taxable_base = Column(Numeric(14, 2), nullable=False)
+    income_tax = Column(Numeric(14, 2), nullable=False)
+    contributions_total = Column(Numeric(14, 2), nullable=False)
+    total_due = Column(Numeric(14, 2), nullable=False)
+
+    currency = Column(String(8), nullable=False, default="BAM")
+
+    # Godišnji rezultat je uvijek finalan – flag ostavljamo radi konzistentnosti.
+    is_final = Column(Boolean, nullable=False, default=True)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_code",
+            "year",
+            name="uq_tax_yearly_results_tenant_year",
         ),
     )

@@ -9,7 +9,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import CashEntry, Invoice, TaxMonthlyResult
+from app.models import CashEntry, Invoice, TaxMonthlyResult, TaxYearlyResult
 from app.schemas.tax import (
     ErrorResponse,
     MonthlyTaxStatusResponse,
@@ -448,7 +448,7 @@ def auto_monthly_tax(
     response_model=MonthlyTaxSummaryRead,
     summary="Finalizacija mjesečnog obračuna i zapis u bazu",
     description=(
-        "Finalizuje mjesečni porezni obračun za jednog tenanta i trajno ga upisuje "
+        "Finalizuje mjesečni porezni obračun za jednog tenenta i trajno ga upisuje "
         "u tabelu `tax_monthly_results`.\n\n"
         "Ako za isti `(tenant_code, year, month)` već postoji zapis, finalize "
         "se odbija sa HTTP 400.\n\n"
@@ -901,6 +901,169 @@ def yearly_tax_preview(
         year=year,
         tenant_code=tenant,
         months_included=len(rows),
+        total_income=total_income,
+        total_expense=total_expense,
+        taxable_base=taxable_base,
+        income_tax=income_tax,
+        contributions_total=contributions_total,
+        total_due=total_due,
+        currency=currency,
+    )
+
+
+@router.post(
+    "/tax/yearly/finalize",
+    response_model=YearlyTaxSummaryRead,
+    summary="Finalizacija godišnjeg poreznog obračuna i zapis u bazu",
+    description=(
+        "Finalizuje godišnji porezni obračun za jednog tenanta i trajno ga upisuje "
+        "u tabelu `tax_yearly_results`.\n\n"
+        "Logika:\n"
+        "- pročita sve finalizovane mjesečne rezultate iz `tax_monthly_results` za godinu\n"
+        "- sabere polja (kao /tax/yearly/preview)\n"
+        "- upiše rezultat u `tax_yearly_results` kao zaključan zapis\n\n"
+        "Ako za dati `(tenant_code, year)` već postoji zapis u `tax_yearly_results`, "
+        "poziv se odbija sa HTTP 400.\n"
+        "Ako nema nijednog finalizovanog mjeseca za tu godinu, finalize se takođe "
+        "odbija (HTTP 400)."
+    ),
+    responses={
+        200: {
+            "description": (
+                "Uspješno finalizovan godišnji obračun. Vraća zaključani rezultat "
+                "kao `YearlyTaxSummaryRead`."
+            )
+        },
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "Poslovna greška pri finalizaciji.\n\n"
+                "Tipični scenariji:\n"
+                "- nedostaje `X-Tenant-Code` header → `Missing X-Tenant-Code header`\n"
+                "- godišnji rezultat je već finalizovan → "
+                "`Yearly tax result for this year is already finalized`\n"
+                "- nema finalizovanih mjesečnih rezultata za godinu → "
+                "`No finalized monthly tax results for this year; cannot finalize yearly tax result`"
+            ),
+        },
+        422: {
+            "description": (
+                "Validation error – npr. godina van opsega ili pogrešan format "
+                "query parametara."
+            )
+        },
+    },
+)
+def yearly_tax_finalize(
+    year: int = Query(
+        ...,
+        ge=2000,
+        le=2100,
+        description="Godina za koju se finalizuje godišnji obračun.",
+        examples=[2025],
+    ),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description=(
+            "Šifra tenanta za kojeg finalizujemo godišnji obračun.\n"
+            "Primjer: `frizer-mika`, `t-demo`."
+        ),
+    ),
+    db: Session = Depends(_get_session_dep),
+) -> YearlyTaxSummaryRead:
+    """
+    Finalizuje godišnji porezni obračun za jednog tenanta na osnovu
+    već finalizovanih mjesečnih rezultata.
+
+    1. Provjerava da li već postoji godišnji zapis u `tax_yearly_results`
+       za (tenant_code, year). Ako postoji → 400.
+    2. Učita sve finalizovane mjesece iz `tax_monthly_results` (is_final=True).
+       Ako nema nijednog → 400.
+    3. Sabere polja (isti algoritam kao /tax/yearly/preview).
+    4. Snimi rezultat u `tax_yearly_results` kao finalizovan (`is_final=True`).
+    5. Vrati zbirne vrijednosti kao `YearlyTaxSummaryRead`.
+    """
+    tenant = _require_tenant(x_tenant_code)
+
+    # 1) Da li je godina već finalizovana?
+    existing = db.execute(
+        select(TaxYearlyResult).where(
+            TaxYearlyResult.tenant_code == tenant,
+            TaxYearlyResult.year == year,
+        )
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="Yearly tax result for this year is already finalized",
+        )
+
+    # 2) Učitavanje finalizovanih mjesečnih rezultata
+    monthly_rows = (
+        db.execute(
+            select(TaxMonthlyResult).where(
+                TaxMonthlyResult.tenant_code == tenant,
+                TaxMonthlyResult.year == year,
+                TaxMonthlyResult.is_final.is_(True),
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    if not monthly_rows:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "No finalized monthly tax results for this year; "
+                "cannot finalize yearly tax result"
+            ),
+        )
+
+    # 3) Sabiranje vrijednosti (isti princip kao /tax/yearly/preview)
+    total_income = Decimal("0.00")
+    total_expense = Decimal("0.00")
+    taxable_base = Decimal("0.00")
+    income_tax = Decimal("0.00")
+    contributions_total = Decimal("0.00")
+    total_due = Decimal("0.00")
+    currency = monthly_rows[0].currency or "BAM"
+
+    for row in monthly_rows:
+        total_income += row.total_income
+        total_expense += row.total_expense
+        taxable_base += row.taxable_base
+        income_tax += row.income_tax
+        contributions_total += row.contributions_total
+        total_due += row.total_due
+
+    months_included = len(monthly_rows)
+
+    # 4) Snimanje u tax_yearly_results
+    db_obj = TaxYearlyResult(
+        tenant_code=tenant,
+        year=year,
+        months_included=months_included,
+        total_income=total_income,
+        total_expense=total_expense,
+        taxable_base=taxable_base,
+        income_tax=income_tax,
+        contributions_total=contributions_total,
+        total_due=total_due,
+        currency=currency,
+        is_final=True,
+    )
+    db.add(db_obj)
+    db.commit()
+    db.refresh(db_obj)
+
+    # 5) Vraćamo YearlyTaxSummaryRead
+    return YearlyTaxSummaryRead(
+        year=year,
+        tenant_code=tenant,
+        months_included=months_included,
         total_income=total_income,
         total_expense=total_expense,
         taxable_base=taxable_base,
