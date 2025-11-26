@@ -24,7 +24,7 @@ class TaxDummyConfig(BaseModel):
     income_tax_rate: Decimal = Field(
         ...,
         description=(
-            "Stopa poreza na dohodak. "
+            "Stopa poreza na dohodak.\n\n"
             "Primjer: 0.10 znači 10% poreza na oporezivu osnovicu."
         ),
         examples=[Decimal("0.10")],
@@ -32,7 +32,7 @@ class TaxDummyConfig(BaseModel):
     pension_contribution_rate: Decimal = Field(
         ...,
         description=(
-            "Stopa doprinosa za PIO (penziono). "
+            "Stopa doprinosa za PIO (penziono).\n\n"
             "Primjer: 0.18 znači 18% na odgovarajuću osnovicu."
         ),
         examples=[Decimal("0.18")],
@@ -40,7 +40,7 @@ class TaxDummyConfig(BaseModel):
     health_contribution_rate: Decimal = Field(
         ...,
         description=(
-            "Stopa doprinosa za zdravstveno osiguranje. "
+            "Stopa doprinosa za zdravstveno osiguranje.\n\n"
             "Primjer: 0.12 znači 12%."
         ),
         examples=[Decimal("0.12")],
@@ -48,7 +48,7 @@ class TaxDummyConfig(BaseModel):
     unemployment_contribution_rate: Decimal = Field(
         ...,
         description=(
-            "Stopa doprinosa za osiguranje od nezaposlenosti. "
+            "Stopa doprinosa za osiguranje od nezaposlenosti.\n\n"
             "Primjer: 0.015 znači 1.5%."
         ),
         examples=[Decimal("0.015")],
@@ -56,8 +56,8 @@ class TaxDummyConfig(BaseModel):
     flat_costs_rate: Decimal = Field(
         ...,
         description=(
-            "Procenat priznatih paušalnih troškova. "
-            "Primjer: 0.30 znači da se 30% prihoda tretira kao trošak. "
+            "Procenat priznatih paušalnih troškova.\n\n"
+            "Primjer: 0.30 znači da se 30% prihoda tretira kao trošak.\n"
             "Ovo je DUMMY vrijednost isključivo za simulaciju u aplikaciji."
         ),
         examples=[Decimal("0.30")],
@@ -100,9 +100,9 @@ class MonthlyTaxSummaryRead(BaseModel):
     tenant_code: Optional[str] = Field(
         None,
         description=(
-            "Kod tenanta na kog se odnosi obračun. "
+            "Kod tenanta na kog se odnosi obračun.\n"
             "Ovo je opcioni prikazni podatak – u većini slučajeva "
-            "tenant se određuje preko X-Tenant-Code headera."
+            "tenant se određuje preko `X-Tenant-Code` headera."
         ),
         examples=["t-demo"],
     )
@@ -124,7 +124,8 @@ class MonthlyTaxSummaryRead(BaseModel):
         ...,
         description=(
             "Osnovica za oporezivanje nakon primjene paušalnih troškova "
-            "i ostalih umanjenja. Tipično: (total_income - priznati_troškovi)."
+            "i ostalih umanjenja.\n"
+            "Tipično: `total_income - priznati_troškovi - total_expense`."
         ),
         examples=[Decimal("3500.00")],
     )
@@ -146,7 +147,7 @@ class MonthlyTaxSummaryRead(BaseModel):
     total_due: Decimal = Field(
         ...,
         description=(
-            "Ukupna obaveza za uplatu (porez + doprinosi) za dati period. "
+            "Ukupna obaveza za uplatu (porez + doprinosi) za dati period.\n"
             "Ovo je glavni broj koji SP korisnika zanima."
         ),
         examples=[Decimal("1250.00")],
@@ -156,8 +157,9 @@ class MonthlyTaxSummaryRead(BaseModel):
         False,
         description=(
             "Da li je ovaj mjesečni obračun označen kao finaliziran (zaključan) "
-            "u sistemu. Za početak će se koristiti samo za prikaz (preview), "
-            "kasnije možemo dodati mehanizam 'zaključavanja' obračuna."
+            "u sistemu.\n"
+            "Kod preview/auto obračuna je obično `false`, a kod finalizovanih "
+            "rezultata `true`."
         ),
         examples=[False],
     )
@@ -166,4 +168,26 @@ class MonthlyTaxSummaryRead(BaseModel):
         "BAM",
         description="Valuta u kojoj su izraženi svi iznosi.",
         examples=["BAM"],
+    )
+
+
+class ErrorResponse(BaseModel):
+    """
+    Standardizovani model za opis grešaka na TAX endpointima.
+
+    Koristi se u OpenAPI dokumentaciji za tipične 4xx scenarije:
+    - nedostaje X-Tenant-Code header,
+    - pokušaj finalizacije već finalizovanog perioda,
+    - drugi poslovni 4xx scenariji.
+    """
+
+    model_config = BaseConfig
+
+    detail: str = Field(
+        ...,
+        description="Ljudski čitljiv opis greške.",
+        examples=[
+            "Missing X-Tenant-Code header",
+            "Monthly tax result for this period is already finalized",
+        ],
     )

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
 from app.models import CashEntry, Invoice, TaxMonthlyResult
-from app.schemas.tax import TaxDummyConfig, MonthlyTaxSummaryRead
+from app.schemas.tax import ErrorResponse, MonthlyTaxSummaryRead, TaxDummyConfig
 
 router = APIRouter(
     tags=["tax"],
@@ -176,7 +176,51 @@ def _aggregate_monthly_income_and_expense(
 @router.get(
     "/tax/monthly/preview",
     response_model=MonthlyTaxSummaryRead,
-    summary="Preview mjesečnog poreznog obračuna (DUMMY)",
+    summary="Preview mjesečnog poreznog obračuna (ručni unos)",
+    description=(
+        "Vraća **simulaciju** mjesečnog poreznog obračuna za jednog tenanta na osnovu "
+        "ručno proslijeđenih ukupnih prihoda i rashoda za dati mjesec.\n\n"
+        "Tipični use-case: frontend već ima sumirane podatke (npr. iz izvještaja) "
+        "i želi da prikaže brzi preview poreza i doprinosa prije finalizacije.\n\n"
+        "Primjer poziva:\n"
+        "`GET /tax/monthly/preview?year=2025&month=1&total_income=5000&total_expense=1500` "
+        "sa headerom `X-Tenant-Code: t-demo`."
+    ),
+    responses={
+        200: {
+            "description": "Uspješna simulacija mjesečnog poreznog obračuna.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "year": 2025,
+                        "month": 1,
+                        "tenant_code": "t-demo",
+                        "total_income": "5000.00",
+                        "total_expense": "1500.00",
+                        "taxable_base": "2000.00",
+                        "income_tax": "200.00",
+                        "contributions_total": "520.00",
+                        "total_due": "720.00",
+                        "is_final": False,
+                        "currency": "BAM",
+                    }
+                }
+            },
+        },
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
+                "Primjer poruke: `Missing X-Tenant-Code header`."
+            ),
+        },
+        422: {
+            "description": (
+                "Validation error – npr. godina/mjesec van opsega ili pogrešan format "
+                "brojeva u query parametrima."
+            )
+        },
+    },
 )
 def preview_monthly_tax(
     year: int = Query(
@@ -254,6 +298,53 @@ def preview_monthly_tax(
     "/tax/monthly/auto",
     response_model=MonthlyTaxSummaryRead,
     summary="Automatski mjesečni obračun iz invoices + cash (DUMMY)",
+    description=(
+        "Automatski mjesečni porezni obračun za jednog tenanta na osnovu podataka "
+        "iz baze (`invoices` + `cash_entries`).\n\n"
+        "Ako već postoji finalizovan rezultat u `tax_monthly_results`, vraća se "
+        "persistirani obračun umjesto novog preračuna.\n\n"
+        "Primjer poziva:\n"
+        "`GET /tax/monthly/auto?year=2025&month=1` "
+        "sa headerom `X-Tenant-Code: t-demo`."
+    ),
+    responses={
+        200: {
+            "description": (
+                "Uspješan automatski obračun ili vraćen već finalizovan rezultat "
+                "za zadati mjesec."
+            ),
+            "content": {
+                "application/json": {
+                    "example": {
+                        "year": 2025,
+                        "month": 1,
+                        "tenant_code": "t-demo",
+                        "total_income": "5000.00",
+                        "total_expense": "1500.00",
+                        "taxable_base": "2000.00",
+                        "income_tax": "200.00",
+                        "contributions_total": "520.00",
+                        "total_due": "720.00",
+                        "is_final": True,
+                        "currency": "BAM",
+                    }
+                }
+            },
+        },
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
+                "Primjer poruke: `Missing X-Tenant-Code header`."
+            ),
+        },
+        422: {
+            "description": (
+                "Validation error – npr. godina/mjesec van opsega ili pogrešan format "
+                "query parametara."
+            )
+        },
+    },
 )
 def auto_monthly_tax(
     year: int = Query(
@@ -350,6 +441,56 @@ def auto_monthly_tax(
     "/tax/monthly/finalize",
     response_model=MonthlyTaxSummaryRead,
     summary="Finalizacija mjesečnog obračuna i zapis u bazu",
+    description=(
+        "Finalizuje mjesečni porezni obračun za jednog tenanta i trajno ga upisuje "
+        "u tabelu `tax_monthly_results`.\n\n"
+        "Ako za isti `(tenant_code, year, month)` već postoji zapis, finalize "
+        "se odbija sa HTTP 400.\n\n"
+        "Primjer poziva:\n"
+        "`POST /tax/monthly/finalize?year=2025&month=1` "
+        "sa headerom `X-Tenant-Code: t-demo`."
+    ),
+    responses={
+        200: {
+            "description": (
+                "Uspješno finalizovan mjesečni obračun. Vraća zaključani rezultat "
+                "sa `is_final=true`."
+            ),
+            "content": {
+                "application/json": {
+                    "example": {
+                        "year": 2025,
+                        "month": 1,
+                        "tenant_code": "t-demo",
+                        "total_income": "5000.00",
+                        "total_expense": "1500.00",
+                        "taxable_base": "2000.00",
+                        "income_tax": "200.00",
+                        "contributions_total": "520.00",
+                        "total_due": "720.00",
+                        "is_final": True,
+                        "currency": "BAM",
+                    }
+                }
+            },
+        },
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "Poslovna greška pri finalizaciji.\n\n"
+                "Tipični scenariji:\n"
+                "- nedostaje `X-Tenant-Code` header → `Missing X-Tenant-Code header`\n"
+                "- period je već finalizovan → "
+                "`Monthly tax result for this period is already finalized`."
+            ),
+        },
+        422: {
+            "description": (
+                "Validation error – npr. godina/mjesec van opsega ili pogrešan format "
+                "query parametara."
+            )
+        },
+    },
 )
 def finalize_monthly_tax(
     year: int = Query(
@@ -383,8 +524,8 @@ def finalize_monthly_tax(
        za zadati (tenant_code, year, month). Ako postoji → 400.
     2. Agregira prihode/rashode iz invoices + cash_entries (ista logika kao /auto).
     3. Primjenjuje DUMMY obračun (_compute_monthly_summary).
-    4. Snima rezultat u `tax_monthly_results` kao finalizovan (is_final=True).
-    5. Vraća izračunati rezultat sa is_final=True.
+    4. Snima rezultat u `tax_monthly_results` kao finalizovan (`is_final=True`).
+    5. Vraća izračunati rezultat sa `is_final=True`.
 
     Nakon što je mjesec finalizovan:
     - /tax/monthly/auto će vraćati persistirani rezultat (bez novog preračuna).
@@ -430,8 +571,8 @@ def finalize_monthly_tax(
     # 4) Snimanje u bazu kao finalizovan rezultat
     db_obj = TaxMonthlyResult(
         tenant_code=tenant,
-        year=year,
-        month=month,
+        year=summary.year,
+        month=summary.month,
         total_income=summary.total_income,
         total_expense=summary.total_expense,
         taxable_base=summary.taxable_base,
