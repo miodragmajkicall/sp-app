@@ -285,6 +285,56 @@ class TaxYearlyResult(Base):
 
 
 # ======================================================
+#  TAX MONTHLY FINALIZE HISTORY (AUDIT LOG)
+# ======================================================
+class TaxMonthlyFinalizeHistory(Base):
+    """
+    Audit log za operacije nad mjesečnim poreznim obračunom.
+
+    Svaki PUT/POST finalize (i kasnije eventualni unlock) upisuje jedan red:
+    - snapshot finansijskih vrijednosti u trenutku akcije
+    - metadata o tome ko je i kada izvršio akciju
+    """
+
+    __tablename__ = "tax_monthly_finalize_history"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    tenant_code = Column(
+        String(64),
+        ForeignKey("tenants.code", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    year = Column(Integer, nullable=False)
+    month = Column(Integer, nullable=False)
+
+    # Snapshot vrijednosti iz tax_monthly_results
+    total_income = Column(Numeric(14, 2), nullable=False)
+    total_expense = Column(Numeric(14, 2), nullable=False)
+    taxable_base = Column(Numeric(14, 2), nullable=False)
+    income_tax = Column(Numeric(14, 2), nullable=False)
+    contributions_total = Column(Numeric(14, 2), nullable=False)
+    total_due = Column(Numeric(14, 2), nullable=False)
+
+    currency = Column(String(8), nullable=False, default="BAM")
+
+    # Metadata o akciji
+    action = Column(
+        String(32),
+        nullable=False,
+        default="finalize",  # kasnije: 'unlock', 're-finalize', itd.
+    )
+    triggered_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    triggered_by = Column(String(128), nullable=True)
+    note = Column(Text, nullable=True)
+
+
+# ======================================================
 #  BUSINESS LOCKS ZA FINALIZOVANE MJESECE
 # ======================================================
 

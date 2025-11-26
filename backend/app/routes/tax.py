@@ -9,7 +9,13 @@ from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import CashEntry, Invoice, TaxMonthlyResult, TaxYearlyResult
+from app.models import (
+    CashEntry,
+    Invoice,
+    TaxMonthlyResult,
+    TaxYearlyResult,
+    TaxMonthlyFinalizeHistory,
+)
 from app.schemas.tax import (
     ErrorResponse,
     MonthlyTaxStatusResponse,
@@ -311,7 +317,7 @@ def preview_monthly_tax(
     response_model=MonthlyTaxSummaryRead,
     summary="Automatski mjesečni obračun iz invoices + cash (DUMMY)",
     description=(
-        "Automatski mjesečni porezni obračun za jednog tenanta na osnovu podataka "
+        "Automatski mjesečni porezni obračun za jednog tenenta na osnovu podataka "
         "iz baze (`invoices` + `cash_entries`).\n\n"
         "Ako već postoji finalizovan rezultat u `tax_monthly_results`, vraća se "
         "persistirani obračun umjesto novog preračuna.\n\n"
@@ -468,6 +474,8 @@ def auto_monthly_tax(
         "- svi pokušaji **izmjene ili brisanja** podataka koji utiču na taj period "
         "(fakture / cash unosi u tom mjesecu) biće blokirani i vratiće HTTP 400 "
         "sa porukom tipa `Cannot modify data for finalized tax period YYYY-MM`.\n\n"
+        "Svaki uspješan finalize dodatno upisuje red u `tax_monthly_finalize_history` "
+        "kao audit log (snapshot vrijednosti + metadata o akciji).\n\n"
         "Primjer poziva:\n"
         "`POST /tax/monthly/finalize?year=2025&month=1` "
         "sa headerom `X-Tenant-Code: t-demo`."
@@ -564,7 +572,9 @@ def finalize_monthly_tax(
     2. Agregira prihode/rashode iz invoices + cash_entries (ista logika kao /auto).
     3. Primjenjuje DUMMY obračun (_compute_monthly_summary).
     4. Snima rezultat u `tax_monthly_results` kao finalizovan (`is_final=True`).
-    5. Vraća izračunati rezultat sa `is_final=True`.
+    5. Upisuje audit red u `tax_monthly_finalize_history` sa snapshotom vrijednosti
+       i metadata o akciji (`action='finalize'`).
+    6. Vraća izračunati rezultat sa `is_final=True`.
 
     Nakon što je mjesec finalizovan:
     - /tax/monthly/auto će vraćati persistirani rezultat (bez novog preračuna).
@@ -607,7 +617,7 @@ def finalize_monthly_tax(
         cfg=cfg,
     )
 
-    # 4) Snimanje u bazu kao finalizovan rezultat
+    # 4) Snimanje u bazu kao finalizovan rezultat + audit zapis u istoj transakciji
     db_obj = TaxMonthlyResult(
         tenant_code=tenant,
         year=summary.year,
@@ -621,7 +631,24 @@ def finalize_monthly_tax(
         currency=summary.currency,
         is_final=True,
     )
-    db.add(db_obj)
+
+    history_obj = TaxMonthlyFinalizeHistory(
+        tenant_code=tenant,
+        year=summary.year,
+        month=summary.month,
+        total_income=summary.total_income,
+        total_expense=summary.total_expense,
+        taxable_base=summary.taxable_base,
+        income_tax=summary.income_tax,
+        contributions_total=summary.contributions_total,
+        total_due=summary.total_due,
+        currency=summary.currency,
+        action="finalize",
+        triggered_by=None,
+        note=None,
+    )
+
+    db.add_all([db_obj, history_obj])
     db.commit()
     db.refresh(db_obj)
 
@@ -967,7 +994,7 @@ def yearly_tax_preview(
     response_model=YearlyTaxSummaryRead,
     summary="Finalizacija godišnjeg poreznog obračuna i zapis u bazu",
     description=(
-        "Finalizuje godišnji porezni obračun za jednog tenanta i trajno ga upisuje "
+        "Finalizuje godišnji porezni obračun za jednog tenenta i trajno ga upisuje "
         "u tabelu `tax_yearly_results`.\n\n"
         "Logika:\n"
         "- pročita sve finalizovane mjesečne rezultate iz `tax_monthly_results` za godinu\n"
@@ -1053,7 +1080,7 @@ def yearly_tax_finalize(
     db: Session = Depends(_get_session_dep),
 ) -> YearlyTaxSummaryRead:
     """
-    Finalizuje godišnji porezni obračun za jednog tenanta na osnovu
+    Finalizuje godišnji porezni obračun za jednog tenenta na osnovu
     već finalizovanih mjesečnih rezultata.
 
     1. Provjerava da li već postoji godišnji zapis u `tax_yearly_results`
