@@ -191,3 +191,69 @@ class ErrorResponse(BaseModel):
             "Monthly tax result for this period is already finalized",
         ],
     )
+
+
+class MonthlyTaxStatusItem(BaseModel):
+    """
+    Stavka statusa mjesečnog obračuna za konkretnu godinu.
+
+    Koristi se za endpoint /tax/monthly/status:
+    - za svaki mjesec (1-12) vraća da li postoji obračun i da li je finalizovan.
+    """
+
+    model_config = BaseConfig
+
+    month: int = Field(
+        ...,
+        ge=1,
+        le=12,
+        description="Mjesec u godini (1-12).",
+        examples=[1],
+    )
+    is_final: bool = Field(
+        ...,
+        description=(
+            "Da li postoji finalizovan mjesečni obračun za dati mjesec "
+            "(`True` ako postoji zapis u `tax_monthly_results` sa `is_final=True`)."
+        ),
+        examples=[True],
+    )
+    has_data: bool = Field(
+        ...,
+        description=(
+            "Da li postoji bilo kakav obračun za ovaj mjesec.\n"
+            "Trenutno je isto što i `is_final`, ali u budućnosti se može razlikovati "
+            "ako uvedemo koncept 'draft' obračuna."
+        ),
+        examples=[True],
+    )
+
+
+class MonthlyTaxStatusResponse(BaseModel):
+    """
+    Odgovor za /tax/monthly/status endpoint.
+
+    Sadrži godinu, kod tenanta i listu statusa po mjesecima (1-12).
+    """
+
+    model_config = BaseConfig
+
+    year: int = Field(
+        ...,
+        ge=2000,
+        le=2100,
+        description="Godina na koju se odnosi pregled statusa.",
+        examples=[2025],
+    )
+    tenant_code: str = Field(
+        ...,
+        description="Šifra tenanta za kojeg je status izračunat.",
+        examples=["t-demo"],
+    )
+    items: list[MonthlyTaxStatusItem] = Field(
+        ...,
+        description=(
+            "Lista od 12 elemenata (mjeseci 1-12) sa informacijom o tome "
+            "da li je mjesec finalizovan i da li postoji obračun."
+        ),
+    )

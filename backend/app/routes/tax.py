@@ -10,7 +10,12 @@ from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
 from app.models import CashEntry, Invoice, TaxMonthlyResult
-from app.schemas.tax import ErrorResponse, MonthlyTaxSummaryRead, TaxDummyConfig
+from app.schemas.tax import (
+    ErrorResponse,
+    MonthlyTaxStatusResponse,
+    MonthlyTaxSummaryRead,
+    TaxDummyConfig,
+)
 
 router = APIRouter(
     tags=["tax"],
@@ -599,4 +604,190 @@ def finalize_monthly_tax(
         total_due=summary.total_due,
         is_final=True,
         currency=summary.currency,
+    )
+
+
+@router.get(
+    "/tax/monthly/history",
+    response_model=list[MonthlyTaxSummaryRead],
+    summary="Pregled finalizovanih mjesečnih obračuna za godinu",
+    description=(
+        "Vraća listu svih finalizovanih mjesečnih poreznih obračuna za zadatu godinu "
+        "i tenanta.\n\n"
+        "Svaki element liste predstavlja jedan zapis iz `tax_monthly_results` "
+        "mapiran u `MonthlyTaxSummaryRead` model.\n\n"
+        "Ako za dati period nema finalizovanih obračuna, vraća se prazna lista."
+    ),
+    responses={
+        200: {
+            "description": (
+                "Lista mjesečnih obračuna (može biti i prazna ako još nema podataka)."
+            )
+        },
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
+                "Primjer poruke: `Missing X-Tenant-Code header`."
+            ),
+        },
+        422: {
+            "description": (
+                "Validation error – npr. godina van opsega ili pogrešan format "
+                "query parametara."
+            )
+        },
+    },
+)
+def monthly_tax_history(
+    year: int = Query(
+        ...,
+        ge=2000,
+        le=2100,
+        description="Godina za koju se traži istorija mjesečnih obračuna.",
+        examples=[2025],
+    ),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description=(
+            "Šifra tenanta za kojeg se čita istorija mjesečnih obračuna.\n"
+            "Primjer: `frizer-mika`, `t-demo`."
+        ),
+    ),
+    db: Session = Depends(_get_session_dep),
+) -> list[MonthlyTaxSummaryRead]:
+    """
+    Čita sve finalizovane mjesečne porezne obračune iz `tax_monthly_results`
+    za zadatu (year, tenant_code) kombinaciju.
+    """
+    tenant = _require_tenant(x_tenant_code)
+
+    rows = (
+        db.execute(
+            select(TaxMonthlyResult)
+            .where(
+                TaxMonthlyResult.tenant_code == tenant,
+                TaxMonthlyResult.year == year,
+            )
+            .order_by(TaxMonthlyResult.month.asc())
+        )
+        .scalars()
+        .all()
+    )
+
+    return [
+        MonthlyTaxSummaryRead(
+            year=row.year,
+            month=row.month,
+            tenant_code=row.tenant_code,
+            total_income=row.total_income,
+            total_expense=row.total_expense,
+            taxable_base=row.taxable_base,
+            income_tax=row.income_tax,
+            contributions_total=row.contributions_total,
+            total_due=row.total_due,
+            is_final=row.is_final,
+            currency=row.currency,
+        )
+        for row in rows
+    ]
+
+
+@router.get(
+    "/tax/monthly/status",
+    response_model=MonthlyTaxStatusResponse,
+    summary="Status mjesečnih obračuna po mjesecima za godinu",
+    description=(
+        "Vraća status mjesečnih obračuna za zadatu godinu i tenanta.\n\n"
+        "Za svaki mjesec (1-12) označava da li postoji finalizovan obračun i da li "
+        "postoji bilo kakav obračun (`has_data`).\n\n"
+        "Ovo je idealno za kalendarski prikaz u UI-ju (npr. 'koji mjeseci su zaključani')."
+    ),
+    responses={
+        200: {
+            "description": (
+                "Status za sve mjesece u zadatoj godini za konkretnog tenanta."
+            )
+        },
+        400: {
+            "model": ErrorResponse,
+            "description": (
+                "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
+                "Primjer poruke: `Missing X-Tenant-Code header`."
+            ),
+        },
+        422: {
+            "description": (
+                "Validation error – npr. godina van opsega ili pogrešan format "
+                "query parametara."
+            )
+        },
+    },
+)
+def monthly_tax_status(
+    year: int = Query(
+        ...,
+        ge=2000,
+        le=2100,
+        description="Godina za koju se provjerava status mjesečnih obračuna.",
+        examples=[2025],
+    ),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description=(
+            "Šifra tenanta za kojeg se provjerava status mjesečnih obračuna.\n"
+            "Primjer: `frizer-mika`, `t-demo`."
+        ),
+    ),
+    db: Session = Depends(_get_session_dep),
+) -> MonthlyTaxStatusResponse:
+    """
+    Vraća status mjesečnih obračuna za godinu/tenanta.
+
+    Implementacija:
+    - učita sve zapise iz `tax_monthly_results` za (tenant_code, year)
+    - mapira ih po mjesecima
+    - za mjesece koji nemaju zapis vraća `is_final=False`, `has_data=False`
+    """
+    tenant = _require_tenant(x_tenant_code)
+
+    rows = (
+        db.execute(
+            select(TaxMonthlyResult).where(
+                TaxMonthlyResult.tenant_code == tenant,
+                TaxMonthlyResult.year == year,
+            )
+        )
+        .scalars()
+        .all()
+    )
+
+    by_month: dict[int, TaxMonthlyResult] = {row.month: row for row in rows}
+
+    items = []
+    for m in range(1, 13):
+        row = by_month.get(m)
+        if row is None:
+            items.append(
+                {
+                    "month": m,
+                    "is_final": False,
+                    "has_data": False,
+                }
+            )
+        else:
+            items.append(
+                {
+                    "month": m,
+                    "is_final": bool(row.is_final),
+                    "has_data": True,
+                }
+            )
+
+    return MonthlyTaxStatusResponse(
+        year=year,
+        tenant_code=tenant,
+        items=items,
     )
