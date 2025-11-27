@@ -33,10 +33,11 @@ router = APIRouter(
 def _require_tenant(x_tenant_code: Optional[str]) -> str:
     """
     Osigurava da je X-Tenant-Code header postavljen.
-    Ako nedostaje, vraća HTTP 400.
+    Ako nedostaje, vraća HTTP 400 sa porukom
+    `Missing X-Tenant-Code header`.
 
     Implementacija delegira na shared helper iz `app.tenant_security`
-    da bi svi moduli (cash, invoices, tax, ...) imali identično ponašanje.
+    da bi svi moduli (cash, invoices, tax) imali identično ponašanje.
     """
     return require_tenant_code(x_tenant_code)
 
@@ -766,7 +767,7 @@ def monthly_tax_history(
     response_model=MonthlyTaxStatusResponse,
     summary="Status mjesečnih obračuna po mjesecima za godinu",
     description=(
-        "Vraća status mjesečnih obračuna za zadatu godinu i tenenta.\n\n"
+        "Vraća status mjesečnih obračuna za zadatu godinu i tenanta.\n\n"
         "Za svaki mjesec (1-12) označava da li postoji finalizovan obračun i da li "
         "postoji bilo kakav obračun (`has_data`).\n\n"
         "Ovo je idealno za kalendarski prikaz u UI-ju (npr. 'koji mjeseci su zaključani')."
@@ -775,7 +776,7 @@ def monthly_tax_history(
     responses={
         200: {
             "description": (
-                "Status za sve mjesece u zadatoj godini za konkretnog tenenta."
+                "Status za sve mjesece u zadatoj godini za konkretnog tenanta."
             )
         },
         400: {
