@@ -7,6 +7,7 @@ from .routes import debug as debug_routes
 from .routes import cash as cash_routes
 from .routes import invoices as invoices_routes
 from .routes import tax as tax_routes
+from .routes import sam as sam_routes
 from .models import FinalizedPeriodModificationError
 from .schemas.tax import ErrorResponse
 
@@ -19,42 +20,45 @@ tags_metadata = [
         "name": "tenants",
         "description": (
             "Upravljanje tenantima (klijentima) aplikacije. "
-            "Tenant predstavlja jednog krajnjeg korisnika (npr. jednog samostalnog preduzetnika) "
-            "sa svojim jedinstvenim code-om i imenom."
+            "Tenant predstavlja jednog krajnjeg korisnika (npr. jednog SP-a) sa svojim code-om i imenom."
         ),
     },
     {
         "name": "cash",
         "description": (
             "Evidencija gotovinskih tokova (prihodi i rashodi) po tenantu. "
-            "Obuhvata unos, ažuriranje, brisanje i pregled cash unosa, kao i sumarne preglede "
-            "ukupnih prihoda, rashoda i neto rezultata po periodu."
+            "Obuhvata unos, ažuriranje, brisanje i pregled cash unosa, kao i sumarne preglede."
         ),
     },
     {
         "name": "invoices",
         "description": (
             "Fakture po tenantu – kreiranje, pregled i brisanje faktura sa stavkama, "
-            "uključujući izračun osnovice, PDV-a i ukupnog iznosa po fakturi. "
-            "Predviđeno za jednostavno izdavanje računa krajnjim klijentima."
+            "uključujući izračun osnovice, PDV-a i ukupnog iznosa."
         ),
     },
     {
         "name": "tax",
         "description": (
-            "Modul za **mjesečni i godišnji porezni obračun po tenantu** zasnovan na podacima iz "
-            "cash i invoices modula.\n\n"
-            "Funkcionalnosti obuhvataju:\n"
-            "- DUMMY izračun poreza i doprinosa po mjesecu (preview i auto obračun),\n"
-            "- finalizaciju mjesečnog obračuna i trajno čuvanje rezultata,\n"
-            "- istoriju finalizovanih mjeseci i status (koji mjeseci su zaključani),\n"
-            "- godišnji porezni obračun (preview) na osnovu finalizovanih mjeseci,\n"
-            "- finalizaciju godišnjeg obračuna i zaključavanje godine.\n\n"
-            "Modul takođe uvodi **business lock**: nakon finalizacije određenog perioda "
-            "(mjeseca/godine), onemogućene su izmjene podataka koji utiču na taj period "
-            "i vraća se jasna greška aplikativnog nivoa.\n\n"
-            "**Napomena:** Poreski algoritam je trenutno pojednostavljen (DUMMY) i služi za "
-            "razvoj i testiranje – nije pravni savjet niti tačan model poreskog sistema."
+            "DUMMY modul za mjesečni i godišnji porezni obračun po tenantu.\n\n"
+            "Ovaj modul koristi pojednostavljene (dummy) porezne stope i služi za razvoj i testiranje:\n"
+            "- sumarizacija mjesečnih prihoda i rashoda,\n"
+            "- izračun oporezive osnovice,\n"
+            "- izračun poreza i doprinosa,\n"
+            "- prikaz ukupne obaveze za uplatu.\n\n"
+            "**Napomena:** Ovo nije pravni savjet niti tačan model poreskog sistema, "
+            "već razvojni alat u okviru sp-app API-ja."
+        ),
+    },
+    {
+        "name": "sam",
+        "description": (
+            "SAM (samostalni preduzetnik) pregled obaveza prema državi.\n\n"
+            "Ovaj modul koristi podatke iz poreskog modula (tax) kako bi SP-u dao jasan pregled:\n"
+            "- koliko mjesečno duguje državi (porez + doprinosi),\n"
+            "- koja je ukupna godišnja obaveza,\n"
+            "- koji mjeseci su već zaključani.\n\n"
+            "Služi kao osnova za SAM dashboard i planiranje uplata."
         ),
     },
     {
@@ -70,18 +74,16 @@ app = FastAPI(
     title="sp-app API",
     version="0.1.0",
     description=(
-        "Backend API za *sp-app* – aplikaciju namijenjenu malim biznisima i "
-        "samostalnim preduzetnicima (SP).\n\n"
+        "Backend API za *sp-app* – aplikaciju namijenjenu malim biznisima i samostalnim preduzetnicima.\n\n"
         "API pokriva:\n"
-        "- registraciju i upravljanje tenantima (klijentima aplikacije),\n"
-        "- vođenje evidencije prihoda i rashoda po tenantu (cashbook modul),\n"
-        "- izdavanje faktura sa stavkama i PDV obračunom (invoices modul),\n"
-        "- DUMMY porezni modul za razvoj i simulaciju **mjesečnih i godišnjih obračuna** "
-        "sa zaključavanjem perioda (tax modul),\n"
-        "- health-check endpointi za potrebe monitoringa i CI/CD.\n\n"
+        "- registraciju i upravljanje tenantima (klijentima aplikacije)\n"
+        "- vođenje evidencije prihoda i rashoda po tenantu (cash modul)\n"
+        "- izdavanje faktura sa stavkama i PDV obračunom (invoices modul)\n"
+        "- DUMMY porezni modul za razvoj i simulaciju mjesečnih/godišnjih obračuna (tax modul)\n"
+        "- SAM pregled obaveza prema državi za jednog SP-a (sam modul)\n"
+        "- health-check endpointi za potrebe monitoringa i CI/CD\n\n"
         "Dokumentacija je organizovana po tagovima: **health**, **tenants**, **cash**, "
-        "**invoices**, **tax** i **debug**.\n\n"
-        "Ovaj API je backend osnova za web i mobilne klijente sp-app platforme."
+        "**invoices**, **tax**, **sam** i **debug**."
     ),
     openapi_tags=tags_metadata,
 )
@@ -92,8 +94,7 @@ async def finalized_period_modification_handler(
     request: Request, exc: FinalizedPeriodModificationError
 ) -> JSONResponse:
     """
-    Globalni handler koji business-lock grešku pretvara u jasan 400 odgovor,
-    kako bi klijentske aplikacije (web/mobilne) mogle jednostavno da reaguju.
+    Globalni handler koji business lock grešku pretvara u jasan 400 odgovor.
     """
     payload = ErrorResponse(
         detail=(
@@ -114,3 +115,4 @@ app.include_router(debug_routes.router)
 app.include_router(cash_routes.router)
 app.include_router(invoices_routes.router)
 app.include_router(tax_routes.router)
+app.include_router(sam_routes.router)
