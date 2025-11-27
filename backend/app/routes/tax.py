@@ -30,17 +30,26 @@ router = APIRouter(
 )
 
 
+# ======================================================
+#  TENANT HELPER
+# ======================================================
 def _require_tenant(x_tenant_code: Optional[str]) -> str:
     """
-    Osigurava da je X-Tenant-Code header postavljen.
-    Ako nedostaje, vraća HTTP 400 sa porukom
-    `Missing X-Tenant-Code header`.
+    Osigurava da je `X-Tenant-Code` header postavljen.
 
-    Implementacija delegira na shared helper iz `app.tenant_security`
-    da bi svi moduli (cash, invoices, tax) imali identično ponašanje.
+    - Ako nedostaje ili je prazan → baca HTTP 400 sa porukom
+      `Missing X-Tenant-Code header`.
+    - Ako je postavljen → vraća vrijednost header-a kao string.
+
+    Implementacija delegira na shared helper iz `app.tenant_security`,
+    tako da svi moduli (cash, invoices, tax) imaju identično ponašanje.
     """
     return require_tenant_code(x_tenant_code)
 
+
+# ======================================================
+#  DUMMY KONFIGURACIJA ZA OBRAČUN
+# ======================================================
 
 # DUMMY konfiguracija – koristi se isključivo za razvoj i testiranje.
 # Kasnije se može zamijeniti dinamičkom konfiguracijom po tenantu ili iz baze.
@@ -53,11 +62,17 @@ TAX_DUMMY_CONFIG = TaxDummyConfig(
 )
 
 
+# ======================================================
+#  INTERNE POMOĆNE FUNKCIJE
+# ======================================================
 def _month_bounds(year: int, month: int) -> tuple[date, date]:
     """
     Vraća (start, end) granice mjeseca:
-    - start = prvi dan mjeseca (uključivo)
-    - end   = prvi dan sljedećeg mjeseca (isključivo)
+
+    - `start` = prvi dan mjeseca (uključivo)
+    - `end`   = prvi dan sljedećeg mjeseca (isključivo)
+
+    Ovaj opseg koristimo za filtriranje po datumu u invoices/cash tabelama.
     """
     if month == 12:
         start = date(year, 12, 1)
@@ -80,7 +95,11 @@ def _compute_monthly_summary(
     """
     Zajednička logika obračuna mjesečnog poreza/doprinosa.
 
-    Koriste je i /tax/monthly/preview (ručni input) i /tax/monthly/auto (iz baze).
+    Koriste je i:
+    - `/tax/monthly/preview` (ručni input iz frontenda)
+    - `/tax/monthly/auto` (automatska agregacija iz baze).
+
+    Ovo je **razvojni DUMMY model** – nije pravno tačan obračun.
     """
 
     # 1) Paušalni troškovi
@@ -129,8 +148,11 @@ def _aggregate_monthly_income_and_expense(
 ) -> Tuple[Decimal, Decimal]:
     """
     Agregira prihode i rashode za zadati mjesec iz:
-    - invoices (total_amount)
-    - cash_entries (income/expense)
+
+    - `invoices` (kolona `total_amount`, po `issue_date`)
+    - `cash_entries` (kolona `amount`, po `entry_date` i `kind`)
+
+    Ovo je centralno mjesto koje kontroliše šta sve ulazi u poreski obračun.
     """
     month_start, month_end = _month_bounds(year, month)
 
@@ -186,15 +208,20 @@ def _aggregate_monthly_income_and_expense(
     return total_income, total_expense
 
 
+# ======================================================
+#  MJESEČNI OBRAČUN – PREVIEW
+# ======================================================
 @router.get(
     "/tax/monthly/preview",
     response_model=MonthlyTaxSummaryRead,
-    summary="Preview mjesečnog poreznog obračuna (ručni unos)",
+    summary="Mjesečni porezni obračun (preview, ručni unos)",
     description=(
         "Vraća **simulaciju** mjesečnog poreznog obračuna za jednog tenenta na osnovu "
         "ručno proslijeđenih ukupnih prihoda i rashoda za dati mjesec.\n\n"
-        "Tipični use-case: frontend već ima sumirane podatke (npr. iz izvještaja) "
-        "i želi da prikaže brzi preview poreza i doprinosa prije finalizacije.\n\n"
+        "Tipični scenariji:\n"
+        "- frontend već ima sumirane podatke (npr. iz izvještaja) i želi brzi prikaz "
+        "poreza i doprinosa;\n"
+        "- korisnik testira različite scenarije (što ako promijenim prihod/rashod).\n\n"
         "Primjer poziva:\n"
         "`GET /tax/monthly/preview?year=2025&month=1&total_income=5000&total_expense=1500` "
         "sa headerom `X-Tenant-Code: t-demo`."
@@ -286,8 +313,7 @@ def preview_monthly_tax(
     ),
 ) -> MonthlyTaxSummaryRead:
     """
-    Vraća **simulaciju** mjesečnog poreznog obračuna za jednog tenenta,
-    koristeći DUMMY porezne stope i jednostavnu formulu.
+    Vraća **simulaciju** mjesečnog poreznog obračuna za jednog tenenta.
 
     Trenutna logika (DUMMY, može se mijenjati po potrebi):
 
@@ -313,6 +339,9 @@ def preview_monthly_tax(
     )
 
 
+# ======================================================
+#  MJESEČNI OBRAČUN – AUTO
+# ======================================================
 @router.get(
     "/tax/monthly/auto",
     response_model=MonthlyTaxSummaryRead,
@@ -411,7 +440,7 @@ def auto_monthly_tax(
     - od prvog dana mjeseca (uključivo)
     - do prvog dana sljedećeg mjeseca (isključivo)
 
-    Ako je mjesec već finalizovan (postoji zapis u tax_monthly_results),
+    Ako je mjesec već finalizovan (postoji zapis u `tax_monthly_results`),
     vraća se **persistirani rezultat** umjesto ponovnog preračuna.
 
     > **Napomena:** Model je pojednostavljen i služi kao razvojni DUMMY obračun,
@@ -462,6 +491,9 @@ def auto_monthly_tax(
     )
 
 
+# ======================================================
+#  MJESEČNI OBRAČUN – FINALIZE
+# ======================================================
 @router.post(
     "/tax/monthly/finalize",
     response_model=MonthlyTaxSummaryRead,
@@ -669,12 +701,15 @@ def finalize_monthly_tax(
     )
 
 
+# ======================================================
+#  MJESEČNA ISTORIJA & STATUS
+# ======================================================
 @router.get(
     "/tax/monthly/history",
     response_model=list[MonthlyTaxSummaryRead],
-    summary="Pregled finalizovanih mjesečnih obračuna za godinu",
+    summary="Istorija finalizovanih mjesečnih obračuna za godinu",
     description=(
-        "Vraća listu svih finalizovanih mjesečnih poreznih obračuna za zadatu godinu "
+        "Vraća listu svih **finalizovanih** mjesečnih poreznih obračuna za zadatu godinu "
         "i tenenta.\n\n"
         "Svaki element liste predstavlja jedan zapis iz `tax_monthly_results` "
         "mapiran u `MonthlyTaxSummaryRead` model.\n\n"
@@ -726,7 +761,7 @@ def monthly_tax_history(
     db: Session = Depends(_get_session_dep),
 ) -> list[MonthlyTaxSummaryRead]:
     """
-    Čita sve finalizovane mjesečne porezne obračune iz `tax_monthly_results`
+    Čita sve **finalizovane** mjesečne porezne obračune iz `tax_monthly_results`
     za zadatu (year, tenant_code) kombinaciju.
     """
     tenant = _require_tenant(x_tenant_code)
@@ -767,9 +802,9 @@ def monthly_tax_history(
     response_model=MonthlyTaxStatusResponse,
     summary="Status mjesečnih obračuna po mjesecima za godinu",
     description=(
-        "Vraća status mjesečnih obračuna za zadatu godinu i tenanta.\n\n"
+        "Vraća status mjesečnih obračuna za zadatu godinu i tenenta.\n\n"
         "Za svaki mjesec (1-12) označava da li postoji finalizovan obračun i da li "
-        "postoji bilo kakav obračun (`has_data`).\n\n"
+        "postoji bilo kakav podatak (`has_data`).\n\n"
         "Ovo je idealno za kalendarski prikaz u UI-ju (npr. 'koji mjeseci su zaključani')."
     ),
     operation_id="tax_monthly_status",
@@ -867,6 +902,9 @@ def monthly_tax_status(
     )
 
 
+# ======================================================
+#  GODIŠNJI OBRAČUN – PREVIEW
+# ======================================================
 @router.get(
     "/tax/yearly/preview",
     response_model=YearlyTaxSummaryRead,
@@ -990,6 +1028,9 @@ def yearly_tax_preview(
     )
 
 
+# ======================================================
+#  GODIŠNJI OBRAČUN – FINALIZE
+# ======================================================
 @router.post(
     "/tax/yearly/finalize",
     response_model=YearlyTaxSummaryRead,
@@ -999,7 +1040,7 @@ def yearly_tax_preview(
         "u tabelu `tax_yearly_results`.\n\n"
         "Logika:\n"
         "- pročita sve finalizovane mjesečne rezultate iz `tax_monthly_results` za godinu\n"
-        "- sabere polja (kao /tax/yearly/preview)\n"
+        "- sabere polja (kao `/tax/yearly/preview`)\n"
         "- upiše rezultat u `tax_yearly_results` kao zaključan zapis\n\n"
         "Ako za dati `(tenant_code, year)` već postoji zapis u `tax_yearly_results`, "
         "poziv se odbija sa HTTP 400.\n"
@@ -1088,7 +1129,7 @@ def yearly_tax_finalize(
        za (tenant_code, year). Ako postoji → 400.
     2. Učita sve finalizovane mjesece iz `tax_monthly_results` (is_final=True).
        Ako nema nijednog → 400.
-    3. Sabere polja (isti algoritam kao /tax/yearly/preview).
+    3. Sabere polja (isti algoritam kao `/tax/yearly/preview`).
     4. Snimi rezultat u `tax_yearly_results` kao finalizovan (`is_final=True`).
     5. Vrati zbirne vrijednosti kao `YearlyTaxSummaryRead`.
     """
