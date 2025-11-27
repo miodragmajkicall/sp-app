@@ -20,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.db import get_session as _get_session_dep
 from app.models import Invoice, InvoiceItem, Tenant
 from app.schemas.invoice import InvoiceCreate, InvoiceRead
+from app.tenant_security import require_tenant_code, ensure_tenant_exists
 
 router = APIRouter(
     tags=["invoices"],
@@ -30,35 +31,21 @@ def _require_tenant(x_tenant_code: Optional[str]) -> str:
     """
     Osigurava da je X-Tenant-Code header postavljen.
     Ako nedostaje, vraća HTTP 400.
+
+    Implementacija delegira na shared helper iz `app.tenant_security`
+    da bi svi moduli imali identično ponašanje.
     """
-    if not x_tenant_code:
-        raise HTTPException(status_code=400, detail="Missing X-Tenant-Code header")
-    return x_tenant_code
+    return require_tenant_code(x_tenant_code)
 
 
 def _ensure_tenant_exists(db: Session, code: str) -> None:
     """
     Pobrini se da u bazi postoji red u tabeli tenants sa zadatim `code`.
 
-    - Ako tenant već postoji: ne radi ništa.
-    - Ako ne postoji: kreira se minimalni tenant sa:
-        id   = code (odrezan na 32 karaktera)
-        code = prosleđeni kod
-        name = "Tenant {code}"
+    Kroz shared helper `ensure_tenant_exists` dobijamo jedno centralno mjesto
+    za kreiranje minimalnog tenanta kada radimo demo/test scenarije.
     """
-    stmt = select(Tenant).where(Tenant.code == code)
-    existing = db.execute(stmt).scalars().first()
-    if existing:
-        return
-
-    tenant = Tenant(
-        id=code[:32],
-        code=code,
-        name=f"Tenant {code}",
-    )
-    db.add(tenant)
-    db.commit()
-    db.refresh(tenant)
+    ensure_tenant_exists(db, code)
 
 
 # ======================================================
@@ -69,6 +56,95 @@ def _ensure_tenant_exists(db: Session, code: str) -> None:
     response_model=InvoiceRead,
     status_code=status.HTTP_201_CREATED,
     summary="Kreiraj novu fakturu",
+    description=(
+        "Kreira **novu fakturu sa stavkama** za konkretnog tenanta.\n\n"
+        "Back-end računa sve iznose (osnovica, PDV, total) na osnovu proslijeđenih "
+        "stavki – klijent šalje samo opis, količinu, cijenu i stopu PDV-a.\n\n"
+        "Ključne napomene:\n"
+        "- broj fakture (`invoice_number`) mora biti jedinstven **unutar jednog tenanta**;\n"
+        "- lista stavki (`items`) ne smije biti prazna;\n"
+        "- tenant se određuje preko `X-Tenant-Code` header-a.\n\n"
+        "Ovo je glavna ruta koju će mobilni/web UI koristiti za izdavanje faktura."
+    ),
+    responses={
+        201: {
+            "description": "Faktura je uspješno kreirana.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": 1,
+                        "tenant_code": "t-demo",
+                        "invoice_number": "2025-001",
+                        "issue_date": "2025-11-21",
+                        "due_date": "2025-12-21",
+                        "buyer_name": "Frizer Salon Milica",
+                        "buyer_address": "Kralja Petra I 12, Banja Luka",
+                        "total_base": "25.00",
+                        "total_vat": "4.25",
+                        "total_amount": "29.25",
+                        "items": [
+                            {
+                                "id": 10,
+                                "description": "Muško šišanje",
+                                "quantity": "1",
+                                "unit_price": "10.00",
+                                "vat_rate": "0.17",
+                                "base_amount": "10.00",
+                                "vat_amount": "1.70",
+                                "total_amount": "11.70",
+                            },
+                            {
+                                "id": 11,
+                                "description": "Pranje + feniranje",
+                                "quantity": "1",
+                                "unit_price": "15.00",
+                                "vat_rate": "0.17",
+                                "base_amount": "15.00",
+                                "vat_amount": "2.55",
+                                "total_amount": "17.55",
+                            },
+                        ],
+                    }
+                }
+            },
+        },
+        400: {
+            "description": (
+                "Poslovna greška pri kreiranju fakture.\n\n"
+                "Tipični scenariji:\n"
+                "- nedostaje `X-Tenant-Code` header;\n"
+                "- lista stavki (`items`) je prazna."
+            ),
+            "content": {
+                "application/json": {
+                    "examples": {
+                        "missing_tenant": {
+                            "summary": "Nedostaje X-Tenant-Code",
+                            "value": {"detail": "Missing X-Tenant-Code header"},
+                        },
+                        "no_items": {
+                            "summary": "Prazna lista stavki",
+                            "value": {
+                                "detail": "Invoice must contain at least one item"
+                            },
+                        },
+                    }
+                }
+            },
+        },
+        409: {
+            "description": (
+                "Pokušaj kreiranja fakture sa brojem koji već postoji za datog tenanta."
+            ),
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": "Invoice number already exists for this tenant"
+                    }
+                }
+            },
+        },
+    },
 )
 def create_invoice(
     payload: InvoiceCreate,
@@ -189,6 +265,15 @@ def create_invoice_slash(
     "/invoices",
     response_model=List[InvoiceRead],
     summary="Lista faktura za tenanta",
+    description=(
+        "Vraća listu faktura za zadatog tenenta uz opcione filtere i paginaciju.\n\n"
+        "Filteri:\n"
+        "- `date_from` / `date_to` – opseg po `issue_date` (uključivo);\n"
+        "- `buyer_name` – prefiks naziva kupca (npr. 'Buyer' → 'Buyer A', 'Buyer B');\n"
+        "- `limit` i `offset` – jednostavna paginacija.\n\n"
+        "Sortiranje: najnovije fakture su prve "
+        "(`issue_date` silazno, pa `id` silazno)."
+    ),
 )
 def list_invoices(
     db: Session = Depends(_get_session_dep),
@@ -288,6 +373,21 @@ def list_invoices_slash(
     "/invoices/{invoice_id}",
     response_model=InvoiceRead,
     summary="Dohvati jednu fakturu po ID-u",
+    description=(
+        "Dohvata jednu fakturu (sa svim stavkama) po njenom ID-u.\n\n"
+        "Korisno za ekran detalja fakture u UI-ju. "
+        "Ako faktura ne postoji ili ne pripada datom tenant-u, vraća se 404."
+    ),
+    responses={
+        404: {
+            "description": "Faktura nije pronađena za zadati ID/tenant kombinaciju.",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Invoice not found"}
+                }
+            },
+        }
+    },
 )
 def get_invoice(
     invoice_id: int,
@@ -323,6 +423,24 @@ def get_invoice(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Obriši fakturu",
     response_class=Response,
+    description=(
+        "Briše jednu fakturu i sve njene stavke.\n\n"
+        "Ako faktura ne postoji ili ne pripada zadatom tenant-u, vraća se 404.\n\n"
+        "Tipičan use-case: dugme *'Obriši fakturu'* u UI-ju."
+    ),
+    responses={
+        204: {
+            "description": "Faktura je uspješno obrisana. Tijelo odgovora je prazno."
+        },
+        404: {
+            "description": "Faktura nije pronađena za zadati ID/tenant kombinaciju.",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Invoice not found"}
+                }
+            },
+        },
+    },
 )
 def delete_invoice(
     invoice_id: int,

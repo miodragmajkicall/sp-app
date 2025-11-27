@@ -23,6 +23,7 @@ from app.schemas.tax import (
     TaxDummyConfig,
     YearlyTaxSummaryRead,
 )
+from app.tenant_security import require_tenant_code
 
 router = APIRouter(
     tags=["tax"],
@@ -34,11 +35,10 @@ def _require_tenant(x_tenant_code: Optional[str]) -> str:
     Osigurava da je X-Tenant-Code header postavljen.
     Ako nedostaje, vraća HTTP 400.
 
-    Ovaj helper je identičan konceptu iz invoices/cash modula – radi konzistentnosti.
+    Implementacija delegira na shared helper iz `app.tenant_security`
+    da bi svi moduli (cash, invoices, tax, ...) imali identično ponašanje.
     """
-    if not x_tenant_code:
-        raise HTTPException(status_code=400, detail="Missing X-Tenant-Code header")
-    return x_tenant_code
+    return require_tenant_code(x_tenant_code)
 
 
 # DUMMY konfiguracija – koristi se isključivo za razvoj i testiranje.
@@ -190,7 +190,7 @@ def _aggregate_monthly_income_and_expense(
     response_model=MonthlyTaxSummaryRead,
     summary="Preview mjesečnog poreznog obračuna (ručni unos)",
     description=(
-        "Vraća **simulaciju** mjesečnog poreznog obračuna za jednog tenanta na osnovu "
+        "Vraća **simulaciju** mjesečnog poreznog obračuna za jednog tenenta na osnovu "
         "ručno proslijeđenih ukupnih prihoda i rashoda za dati mjesec.\n\n"
         "Tipični use-case: frontend već ima sumirane podatke (npr. iz izvještaja) "
         "i želi da prikaže brzi preview poreza i doprinosa prije finalizacije.\n\n"
@@ -285,7 +285,7 @@ def preview_monthly_tax(
     ),
 ) -> MonthlyTaxSummaryRead:
     """
-    Vraća **simulaciju** mjesečnog poreznog obračuna za jednog tenanta,
+    Vraća **simulaciju** mjesečnog poreznog obračuna za jednog tenenta,
     koristeći DUMMY porezne stope i jednostavnu formulu.
 
     Trenutna logika (DUMMY, može se mijenjati po potrebi):
@@ -396,7 +396,7 @@ def auto_monthly_tax(
     db: Session = Depends(_get_session_dep),
 ) -> MonthlyTaxSummaryRead:
     """
-    Automatski mjesečni porezni obračun za jednog tenanta **na osnovu podataka iz baze**.
+    Automatski mjesečni porezni obračun za jednog tenenta **na osnovu podataka iz baze**.
 
     Trenutna DUMMY logika agregacije izvora prihoda/rashoda:
 
@@ -565,7 +565,7 @@ def finalize_monthly_tax(
     db: Session = Depends(_get_session_dep),
 ) -> MonthlyTaxSummaryRead:
     """
-    Finalizuje mjesečni porezni obračun za jednog tenanta:
+    Finalizuje mjesečni porezni obračun za jednog tenenta:
 
     1. Provjerava da li već postoji zapis u `tax_monthly_results`
        za zadati (tenant_code, year, month). Ako postoji → 400.
@@ -674,7 +674,7 @@ def finalize_monthly_tax(
     summary="Pregled finalizovanih mjesečnih obračuna za godinu",
     description=(
         "Vraća listu svih finalizovanih mjesečnih poreznih obračuna za zadatu godinu "
-        "i tenanta.\n\n"
+        "i tenenta.\n\n"
         "Svaki element liste predstavlja jedan zapis iz `tax_monthly_results` "
         "mapiran u `MonthlyTaxSummaryRead` model.\n\n"
         "Ako za dati period nema finalizovanih obračuna, vraća se prazna lista."
@@ -766,7 +766,7 @@ def monthly_tax_history(
     response_model=MonthlyTaxStatusResponse,
     summary="Status mjesečnih obračuna po mjesecima za godinu",
     description=(
-        "Vraća status mjesečnih obračuna za zadatu godinu i tenanta.\n\n"
+        "Vraća status mjesečnih obračuna za zadatu godinu i tenenta.\n\n"
         "Za svaki mjesec (1-12) označava da li postoji finalizovan obračun i da li "
         "postoji bilo kakav obračun (`has_data`).\n\n"
         "Ovo je idealno za kalendarski prikaz u UI-ju (npr. 'koji mjeseci su zaključani')."
@@ -775,7 +775,7 @@ def monthly_tax_history(
     responses={
         200: {
             "description": (
-                "Status za sve mjesece u zadatoj godini za konkretnog tenanta."
+                "Status za sve mjesece u zadatoj godini za konkretnog tenenta."
             )
         },
         400: {
