@@ -21,6 +21,7 @@ from app.db import get_session as _get_session_dep
 from app.models import Invoice, InvoiceItem, Tenant
 from app.schemas.invoice import InvoiceCreate, InvoiceRead
 from app.tenant_security import require_tenant_code, ensure_tenant_exists
+from app.services.pdf_invoice import render_invoice_pdf
 
 router = APIRouter(
     tags=["invoices"],
@@ -159,7 +160,7 @@ def create_invoice(
     ),
 ) -> Invoice:
     """
-    Kreira novu fakturu sa jednom ili više stavki za zadatog tenanta.
+    Kreira novu fakturu sa jednom ili više stavki za zadatog tenenta.
 
     - Broj fakture (`invoice_number`) mora biti jedinstven po tenant-u.
     - Iznosi (osnovica, PDV, total) računaju se na serveru na osnovu stavki.
@@ -413,6 +414,108 @@ def get_invoice(
     if not obj:
         raise HTTPException(status_code=404, detail="Invoice not found")
     return obj
+
+
+@router.get(
+    "/invoices/{invoice_id}/pdf",
+    summary="Preuzmi fakturu kao PDF",
+    description=(
+        "Generiše **jednostavan PDF** prikaz fakture za zadatog tenanta.\n\n"
+        "PDF trenutno koristi DUMMY layout za razvoj (jednostavan header + tabela stavki), "
+        "ali je spreman za kasnije brendiranje (logo, dodatne sekcije, napomene).\n\n"
+        "Ako faktura ne postoji ili ne pripada tenantu, vraća se 404.\n"
+        "Ako PDF engine nije dostupan na serveru, vraća se 500 sa jasnom porukom."
+    ),
+    responses={
+        200: {
+            "description": "PDF fajl sa sadržajem fakture.",
+            "content": {
+                "application/pdf": {
+                    "schema": {
+                        "type": "string",
+                        "format": "binary",
+                    }
+                }
+            },
+        },
+        404: {
+            "description": "Faktura nije pronađena za zadati ID/tenant kombinaciju.",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Invoice not found"}
+                }
+            },
+        },
+        500: {
+            "description": "PDF engine nije dostupan ili je došlo do greške pri generisanju.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": "PDF engine 'reportlab' is not installed in the environment."
+                    }
+                }
+            },
+        },
+    },
+)
+def get_invoice_pdf(
+    invoice_id: int,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem faktura mora pripadati.",
+    ),
+) -> Response:
+    """
+    Generiše PDF za konkretnu fakturu i vraća ga kao `application/pdf` odgovor.
+
+    - Validira tenant preko `X-Tenant-Code` header-a.
+    - Provjerava da li faktura pripada tom tenantu.
+    - Pokušava da učita PDF engine (`reportlab`) i generiše jednostavan layout.
+    """
+    tenant_code = _require_tenant(x_tenant_code)
+
+    # 1) Nađi fakturu
+    stmt = select(Invoice).where(
+        Invoice.id == invoice_id,
+        Invoice.tenant_code == tenant_code,
+    )
+    invoice = db.execute(stmt).scalars().first()
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # 2) Nađi tenanta (radi header informacija u PDF-u)
+    tenant = (
+        db.execute(
+            select(Tenant).where(
+                Tenant.code == tenant_code,
+            )
+        )
+        .scalars()
+        .first()
+    )
+
+    # 3) Generiši PDF bytes
+    try:
+        pdf_bytes = render_invoice_pdf(invoice=invoice, tenant=tenant)
+    except RuntimeError as exc:
+        # Npr. reportlab nije instaliran u environmentu
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    # 4) Pripremi HTTP odgovor
+    filename_base = invoice.invoice_number or f"invoice-{invoice.id}"
+    filename = f"{filename_base}.pdf"
+
+    headers = {
+        "Content-Disposition": f'inline; filename="{filename}"',
+    }
+
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers=headers,
+    )
 
 
 # ======================================================
