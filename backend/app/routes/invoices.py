@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from datetime import date
 from decimal import Decimal
 from typing import List, Optional
@@ -13,6 +14,7 @@ from fastapi import (
     Response,
     status,
 )
+from fastapi.responses import StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -28,10 +30,15 @@ router = APIRouter(
 )
 
 
+# ======================================================
+#  TENANT HELPERS – SHARED LOGIKA
+# ======================================================
+
+
 def _require_tenant(x_tenant_code: Optional[str]) -> str:
     """
     Osigurava da je X-Tenant-Code header postavljen.
-    Ako nedostaje, vraća HTTP 400.
+    Ako nedostaje, baca HTTP 400 sa porukom `Missing X-Tenant-Code header`.
 
     Implementacija delegira na shared helper iz `app.tenant_security`
     da bi svi moduli imali identično ponašanje.
@@ -52,6 +59,8 @@ def _ensure_tenant_exists(db: Session, code: str) -> None:
 # ======================================================
 #  CREATE
 # ======================================================
+
+
 @router.post(
     "/invoices",
     response_model=InvoiceRead,
@@ -160,7 +169,7 @@ def create_invoice(
     ),
 ) -> Invoice:
     """
-    Kreira novu fakturu sa jednom ili više stavki za zadatog tenenta.
+    Kreira novu fakturu sa jednom ili više stavki za zadatog tenanta.
 
     - Broj fakture (`invoice_number`) mora biti jedinstven po tenant-u.
     - Iznosi (osnovica, PDV, total) računaju se na serveru na osnovu stavki.
@@ -262,12 +271,14 @@ def create_invoice_slash(
 # ======================================================
 #  LIST
 # ======================================================
+
+
 @router.get(
     "/invoices",
     response_model=List[InvoiceRead],
     summary="Lista faktura za tenanta",
     description=(
-        "Vraća listu faktura za zadatog tenenta uz opcione filtere i paginaciju.\n\n"
+        "Vraća listu faktura za zadatog tenanta uz opcione filtere i paginaciju.\n\n"
         "Filteri:\n"
         "- `date_from` / `date_to` – opseg po `issue_date` (uključivo);\n"
         "- `buyer_name` – prefiks naziva kupca (npr. 'Buyer' → 'Buyer A', 'Buyer B');\n"
@@ -370,6 +381,8 @@ def list_invoices_slash(
 # ======================================================
 #  GET BY ID
 # ======================================================
+
+
 @router.get(
     "/invoices/{invoice_id}",
     response_model=InvoiceRead,
@@ -416,111 +429,11 @@ def get_invoice(
     return obj
 
 
-@router.get(
-    "/invoices/{invoice_id}/pdf",
-    summary="Preuzmi fakturu kao PDF",
-    description=(
-        "Generiše **jednostavan PDF** prikaz fakture za zadatog tenanta.\n\n"
-        "PDF trenutno koristi DUMMY layout za razvoj (jednostavan header + tabela stavki), "
-        "ali je spreman za kasnije brendiranje (logo, dodatne sekcije, napomene).\n\n"
-        "Ako faktura ne postoji ili ne pripada tenantu, vraća se 404.\n"
-        "Ako PDF engine nije dostupan na serveru, vraća se 500 sa jasnom porukom."
-    ),
-    responses={
-        200: {
-            "description": "PDF fajl sa sadržajem fakture.",
-            "content": {
-                "application/pdf": {
-                    "schema": {
-                        "type": "string",
-                        "format": "binary",
-                    }
-                }
-            },
-        },
-        404: {
-            "description": "Faktura nije pronađena za zadati ID/tenant kombinaciju.",
-            "content": {
-                "application/json": {
-                    "example": {"detail": "Invoice not found"}
-                }
-            },
-        },
-        500: {
-            "description": "PDF engine nije dostupan ili je došlo do greške pri generisanju.",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "detail": "PDF engine 'reportlab' is not installed in the environment."
-                    }
-                }
-            },
-        },
-    },
-)
-def get_invoice_pdf(
-    invoice_id: int,
-    db: Session = Depends(_get_session_dep),
-    x_tenant_code: Optional[str] = Header(
-        None,
-        alias="X-Tenant-Code",
-        description="Šifra tenanta kojem faktura mora pripadati.",
-    ),
-) -> Response:
-    """
-    Generiše PDF za konkretnu fakturu i vraća ga kao `application/pdf` odgovor.
-
-    - Validira tenant preko `X-Tenant-Code` header-a.
-    - Provjerava da li faktura pripada tom tenantu.
-    - Pokušava da učita PDF engine (`reportlab`) i generiše jednostavan layout.
-    """
-    tenant_code = _require_tenant(x_tenant_code)
-
-    # 1) Nađi fakturu
-    stmt = select(Invoice).where(
-        Invoice.id == invoice_id,
-        Invoice.tenant_code == tenant_code,
-    )
-    invoice = db.execute(stmt).scalars().first()
-    if invoice is None:
-        raise HTTPException(status_code=404, detail="Invoice not found")
-
-    # 2) Nađi tenanta (radi header informacija u PDF-u)
-    tenant = (
-        db.execute(
-            select(Tenant).where(
-                Tenant.code == tenant_code,
-            )
-        )
-        .scalars()
-        .first()
-    )
-
-    # 3) Generiši PDF bytes
-    try:
-        pdf_bytes = render_invoice_pdf(invoice=invoice, tenant=tenant)
-    except RuntimeError as exc:
-        # Npr. reportlab nije instaliran u environmentu
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-    # 4) Pripremi HTTP odgovor
-    filename_base = invoice.invoice_number or f"invoice-{invoice.id}"
-    filename = f"{filename_base}.pdf"
-
-    headers = {
-        "Content-Disposition": f'inline; filename="{filename}"',
-    }
-
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers=headers,
-    )
-
-
 # ======================================================
 #  DELETE
 # ======================================================
+
+
 @router.delete(
     "/invoices/{invoice_id}",
     status_code=status.HTTP_204_NO_CONTENT,
@@ -556,8 +469,6 @@ def delete_invoice(
 ) -> Response:
     """
     Briše jednu fakturu i sve njene stavke.
-
-    Ako faktura ne postoji ili ne pripada zadatom tenant-u, vraća se 404.
     """
     tenant = _require_tenant(x_tenant_code)
 
@@ -572,3 +483,77 @@ def delete_invoice(
     db.delete(obj)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ======================================================
+#  PDF EXPORT
+# ======================================================
+
+
+@router.get(
+    "/invoices/{invoice_id}/pdf",
+    summary="Generiši PDF verziju fakture",
+    response_class=StreamingResponse,
+    description=(
+        "Generiše **PDF verziju fakture** za zadati `invoice_id` i tenanta.\n\n"
+        "Tipičan use-case:\n"
+        "- dugme *'Preuzmi PDF'* u web UI-ju,\n"
+        "- slanje PDF-a mailom klijentu (u nekoj budućoj integraciji).\n\n"
+        "Ako faktura ne postoji ili ne pripada zadatom tenant-u, vraća se 404."
+    ),
+    responses={
+        200: {
+            "description": (
+                "PDF sadržaj fakture (Content-Type: application/pdf). "
+                "Header `Content-Disposition` je postavljen tako da PDF može "
+                "da se prikaže u browser-u ili sačuva."
+            )
+        },
+        404: {
+            "description": "Faktura nije pronađena za zadati ID/tenant kombinaciju.",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Invoice not found"}
+                }
+            },
+        },
+    },
+)
+def get_invoice_pdf(
+    invoice_id: int,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description=(
+            "Šifra tenanta kojem faktura mora pripadati.\n"
+            "Primjer: `frizer-mika`, `t-demo`."
+        ),
+    ),
+) -> StreamingResponse:
+    """
+    Generiše PDF fajl za konkretnu fakturu.
+    """
+    tenant = _require_tenant(x_tenant_code)
+
+    stmt = select(Invoice).where(
+        Invoice.id == invoice_id,
+        Invoice.tenant_code == tenant,
+    )
+    invoice = db.execute(stmt).scalars().first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    pdf_bytes = render_invoice_pdf(invoice)
+    buffer = io.BytesIO(pdf_bytes)
+
+    filename = f"invoice-{invoice.invoice_number or invoice.id}.pdf"
+    headers = {
+        "Content-Disposition": f'inline; filename="{filename}"',
+    }
+
+    return StreamingResponse(
+        buffer,
+        media_type="application/pdf",
+        headers=headers,
+    )
