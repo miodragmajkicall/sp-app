@@ -113,7 +113,8 @@ def render_invoice_pdf(invoice: Invoice) -> bytes:
 
     lines.append("ET")
 
-    stream_body = "\n".join(lines).encode("ascii")
+    # OVDE JE PROMJENA: koristimo latin-1 encoding sa 'replace', da ne pucamo na našim slovima.
+    stream_body = "\n".join(lines).encode("latin-1", "replace")
     stream_data = (
         f"<< /Length {len(stream_body)} >>\nstream\n".encode("ascii")
         + stream_body

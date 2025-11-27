@@ -6,8 +6,10 @@ from .routes import tenants as tenants_routes
 from .routes import debug as debug_routes
 from .routes import cash as cash_routes
 from .routes import invoices as invoices_routes
+from .routes import invoice_attachments as invoice_attachments_routes
 from .routes import tax as tax_routes
 from .routes import sam as sam_routes
+from .routes import dashboard as dashboard_routes
 from .models import FinalizedPeriodModificationError
 from .schemas.tax import ErrorResponse
 
@@ -34,7 +36,9 @@ tags_metadata = [
         "name": "invoices",
         "description": (
             "Fakture po tenantu – kreiranje, pregled i brisanje faktura sa stavkama, "
-            "uključujući izračun osnovice, PDV-a i ukupnog iznosa."
+            "uključujući izračun osnovice, PDV-a i ukupnog iznosa.\n\n"
+            "U ovaj domen spadaju i **attachment-i ulaznih faktura** koji se uploaduju "
+            "radi kasnije OCR obrade i automatskog unosa ulaznih računa."
         ),
     },
     {
@@ -62,6 +66,13 @@ tags_metadata = [
         ),
     },
     {
+        "name": "dashboard",
+        "description": (
+            "Kombinovani pregled ključnih brojki za jednog tenanta (cash, fakture, tax) "
+            "za zadatu godinu. Koristi se za početni ekran u UI-ju."
+        ),
+    },
+    {
         "name": "debug",
         "description": (
             "Interni i pomoćni endpointi za razvoj i debug. "
@@ -79,11 +90,13 @@ app = FastAPI(
         "- registraciju i upravljanje tenantima (klijentima aplikacije)\n"
         "- vođenje evidencije prihoda i rashoda po tenantu (cash modul)\n"
         "- izdavanje faktura sa stavkama i PDV obračunom (invoices modul)\n"
+        "- upload attachment-a ulaznih faktura radi kasnije OCR obrade (invoice-attachments)\n"
         "- DUMMY porezni modul za razvoj i simulaciju mjesečnih/godišnjih obračuna (tax modul)\n"
         "- SAM pregled obaveza prema državi za jednog SP-a (sam modul)\n"
+        "- dashboard sa ključnim brojkama po godini (dashboard modul)\n"
         "- health-check endpointi za potrebe monitoringa i CI/CD\n\n"
         "Dokumentacija je organizovana po tagovima: **health**, **tenants**, **cash**, "
-        "**invoices**, **tax**, **sam** i **debug**."
+        "**invoices**, **tax**, **sam**, **dashboard** i **debug**."
     ),
     openapi_tags=tags_metadata,
 )
@@ -114,5 +127,7 @@ app.include_router(tenants_routes.router)
 app.include_router(debug_routes.router)
 app.include_router(cash_routes.router)
 app.include_router(invoices_routes.router)
+app.include_router(invoice_attachments_routes.router)
 app.include_router(tax_routes.router)
 app.include_router(sam_routes.router)
+app.include_router(dashboard_routes.router)

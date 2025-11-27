@@ -6,72 +6,145 @@ from typing import List
 from pydantic import BaseModel, Field
 from pydantic.config import ConfigDict
 
-# Osnovna konfiguracija za sve SAM sheme:
-# - from_attributes: dozvoljava mapiranje direktno iz SQLAlchemy objekata
-# - populate_by_name: olakšava (de)serializaciju po nazivu polja
+
+# Osnovna Pydantic konfiguracija, ista filozofija kao kod ostalih šema
 BaseConfig = ConfigDict(from_attributes=True, populate_by_name=True)
 
 
-class SamMonthlyItemRead(BaseModel):
+class SamMonthlyItem(BaseModel):
     """
-    Jedan mjesečni zapis obaveza prema državi za tenanta.
+    Jedan mjesecni blok za SAM overview.
 
-    Podaci se vuku iz tabele `tax_monthly_results` (DUMMY model obračuna).
+    Ovo je osnovni building-block za UI grafove i tabele:
+    - mjesec (1-12)
+    - labela za prikaz (npr. "01.2025")
+    - agregirani iznosi i flag da li je mjesec zaključen.
     """
 
     model_config = BaseConfig
 
-    year: int = Field(..., description="Godina na koju se zapis odnosi (YYYY).")
-    month: int = Field(..., ge=1, le=12, description="Mjesec (1-12).")
-    is_final: bool = Field(
+    month: int = Field(
         ...,
-        description="Da li je periode već finalizovan u poreskom modulu.",
+        ge=1,
+        le=12,
+        description="Redni broj mjeseca (1-12).",
+    )
+    month_label: str = Field(
+        ...,
+        description="Prikaz mjeseca za UI (npr. '01.2025' ili 'JAN 2025').",
+    )
+
+    income_total: Decimal = Field(
+        ...,
+        description="Ukupan prihod za dati mjesec.",
+    )
+    expense_total: Decimal = Field(
+        ...,
+        description="Ukupan rashod za dati mjesec.",
+    )
+    tax_base: Decimal = Field(
+        ...,
+        description="Oporeziva osnovica za mjesec.",
+    )
+    tax_due: Decimal = Field(
+        ...,
+        description="Porez za mjesec.",
+    )
+    contributions_due: Decimal = Field(
+        ...,
+        description="Doprinosi za mjesec.",
     )
     total_due: Decimal = Field(
         ...,
-        description=(
-            "Ukupna obaveza prema državi za dati mjesec "
-            "(porez na dohodak + doprinosi), prema DUMMY modelu."
-        ),
+        description="Ukupno za uplatu (porez + doprinosi) za taj mjesec.",
+    )
+
+    is_finalized: bool = Field(
+        ...,
+        description="Da li je porezni obračun za ovaj mjesec finaliziran.",
+    )
+
+
+class SamYearlySummary(BaseModel):
+    """
+    Godišnji sažetak za SAM overview.
+
+    Na nivou godine agregira:
+    - sve prihode/rashode,
+    - sve poreze i doprinose,
+    - broj zaključenih i otvorenih mjeseci.
+    """
+
+    model_config = BaseConfig
+
+    year: int = Field(..., description="Godina na koju se odnosi pregled.")
+
+    income_total: Decimal = Field(
+        ...,
+        description="Ukupan godišnji prihod.",
+    )
+    expense_total: Decimal = Field(
+        ...,
+        description="Ukupan godišnji rashod.",
+    )
+    tax_base_total: Decimal = Field(
+        ...,
+        description="Ukupna godišnja oporeziva osnovica.",
+    )
+    tax_due_total: Decimal = Field(
+        ...,
+        description="Ukupan godišnji porez.",
+    )
+    contributions_due_total: Decimal = Field(
+        ...,
+        description="Ukupni godišnji doprinosi.",
+    )
+    total_due: Decimal = Field(
+        ...,
+        description="Ukupno za uplatu državi za cijelu godinu.",
+    )
+
+    finalized_months: int = Field(
+        ...,
+        ge=0,
+        le=12,
+        description="Broj mjeseci za koje je obračun finaliziran.",
+    )
+    open_months: int = Field(
+        ...,
+        ge=0,
+        le=12,
+        description="Broj mjeseci koji su još otvoreni (nisu finalizirani).",
     )
 
 
 class SamOverviewRead(BaseModel):
     """
-    Godišnji SAM pregled obaveza za jednog tenanta (SP).
+    Kombinovani SAM overview odgovor za jedan tenant i jednu godinu.
 
-    Tipičan use-case u UI-ju:
-    - ekran 'SAM pregled' gdje SP vidi:
-      - po mjesecima: iznos za uplatu i da li je mjesec zaključan,
-      - zbirnu godišnju obavezu koju treba da uplati državi.
+    Ovo je direktni shape za dashboard:
+    - tenant_code,
+    - godina,
+    - lista 12 mjeseci,
+    - godišnji sažetak.
     """
 
     model_config = BaseConfig
 
     tenant_code: str = Field(
         ...,
-        description="Šifra tenanta (SP) na kojeg se pregled odnosi.",
+        description="Tenant (SP) za kojeg se prikazuje SAM pregled.",
     )
     year: int = Field(
         ...,
-        description="Godina za koju se prikazuje SAM pregled.",
+        description="Godina SAM pregleda.",
     )
-    monthly: List[SamMonthlyItemRead] = Field(
+
+    months: List[SamMonthlyItem] = Field(
         ...,
-        description=(
-            "Lista mjesečnih obaveza, uparena sa podacima iz `tax_monthly_results`.\n"
-            "Ako za neki mjesec nema podataka, on jednostavno neće biti u listi."
-        ),
+        description="Lista 12 mjeseci sa agregatima (uvijek 12 elemenata).",
     )
-    yearly_total_due: Decimal = Field(
+    yearly_summary: SamYearlySummary = Field(
         ...,
-        description=(
-            "Ukupna godišnja obaveza prema državi za datu godinu.\n"
-            "- Ako postoji godišnji zapis u `tax_yearly_results`, koristi se njegov `total_due`.\n"
-            "- Ako godišnji zapis ne postoji, koristi se zbir `total_due` svih finalizovanih mjeseci."
-        ),
-    )
-    currency: str = Field(
-        "BAM",
-        description="Valuta u kojoj su izražene obaveze (default: BAM).",
+        description="Godišnji sažetak obaveza prema državi.",
     )
