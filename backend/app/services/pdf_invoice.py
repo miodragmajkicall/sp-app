@@ -1,192 +1,155 @@
 from __future__ import annotations
 
-from decimal import Decimal
 from io import BytesIO
-from typing import Optional
+from typing import List
 
-from app.models import Invoice, InvoiceItem, Tenant
+from app.models import Invoice, InvoiceItem
 
 
-def _safe_decimal(value: Decimal | float | int | None) -> float:
+def _escape_pdf_text(text: str | None) -> str:
     """
-    Pomoćna funkcija – sigurno pretvara Decimal u float za PDF engine.
-    Ako je None, vraća 0.0.
+    Escapuje specijalne karaktere za PDF string literale.
     """
-    if value is None:
-        return 0.0
-    return float(value)
+    if text is None:
+        return ""
+    return (
+        text.replace("\\", "\\\\")
+        .replace("(", "\\(")
+        .replace(")", "\\)")
+    )
 
 
-def render_invoice_pdf(invoice: Invoice, tenant: Optional[Tenant] = None) -> bytes:
+def render_invoice_pdf(invoice: Invoice) -> bytes:
     """
-    Generiše jednostavan PDF za jednu fakturu.
+    Generiše jednostavan, ali validan PDF za prikaz fakture.
 
-    Implementacija namjerno koristi lazy import `reportlab` biblioteke da bi
-    izbjegla probleme pri startu API-ja ako biblioteka nije instalirana.
-
-    Ako `reportlab` nije instaliran, baca RuntimeError – rutu koja poziva ovu
-    funkciju treba da to konvertuje u HTTP 500 sa jasnom porukom.
+    Namjerno nema eksternih zavisnosti (npr. reportlab), već ručno sklapa
+    minimalan PDF sa jednim page-om i tekstom koji opisuje fakturu.
     """
-    try:
-        from reportlab.lib.pagesizes import A4
-        from reportlab.pdfgen import canvas
-    except ImportError as exc:  # pragma: no cover - zavisi od sistema
-        raise RuntimeError(
-            "PDF engine 'reportlab' is not installed in the environment."
-        ) from exc
 
     buffer = BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
 
-    # Margine
-    left_margin = 40
-    right_margin = width - 40
-    top = height - 40
-    line_height = 14
+    # PDF header
+    buffer.write(b"%PDF-1.4\n")
+    buffer.write(b"%\xe2\xe3\xcf\xd3\n")  # binary marker
 
-    # ===============================
-    #  HEADER – TENANT + INVOICE INFO
-    # ===============================
-    c.setFont("Helvetica-Bold", 16)
-    tenant_title = "Faktura"
-    c.drawString(left_margin, top, tenant_title)
+    # Pomoćne strukture za praćenje offseta objekata
+    offsets: List[int] = [0]  # index 0 je dummy, objekti idu od 1
 
-    y = top - 2 * line_height
+    def write_obj(obj_num: int, content: str) -> None:
+        offsets.append(buffer.tell())
+        buffer.write(f"{obj_num} 0 obj\n".encode("ascii"))
+        buffer.write(content.encode("ascii"))
+        buffer.write(b"\nendobj\n")
 
-    c.setFont("Helvetica", 10)
-    if tenant is not None:
-        tenant_name = tenant.name or tenant.code
-        c.drawString(left_margin, y, f"Izdavalac: {tenant_name}")
-        y -= line_height
-        c.drawString(left_margin, y, f"Tenant code: {tenant.code}")
-        y -= line_height
-    else:
-        c.drawString(left_margin, y, f"Tenant code: {invoice.tenant_code}")
-        y -= line_height
+    def write_obj_bytes(obj_num: int, data: bytes) -> None:
+        offsets.append(buffer.tell())
+        buffer.write(f"{obj_num} 0 obj\n".encode("ascii"))
+        buffer.write(data)
+        buffer.write(b"\nendobj\n")
 
-    invoice_number = invoice.invoice_number or f"#{invoice.id}"
-    c.drawString(left_margin, y, f"Broj fakture: {invoice_number}")
-    y -= line_height
-    c.drawString(left_margin, y, f"Datum izdavanja: {invoice.issue_date}")
-    y -= line_height
+    # 1) Catalog
+    write_obj(1, "<< /Type /Catalog /Pages 2 0 R >>")
+
+    # 2) Pages
+    write_obj(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
+
+    # 3) Page
+    write_obj(
+        3,
+        (
+            "<< /Type /Page "
+            "/Parent 2 0 R "
+            "/MediaBox [0 0 595 842] "
+            "/Contents 4 0 R "
+            "/Resources << /Font << /F1 5 0 R >> >> >>"
+        ),
+    )
+
+    # 4) Contents (tekstualni sadržaj stranice)
+    lines: list[str] = []
+    lines.append("BT")
+    lines.append("/F1 11 Tf")
+
+    y = 800
+
+    def add_line(text: str) -> None:
+        nonlocal y
+        lines.append(f"50 {y} Td")
+        lines.append(f"({_escape_pdf_text(text)}) Tj")
+        y -= 14
+
+    # Header fakture
+    add_line(f"Faktura br: {invoice.invoice_number}")
+    add_line(f"Tenant: {invoice.tenant_code}")
+    add_line(f"Izdato: {invoice.issue_date}")
     if invoice.due_date:
-        c.drawString(left_margin, y, f"Rok plaćanja: {invoice.due_date}")
-        y -= line_height
+        add_line(f"Rok plaćanja: {invoice.due_date}")
 
-    # Kupac
-    y -= line_height
-    c.setFont("Helvetica-Bold", 11)
-    c.drawString(left_margin, y, "Kupac:")
-    y -= line_height
-    c.setFont("Helvetica", 10)
-    c.drawString(left_margin, y, invoice.buyer_name or "")
-    y -= line_height
+    y -= 10
+    add_line(f"Kupac: {invoice.buyer_name or '-'}")
     if invoice.buyer_address:
-        c.drawString(left_margin, y, invoice.buyer_address)
-        y -= line_height
+        add_line(f"Adresa: {invoice.buyer_address}")
 
-    # ===============================
-    #  TABLICA STAVKI
-    # ===============================
-    y -= 2 * line_height
-    c.setFont("Helvetica-Bold", 10)
-    c.drawString(left_margin, y, "Opis")
-    c.drawString(left_margin + 250, y, "Količina")
-    c.drawString(left_margin + 320, y, "Cijena")
-    c.drawString(left_margin + 390, y, "PDV")
-    c.drawString(left_margin + 450, y, "Ukupno")
-    y -= line_height
-    c.line(left_margin, y, right_margin, y)
-    y -= line_height
+    # Stavke
+    y -= 20
+    add_line("Stavke:")
 
-    c.setFont("Helvetica", 9)
-
-    items: list[InvoiceItem] = list(invoice.items or [])
-    for item in items:
-        if y < 80:  # nova stranica ako ponestane prostora
-            c.showPage()
-            y = height - 80
-            c.setFont("Helvetica", 9)
-
-        desc = (item.description or "").strip()
-        if len(desc) > 40:
-            desc = desc[:37] + "..."
-
-        c.drawString(left_margin, y, desc)
-
-        c.drawRightString(
-            left_margin + 300,
-            y,
-            f"{_safe_decimal(item.quantity):.2f}",
+    for item in invoice.items or []:
+        line = (
+            f"- {item.description}  x {item.quantity}  "
+            f"@ {item.unit_price:.2f}  = {item.total_amount:.2f}"
         )
-        c.drawRightString(
-            left_margin + 370,
-            y,
-            f"{_safe_decimal(item.unit_price):.2f}",
-        )
-        c.drawRightString(
-            left_margin + 430,
-            y,
-            f"{_safe_decimal(item.vat_amount):.2f}",
-        )
-        c.drawRightString(
-            right_margin,
-            y,
-            f"{_safe_decimal(item.total_amount):.2f}",
-        )
-        y -= line_height
+        add_line(line)
 
-    # ===============================
-    #  SAŽETAK
-    # ===============================
-    y -= 2 * line_height
-    c.setFont("Helvetica-Bold", 10)
-    c.drawRightString(
-        left_margin + 370,
-        y,
-        "Osnovica:",
-    )
-    c.drawRightString(
-        right_margin,
-        y,
-        f"{_safe_decimal(invoice.total_base):.2f}",
-    )
-    y -= line_height
+    # Sumarni dio
+    y -= 20
+    add_line(f"Osnovica: {invoice.total_base:.2f}")
+    add_line(f"PDV: {invoice.total_vat:.2f}")
+    add_line(f"Ukupno: {invoice.total_amount:.2f} BAM")
 
-    c.drawRightString(
-        left_margin + 370,
-        y,
-        "Ukupan PDV:",
-    )
-    c.drawRightString(
-        right_margin,
-        y,
-        f"{_safe_decimal(invoice.total_vat):.2f}",
-    )
-    y -= line_height
+    y -= 20
+    add_line("Generisano putem sp-app API-ja")
 
-    c.drawRightString(
-        left_margin + 370,
-        y,
-        "Ukupno za plaćanje:",
-    )
-    c.drawRightString(
-        right_margin,
-        y,
-        f"{_safe_decimal(invoice.total_amount):.2f}",
-    )
-    y -= 2 * line_height
+    lines.append("ET")
 
-    c.setFont("Helvetica-Oblique", 8)
-    c.drawString(
-        left_margin,
-        y,
-        "Napomena: ovaj PDF je generisan iz sp-app sistema (DUMMY layout za razvoj).",
+    stream_body = "\n".join(lines).encode("ascii")
+    stream_data = (
+        f"<< /Length {len(stream_body)} >>\nstream\n".encode("ascii")
+        + stream_body
+        + b"\nendstream"
     )
 
-    # Završi PDF
-    c.showPage()
-    c.save()
-    buffer.seek(0)
-    return buffer.getvalue()
+    write_obj_bytes(4, stream_data)
+
+    # 5) Font definicija
+    write_obj(
+        5,
+        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+    )
+
+    # XREF tabela
+    xref_start = buffer.tell()
+    obj_count = 5  # objekti 1-5
+
+    buffer.write(f"xref\n0 {obj_count + 1}\n".encode("ascii"))
+    buffer.write(b"0000000000 65535 f \n")
+
+    # offsets[1] odgovara objektu 1, itd.
+    for off in offsets[1:]:
+        buffer.write(f"{off:010d} 00000 n \n".encode("ascii"))
+
+    # Trailer
+    buffer.write(
+        (
+            "trailer\n"
+            f"<< /Size {obj_count + 1} /Root 1 0 R >>\n"
+            "startxref\n"
+            f"{xref_start}\n"
+            "%%EOF\n"
+        ).encode("ascii")
+    )
+
+    pdf_bytes = buffer.getvalue()
+    buffer.close()
+    return pdf_bytes
