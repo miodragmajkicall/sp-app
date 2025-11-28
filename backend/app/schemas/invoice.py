@@ -13,6 +13,7 @@ BaseConfig = ConfigDict(from_attributes=True, populate_by_name=True)
 # INVOICE ITEMS (stavke fakture)
 # ============================================================
 
+
 class InvoiceItemBase(BaseModel):
     """Osnovna polja za stavke fakture."""
 
@@ -77,6 +78,7 @@ class InvoiceItemRead(InvoiceItemBase):
 # INVOICE (faktura)
 # ============================================================
 
+
 class InvoiceBase(BaseModel):
     """Osnovna polja fakture."""
 
@@ -125,15 +127,15 @@ class InvoiceCreate(InvoiceBase):
                         "description": "Muško šišanje",
                         "quantity": "1",
                         "unit_price": "10.00",
-                        "vat_rate": "0.17"
+                        "vat_rate": "0.17",
                     },
                     {
                         "description": "Pranje + feniranje",
                         "quantity": "1",
                         "unit_price": "15.00",
-                        "vat_rate": "0.17"
-                    }
-                ]
+                        "vat_rate": "0.17",
+                    },
+                ],
             }
         },
     )
@@ -157,7 +159,59 @@ class InvoiceRead(InvoiceBase):
     total_vat: Decimal = Field(..., description="Ukupan PDV.")
     total_amount: Decimal = Field(..., description="Ukupan iznos sa PDV-om.")
 
+    is_paid: bool = Field(
+        ...,
+        description="Status plaćanja fakture (False = neplaćena, True = plaćena).",
+    )
+
     items: List[InvoiceItemRead] = Field(
         ...,
         description="Stavke fakture.",
+    )
+
+
+# ============================================================
+#  UI LISTING – REDOVI ZA TABELU
+# ============================================================
+
+
+class InvoiceRowItem(BaseModel):
+    """
+    Pojedinačan red za UI tabelu faktura.
+    """
+
+    model_config = BaseConfig
+
+    id: int = Field(..., description="ID fakture (BIGINT).")
+    invoice_number: str = Field(..., description="Broj fakture.")
+    issue_date: date = Field(..., description="Datum izdavanja.")
+    due_date: Optional[date] = Field(None, description="Rok dospijeća.")
+    buyer_name: str = Field(..., description="Naziv kupca.")
+    buyer_address: Optional[str] = Field(None, description="Adresa kupca.")
+
+    total_base: Decimal = Field(..., description="Ukupna osnovica.")
+    total_vat: Decimal = Field(..., description="Ukupan PDV.")
+    total_amount: Decimal = Field(..., description="Ukupan iznos sa PDV-om.")
+
+    is_paid: bool = Field(
+        ...,
+        description="Status plaćanja fakture (False = neplaćena, True = plaćena).",
+    )
+
+
+class InvoiceListResponse(BaseModel):
+    """
+    Response model za UI endpoint GET /invoices/list.
+    """
+
+    model_config = BaseConfig
+
+    total: int = Field(
+        ...,
+        ge=0,
+        description="Ukupan broj faktura koje zadovoljavaju zadate filtere.",
+    )
+    items: List[InvoiceRowItem] = Field(
+        ...,
+        description="Lista faktura za prikaz u UI tabeli.",
     )

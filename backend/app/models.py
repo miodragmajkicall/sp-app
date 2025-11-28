@@ -119,6 +119,9 @@ class Invoice(Base):
     total_vat = Column(Numeric(14, 2), nullable=False, default=0)
     total_amount = Column(Numeric(14, 2), nullable=False, default=0)
 
+    # Status plaćanja – False = neplaćena, True = plaćena
+    is_paid = Column(Boolean, nullable=False, default=False)
+
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -184,16 +187,6 @@ class InvoiceItem(Base):
 class InvoiceAttachment(Base):
     """
     Attachment fakture/računa (skener/slika računa, PDF, itd.).
-
-    Sam attachment je fajl na disku, dok se u ovoj tabeli čuvaju:
-    - tenant_code,
-    - opcioni invoice_id (link na izlaznu fakturu),
-    - opcioni input_invoice_id (link na ulaznu fakturu – račun dobavljača),
-    - ime fajla i content-type,
-    - veličina,
-    - putanja na disku (storage_path),
-    - status obrade (uploaded, ocr_pending, ...),
-    - created_at timestamp.
     """
 
     __tablename__ = "invoice_attachments"
@@ -249,20 +242,6 @@ class InvoiceAttachment(Base):
 class InputInvoice(Base):
     """
     Ulazna faktura (račun dobavljača) kao poseban entitet.
-
-    Primjeri:
-    - račun za zakup prostora
-    - račun za struju, vodu, internet
-    - račun dobavljača za robu itd.
-
-    Polja:
-    - tenant_code: kojem preduzetniku pripada
-    - supplier_*: podaci o dobavljaču
-    - invoice_number: broj računa kod dobavljača
-    - issue_date / due_date: datumi
-    - total_base / total_vat / total_amount: finansijski iznosi
-    - currency: npr. "BAM"
-    - note: interna napomena
     """
 
     __tablename__ = "input_invoices"
@@ -318,10 +297,6 @@ class InputInvoice(Base):
 class TaxMonthlyResult(Base):
     """
     Persistirani mjesečni obračun poreza/doprinosa po tenantu.
-
-    Svaka kombinacija (tenant_code, year, month) može postojati
-    maksimalno jednom – jedinstven ključ služi i kao mehanizam
-    zaključavanja finalizovanog mjeseca.
     """
 
     __tablename__ = "tax_monthly_results"
@@ -346,8 +321,6 @@ class TaxMonthlyResult(Base):
 
     currency = Column(String(8), nullable=False, default="BAM")
 
-    # Za budućnost – trenutno uvijek snimamo finalizovan obračun,
-    # ali polje ostavljamo kao bool flag radi fleksibilnosti.
     is_final = Column(Boolean, nullable=False, default=True)
 
     created_at = Column(
@@ -372,10 +345,6 @@ class TaxMonthlyResult(Base):
 class TaxYearlyResult(Base):
     """
     Persistirani GODIŠNJI obračun poreza/doprinosa po tenantu.
-
-    Svaka kombinacija (tenant_code, year) može postojati maksimalno jednom.
-    Ovaj zapis predstavlja zaključani godišnji rezultat, izveden iz
-    finalizovanih mjeseci u `tax_monthly_results`.
     """
 
     __tablename__ = "tax_yearly_results"
@@ -400,7 +369,6 @@ class TaxYearlyResult(Base):
 
     currency = Column(String(8), nullable=False, default="BAM")
 
-    # Godišnji rezultat je uvijek finalan – flag ostavljamo radi konzistentnosti.
     is_final = Column(Boolean, nullable=False, default=True)
 
     created_at = Column(
@@ -424,10 +392,6 @@ class TaxYearlyResult(Base):
 class TaxMonthlyFinalizeHistory(Base):
     """
     Audit log za operacije nad mjesečnim poreznim obračunom.
-
-    Svaki PUT/POST finalize (i kasnije eventualni unlock) upisuje jedan red:
-    - snapshot finansijskih vrijednosti u trenutku akcije
-    - metadata o tome ko je i kada izvršio akciju
     """
 
     __tablename__ = "tax_monthly_finalize_history"
@@ -443,7 +407,6 @@ class TaxMonthlyFinalizeHistory(Base):
     year = Column(Integer, nullable=False)
     month = Column(Integer, nullable=False)
 
-    # Snapshot vrijednosti iz tax_monthly_results
     total_income = Column(Numeric(14, 2), nullable=False)
     total_expense = Column(Numeric(14, 2), nullable=False)
     taxable_base = Column(Numeric(14, 2), nullable=False)
@@ -453,11 +416,10 @@ class TaxMonthlyFinalizeHistory(Base):
 
     currency = Column(String(8), nullable=False, default="BAM")
 
-    # Metadata o akciji
     action = Column(
         String(32),
         nullable=False,
-        default="finalize",  # kasnije: 'unlock', 're-finalize', itd.
+        default="finalize",
     )
     triggered_at = Column(
         DateTime(timezone=True),
@@ -477,21 +439,16 @@ def _ensure_month_not_finalized(obj: object, date_value: date | None) -> None:
     """
     Provjerava da li je mjesec za dati tenant_code i datum već finalizovan
     u tabeli tax_monthly_results. Ako jeste → baca FinalizedPeriodModificationError.
-
-    :param obj: SQLAlchemy instance (Invoice ili CashEntry) sa tenant_code fieldom.
-    :param date_value: issue_date / entry_date koji određuje (year, month).
     """
     if date_value is None:
         return
 
     sess = object_session(obj)
     if sess is None:
-        # Nema aktivne sesije – nema ni provjere.
         return
 
     tenant_code = getattr(obj, "tenant_code", None)
     if not tenant_code:
-        # Ako model iz nekog razloga nema tenant_code, ne zaključavamo.
         return
 
     year = date_value.year
@@ -519,35 +476,23 @@ def _ensure_month_not_finalized(obj: object, date_value: date | None) -> None:
 
 @event.listens_for(Invoice, "before_update")
 def _invoice_before_update(mapper, connection, target: Invoice) -> None:
-    """
-    Blokira izmjenu fakture ako pripada već finalizovanom poreznom mjesecu.
-    """
     if target.issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
 
 
 @event.listens_for(Invoice, "before_delete")
 def _invoice_before_delete(mapper, connection, target: Invoice) -> None:
-    """
-    Blokira brisanje fakture ako pripada već finalizovanom poreznom mjesecu.
-    """
     if target.issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
 
 
 @event.listens_for(CashEntry, "before_update")
 def _cash_entry_before_update(mapper, connection, target: CashEntry) -> None:
-    """
-    Blokira izmjenu cash unosa ako pripada već finalizovanom poreznom mjesecu.
-    """
     if target.entry_date:
         _ensure_month_not_finalized(target, target.entry_date)
 
 
 @event.listens_for(CashEntry, "before_delete")
 def _cash_entry_before_delete(mapper, connection, target: CashEntry) -> None:
-    """
-    Blokira brisanje cash unosa ako pripada već finalizovanom poreznom mjesecu.
-    """
     if target.entry_date:
         _ensure_month_not_finalized(target, target.entry_date)

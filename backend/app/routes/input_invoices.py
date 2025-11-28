@@ -12,7 +12,7 @@ from fastapi import (
     Response,
     status,
 )
-from sqlalchemy import select
+from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -177,7 +177,7 @@ def create_input_invoice_slash(
 
 
 # ======================================================
-#  LIST
+#  LIST (klasična lista)
 # ======================================================
 
 
@@ -275,6 +275,136 @@ def list_input_invoices_slash(
         x_tenant_code=x_tenant_code,
         date_from=date_from,
         date_to=date_to,
+        supplier_name=supplier_name,
+        limit=limit,
+        offset=offset,
+    )
+
+
+# ======================================================
+#  LIST UI (total + items za tabelu)
+# ======================================================
+
+
+@router.get(
+    "/input-invoices/list",
+    summary="UI lista ulaznih faktura (total + items)",
+    description=(
+        "UI-friendly lista ulaznih faktura za tabelu:\n"
+        "- vraća objekt sa `total` i `items` listom,\n"
+        "- podržava filtere `year`, `month`, `supplier_name`, `limit`, `offset`.\n\n"
+        "`total` je ukupan broj zapisa koji zadovoljavaju filtere (bez obzira na limit),\n"
+        "dok `items` sadrži jednu stranicu podataka za prikaz u UI-ju."
+    ),
+)
+def list_input_invoices_ui(
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta čije ulazne fakture prikazujemo u UI-ju.",
+    ),
+    year: Optional[int] = Query(
+        None,
+        ge=2000,
+        le=2100,
+        description="Godina za filter po `issue_date` (npr. 2025).",
+    ),
+    month: Optional[int] = Query(
+        None,
+        ge=1,
+        le=12,
+        description="Mjesec za filter po `issue_date` (1–12).",
+    ),
+    supplier_name: Optional[str] = Query(
+        None,
+        description="Prefiks naziva dobavljača (npr. 'Elektro').",
+    ),
+    limit: int = Query(
+        50,
+        ge=1,
+        le=200,
+        description="Maksimalan broj redova u jednoj stranici.",
+    ),
+    offset: int = Query(
+        0,
+        ge=0,
+        description="Offset za paginaciju (broj redova koje preskačemo).",
+    ),
+):
+    """
+    UI lista ulaznih faktura – vraća total + items.
+    """
+    tenant = _require_tenant(x_tenant_code)
+
+    base_filters = [InputInvoice.tenant_code == tenant]
+
+    if year is not None:
+        base_filters.append(func.extract("year", InputInvoice.issue_date) == year)
+    if month is not None:
+        base_filters.append(func.extract("month", InputInvoice.issue_date) == month)
+    if supplier_name:
+        base_filters.append(InputInvoice.supplier_name.ilike(f"{supplier_name}%"))
+
+    # total (bez limita/offseta)
+    total_stmt = select(func.count()).select_from(InputInvoice).where(*base_filters)
+    total = db.execute(total_stmt).scalar_one()
+
+    # page items
+    items_stmt = (
+        select(InputInvoice)
+        .where(*base_filters)
+        .order_by(InputInvoice.issue_date.desc(), InputInvoice.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = db.execute(items_stmt).scalars().all()
+
+    items = []
+    for inv in rows:
+        items.append(
+            {
+                "id": inv.id,
+                "tenant_code": inv.tenant_code,
+                "supplier_name": inv.supplier_name,
+                "invoice_number": inv.invoice_number,
+                "issue_date": inv.issue_date.isoformat(),
+                "due_date": inv.due_date.isoformat() if inv.due_date else None,
+                "total_base": str(inv.total_base),
+                "total_vat": str(inv.total_vat),
+                "total_amount": str(inv.total_amount),
+                "currency": inv.currency,
+                "created_at": inv.created_at.isoformat() if inv.created_at else None,
+            }
+        )
+
+    return {
+        "total": int(total),
+        "items": items,
+    }
+
+
+@router.get(
+    "/input-invoices/list/",
+    include_in_schema=False,
+)
+def list_input_invoices_ui_slash(
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    year: Optional[int] = Query(None, ge=2000, le=2100),
+    month: Optional[int] = Query(None, ge=1, le=12),
+    supplier_name: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+):
+    """
+    Alias za /input-invoices/list sa kosom crtom na kraju.
+    """
+    return list_input_invoices_ui(
+        db=db,
+        x_tenant_code=x_tenant_code,
+        year=year,
+        month=month,
         supplier_name=supplier_name,
         limit=limit,
         offset=offset,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Literal, Optional
+from typing import Literal, Optional, List
 
 from pydantic import AliasChoices, BaseModel, Field
 from pydantic.config import ConfigDict
@@ -172,4 +172,72 @@ class CashSummaryRead(BaseModel):
         ...,
         description="Neto rezultat: income - expense za zadani period i tenant.",
         examples=["1000.00"],
+    )
+
+
+# ============================================================
+#  UI LISTING – CashRowItem & CashListResponse
+# ============================================================
+
+
+class CashRowItem(BaseModel):
+    """
+    Pojedinačni red za tabelarni prikaz u UI-ju (lista cash unosa).
+
+    Svaki red sadrži samo ključna polja koja su potrebna za tabelu:
+    - datum,
+    - vrstu (income/expense),
+    - iznos,
+    - napomenu.
+    """
+
+    model_config = BaseConfig
+
+    id: int = Field(
+        ...,
+        description="Primarni ključ zapisa (BIGINT u bazi).",
+        examples=[1],
+    )
+    entry_date: date = Field(
+        ...,
+        description="Datum knjiženja (YYYY-MM-DD).",
+        examples=["2025-01-15"],
+    )
+    kind: Literal["income", "expense"] = Field(
+        ...,
+        description="Vrsta unosa: `income` (prihod) ili `expense` (rashod).",
+        examples=["income"],
+    )
+    amount: Decimal = Field(
+        ...,
+        description="Iznos unosa (pozitivan decimalni broj).",
+        examples=["100.00"],
+    )
+    # prema klijentu vraćamo 'note', interno je 'description'
+    description: Optional[str] = Field(
+        default=None,
+        serialization_alias="note",
+        description="Napomena (ako postoji).",
+        examples=["Note 001-2025-01"],
+    )
+
+
+class CashListResponse(BaseModel):
+    """
+    Response model za UI listanje:
+
+    - total: ukupan broj zapisa koji zadovoljavaju filtere
+    - items: lista redova za tabelarni prikaz
+    """
+
+    model_config = BaseConfig
+
+    total: int = Field(
+        ...,
+        description="Ukupan broj cash unosa koji zadovoljavaju aktivne filtere.",
+        examples=[3],
+    )
+    items: List[CashRowItem] = Field(
+        ...,
+        description="Lista cash unosa u formatu pogodnom za UI tabelu.",
     )

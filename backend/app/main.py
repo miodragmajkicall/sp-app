@@ -1,148 +1,169 @@
+# /home/miso/dev/sp-app/sp-app/backend/app/main.py
+from __future__ import annotations
+
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from .routes import health as health_routes
-from .routes import tenants as tenants_routes
-from .routes import debug as debug_routes
-from .routes import cash as cash_routes
-from .routes import invoices as invoices_routes
-from .routes import invoice_attachments as invoice_attachments_routes
-from .routes import input_invoices as input_invoices_routes
-from .routes import tax as tax_routes
-from .routes import sam as sam_routes
-from .routes import dashboard as dashboard_routes
-from .models import FinalizedPeriodModificationError
-from .schemas.tax import ErrorResponse
+from app.routes import (
+    health,
+    tenants,
+    cash,
+    invoices,
+    input_invoices,
+    invoice_attachments,
+    tax,
+    dashboard,
+    sam,
+)
+from app.models import FinalizedPeriodModificationError
 
+# Tagovi za OpenAPI dokumentaciju – čisto da bude preglednije u Swagger-u
 tags_metadata = [
     {
         "name": "health",
-        "description": "Osnovni health-check endpointi za provjeru rada API-ja i baze podataka.",
+        "description": "Osnovni health check endpointi (API & baza).",
     },
     {
         "name": "tenants",
-        "description": (
-            "Upravljanje tenantima (klijentima) aplikacije. "
-            "Tenant predstavlja jednog krajnjeg korisnika (npr. jednog SP-a) sa svojim code-om i imenom."
-        ),
+        "description": "Upravljanje tenantima (logički kupci / firme).",
     },
     {
         "name": "cash",
-        "description": (
-            "Evidencija gotovinskih tokova (prihodi i rashodi) po tenantu. "
-            "Obuhvata unos, ažuriranje, brisanje i pregled cash unosa, kao i sumarne preglede."
-        ),
+        "description": "Keš knjiga – prihodi i rashodi po tenantima.",
     },
     {
         "name": "invoices",
-        "description": (
-            "Fakture po tenantu – kreiranje, pregled i brisanje faktura sa stavkama, "
-            "uključujući izračun osnovice, PDV-a i ukupnog iznosa.\n\n"
-            "U ovaj domen spadaju i **attachment-i ulaznih faktura** koji se uploaduju "
-            "radi kasnije OCR obrade i automatskog unosa ulaznih računa."
-        ),
+        "description": "Izlazne fakture koje SP izdaje svojim klijentima.",
     },
     {
         "name": "input-invoices",
-        "description": (
-            "Ulazne fakture (računi dobavljača) po tenantu – troškovi.\n\n"
-            "Ovaj modul služi za evidenciju računa tipa:\n"
-            "- zakup poslovnog prostora,\n"
-            "- struja, voda, internet,\n"
-            "- nabavka robe i materijala.\n\n"
-            "Ulazne fakture će se kasnije povezivati sa attachment-ima i cash modulom "
-            "kao izvor rashoda."
-        ),
+        "description": "Ulazne fakture (računi dobavljača) koje SP prima.",
+    },
+    {
+        "name": "invoice-attachments",
+        "description": "Upload i download PDF priloga uz izlazne fakture.",
     },
     {
         "name": "tax",
-        "description": (
-            "DUMMY modul za mjesečni i godišnji porezni obračun po tenantu.\n\n"
-            "Ovaj modul koristi pojednostavljene (dummy) porezne stope i služi za razvoj i testiranje:\n"
-            "- sumarizacija mjesečnih prihoda i rashoda,\n"
-            "- izračun oporezive osnovice,\n"
-            "- izračun poreza i doprinosa,\n"
-            "- prikaz ukupne obaveze za uplatu.\n\n"
-            "**Napomena:** Ovo nije pravni savjet niti tačan model poreskog sistema, "
-            "već razvojni alat u okviru sp-app API-ja."
-        ),
-    },
-    {
-        "name": "sam",
-        "description": (
-            "SAM (samostalni preduzetnik) pregled obaveza prema državi.\n\n"
-            "Ovaj modul koristi podatke iz poreskog modula (tax) kako bi SP-u dao jasan pregled:\n"
-            "- koliko mjesečno duguje državi (porez + doprinosi),\n"
-            "- koja je ukupna godišnja obaveza,\n"
-            "- koji mjeseci su već zaključani.\n\n"
-            "Služi kao osnova za SAM dashboard i planiranje uplata."
-        ),
+        "description": "Mjesečni i godišnji obračuni poreza i doprinosa.",
     },
     {
         "name": "dashboard",
-        "description": (
-            "Kombinovani pregled ključnih brojki za jednog tenanta (cash, fakture, tax) "
-            "za zadatu godinu. Koristi se za početni ekran u UI-ju."
-        ),
+        "description": "Kratki sažeci za početni ekran / dashboard.",
     },
     {
-        "name": "debug",
-        "description": (
-            "Interni i pomoćni endpointi za razvoj i debug. "
-            "Ovi endpointi nisu namijenjeni krajnjim korisnicima u produkciji."
-        ),
+        "name": "sam",
+        "description": "SAM blok – pregled prihoda, rashoda i obaveza.",
+    },
+    {
+        "name": "meta",
+        "description": "Meta informacije o API-ju (verzija, opis, moduli).",
     },
 ]
 
 app = FastAPI(
-    title="sp-app API",
-    version="0.1.0",
+    title="SP-APP API",
     description=(
-        "Backend API za *sp-app* – aplikaciju namijenjenu malim biznisima i samostalnim preduzetnicima.\n\n"
-        "API pokriva:\n"
-        "- registraciju i upravljanje tenantima (klijentima aplikacije)\n"
-        "- vođenje evidencije prihoda i rashoda po tenantu (cash modul)\n"
-        "- izdavanje faktura sa stavkama i PDV obračunom (invoices modul)\n"
-        "- upload attachment-a ulaznih faktura radi kasnije OCR obrade (invoice-attachments)\n"
-        "- evidenciju ulaznih faktura (input-invoices) kao troškova po tenantu\n"
-        "- DUMMY porezni modul za razvoj i simulaciju mjesečnih/godišnjih obračuna (tax modul)\n"
-        "- SAM pregled obaveza prema državi za jednog SP-a (sam modul)\n"
-        "- dashboard sa ključnim brojkama po godini (dashboard modul)\n"
-        "- health-check endpointi za potrebe monitoringa i CI/CD\n\n"
-        "Dokumentacija je organizovana po tagovima: **health**, **tenants**, **cash**, "
-        "**invoices**, **input-invoices**, **tax**, **sam**, **dashboard** i **debug**."
+        "Backend API za SP-APP – aplikaciju za samostalne preduzetnike "
+        "u BiH/RS (keš knjiga, fakture, porezi, izvještaji, dashboard...)."
     ),
+    version="0.1.0",
     openapi_tags=tags_metadata,
 )
 
+# ======================================================
+#  CORS (za frontend/web & mobilne klijente)
+# ======================================================
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # kasnije možemo suziti na konkretne domene
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ======================================================
+#  GLOBALNI HANDLER ZA FINALIZOVANE PERIODЕ
+# ======================================================
+
 
 @app.exception_handler(FinalizedPeriodModificationError)
-async def finalized_period_modification_handler(
-    request: Request, exc: FinalizedPeriodModificationError
-) -> JSONResponse:
+async def finalized_period_exception_handler(
+    request: Request,
+    exc: FinalizedPeriodModificationError,
+):
     """
-    Globalni handler koji business lock grešku pretvara u jasan 400 odgovor.
+    Globalni handler za slučajeve kada pokušamo mijenjati podatke
+    (fakture, cash unose...) u poreskom periodu koji je već finalizovan
+    preko TAX modula.
+
+    Važno za testove:
+    - vraća HTTP 400
+    - `detail` je tačno `str(exc)`, npr.
+      "Cannot modify data for finalized tax period 2025-03 for tenant lock-inv-1234."
     """
-    payload = ErrorResponse(
-        detail=(
-            f"Cannot modify data for finalized tax period "
-            f"{exc.year:04d}-{exc.month:02d}."
-        )
-    )
     return JSONResponse(
         status_code=400,
-        content=payload.model_dump(),
+        content={"detail": str(exc)},
     )
 
 
-# redoslijed nije kritičan, ali health prvo radi brzog pinga
-app.include_router(health_routes.router)
-app.include_router(tenants_routes.router)
-app.include_router(debug_routes.router)
-app.include_router(cash_routes.router)
-app.include_router(invoices_routes.router)
-app.include_router(invoice_attachments_routes.router)
-app.include_router(input_invoices_routes.router)
-app.include_router(tax_routes.router)
-app.include_router(sam_routes.router)
-app.include_router(dashboard_routes.router)
+# ======================================================
+#  GLOBALNI /meta ENDPOINT
+# ======================================================
+
+
+@app.get(
+    "/meta",
+    tags=["meta"],
+    summary="Osnovne informacije o API-ju",
+    description=(
+        "Vraća kratke meta informacije o API-ju – naziv, verziju i opis.\n\n"
+        "Ovo je korisno za health/dashboard widgete, monitoring ili "
+        "brzu provjeru koja verzija backend-a je trenutno deploy-ovana."
+    ),
+)
+def get_meta() -> dict:
+    """
+    Jednostavan endpoint za meta informacije o API-ju.
+    """
+    return {
+        "app": "sp-app-api",
+        "version": app.version,
+        "title": app.title,
+        "description": app.description,
+    }
+
+
+# ======================================================
+#  REGISTRACIJA SVIH ROUTERA
+# ======================================================
+
+# Health & status
+app.include_router(health.router)
+
+# Tenanti
+app.include_router(tenants.router)
+
+# Keš knjiga (cash)
+app.include_router(cash.router)
+
+# Izlazne fakture
+app.include_router(invoices.router)
+
+# Ulazne fakture (dobavljači)
+app.include_router(input_invoices.router)
+
+# Prilozi (PDF) uz fakture
+app.include_router(invoice_attachments.router)
+
+# Porezi i doprinosi (mjesečni/godišnji obračuni)
+app.include_router(tax.router)
+
+# Dashboard pregledi
+app.include_router(dashboard.router)
+
+# SAM blok (sumarni financijski pregled)
+app.include_router(sam.router)

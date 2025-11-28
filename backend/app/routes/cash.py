@@ -5,6 +5,7 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from sqlalchemy import case, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
@@ -162,7 +163,7 @@ def get_cash_summary(
 
 
 # ======================================================
-#  LIST
+#  LIST (klasična lista – stari API)
 # ======================================================
 
 
@@ -265,6 +266,97 @@ def list_cash(
         stmt = stmt.limit(limit)
 
     return list(db.execute(stmt).scalars().all())
+
+
+# ======================================================
+#  LIST FOR UI – /cash/list
+# ======================================================
+
+
+@router.get(
+    "/list",
+    summary="Lista cash unosa za UI tabelu",
+    description=(
+        "Vraća objekt sa poljima:\n"
+        "- `total`: ukupan broj zapisa koji zadovoljavaju filtere,\n"
+        "- `items`: lista redova za UI tabelu.\n\n"
+        "Podržava filtere po godini/mjesecu (`year`, `month`) i vrsti unosa "
+        "(`kind` = `income` ili `expense`), kao i paginaciju putem `limit`/`offset`.\n\n"
+        "Ovo je specijalizovan endpoint za frontend (tabela u UI-ju)."
+    ),
+)
+def list_cash_ui(
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta čije unose vraćamo.",
+    ),
+    year: Optional[int] = Query(
+        None,
+        ge=1900,
+        le=2100,
+        description="Filter po godini (na osnovu `entry_date`).",
+        examples=[2025],
+    ),
+    month: Optional[int] = Query(
+        None,
+        ge=1,
+        le=12,
+        description="Filter po mjesecu (1–12, na osnovu `entry_date`).",
+        examples=[1],
+    ),
+    kind: Optional[str] = Query(
+        None,
+        description="Filter po vrsti unosa: `income` ili `expense`.",
+        examples=["income"],
+    ),
+    limit: int = Query(
+        20,
+        ge=1,
+        le=200,
+        description="Maksimalan broj zapisa u jednoj stranici rezultata.",
+    ),
+    offset: int = Query(
+        0,
+        ge=0,
+        description="Broj zapisa koje preskačemo prije vraćanja rezultata.",
+    ),
+) -> dict:
+    """
+    Lista cash unosa za UI tabelu sa totalom i paginacijom.
+    """
+    tenant = _require_tenant(x_tenant_code)
+
+    base_stmt = select(CashEntry).where(CashEntry.tenant_code == tenant)
+
+    if year is not None:
+        base_stmt = base_stmt.where(func.extract("year", CashEntry.entry_date) == year)
+    if month is not None:
+        base_stmt = base_stmt.where(
+            func.extract("month", CashEntry.entry_date) == month
+        )
+    if kind is not None:
+        base_stmt = base_stmt.where(CashEntry.kind == kind)
+
+    # total
+    count_stmt = select(func.count()).select_from(base_stmt.subquery())
+    total: int = db.execute(count_stmt).scalar_one()
+
+    # items
+    items_stmt = (
+        base_stmt.order_by(CashEntry.entry_date.desc(), CashEntry.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = db.execute(items_stmt).scalars().all()
+
+    # Koristimo CashEntryRead da dobijemo konzistentan oblik (sa aliasima, npr. `note`)
+    items: List[dict] = [
+        CashEntryRead.model_validate(row).model_dump(by_alias=True) for row in rows
+    ]
+
+    return {"total": total, "items": items}
 
 
 # ======================================================
@@ -514,6 +606,9 @@ def patch_cash(
         "Briše postojeći cash unos za zadatog tenanta.\n\n"
         "Ako zapis ne postoji ili ne pripada zadatom tenant-u, vraća se 404 "
         "sa porukom `Cash entry not found`.\n\n"
+        "Ako je poreski period finalizovan, model-level zaštita će baciti "
+        "`FinalizedPeriodModificationError`, a globalni handler u `main.py` "
+        "prevesti u 400 sa jasnom porukom.\n\n"
         "Uspješno brisanje vraća HTTP 204 bez tijela odgovora."
     ),
     responses={
@@ -522,12 +617,25 @@ def patch_cash(
         },
         400: {
             "description": (
-                "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
-                "Primjer poruke: `Missing X-Tenant-Code header`."
+                "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header ili je "
+                "pokušana izmjena/brisanje perioda koji je već finalizovan.\n\n"
+                "Primjer poruke: `Missing X-Tenant-Code header` ili poruka o "
+                "finalizovanom poreskom periodu."
             ),
             "content": {
                 "application/json": {
-                    "example": {"detail": "Missing X-Tenant-Code header"}
+                    "examples": {
+                        "missing_header": {
+                            "summary": "Nedostaje tenant header",
+                            "value": {"detail": "Missing X-Tenant-Code header"},
+                        },
+                        "finalized_period": {
+                            "summary": "Poreski period je finalizovan",
+                            "value": {
+                                "detail": "Cannot modify data for finalized tax period 2025-04 for tenant t-demo."
+                            },
+                        },
+                    }
                 }
             },
         },
@@ -552,6 +660,10 @@ def delete_cash(
 ) -> Response:
     """
     Briše postojeći cash unos.
+
+    Ako je poreski period finalizovan, model-level zaštita (event listener)
+    baca `FinalizedPeriodModificationError` koju globalni handler u `main.py`
+    prevodi u 400.
     """
     tenant = _require_tenant(x_tenant_code)
     stmt = select(CashEntry).where(
@@ -562,6 +674,8 @@ def delete_cash(
     if not obj:
         raise HTTPException(status_code=404, detail="Cash entry not found")
 
+    # Samo brisanje – zaštita od finalizovanih perioda je u model event handleru.
     db.delete(obj)
     db.commit()
+
     return Response(status_code=status.HTTP_204_NO_CONTENT)

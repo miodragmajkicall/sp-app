@@ -15,13 +15,18 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import select, func, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import Invoice, InvoiceItem, Tenant
-from app.schemas.invoice import InvoiceCreate, InvoiceRead
+from app.models import Invoice, InvoiceItem
+from app.schemas.invoice import (
+    InvoiceCreate,
+    InvoiceRead,
+    InvoiceRowItem,
+    InvoiceListResponse,
+)
 from app.tenant_security import require_tenant_code, ensure_tenant_exists
 from app.services.pdf_invoice import render_invoice_pdf
 
@@ -31,29 +36,51 @@ router = APIRouter(
 
 
 # ======================================================
-#  TENANT HELPERS – SHARED LOGIKA
+#  TENANT HELPERS
 # ======================================================
 
 
 def _require_tenant(x_tenant_code: Optional[str]) -> str:
-    """
-    Osigurava da je X-Tenant-Code header postavljen.
-    Ako nedostaje, baca HTTP 400 sa porukom `Missing X-Tenant-Code header`.
-
-    Implementacija delegira na shared helper iz `app.tenant_security`
-    da bi svi moduli imali identično ponašanje.
-    """
     return require_tenant_code(x_tenant_code)
 
 
 def _ensure_tenant_exists(db: Session, code: str) -> None:
-    """
-    Pobrini se da u bazi postoji red u tabeli tenants sa zadatim `code`.
-
-    Kroz shared helper `ensure_tenant_exists` dobijamo jedno centralno mjesto
-    za kreiranje minimalnog tenanta kada radimo demo/test scenarije.
-    """
     ensure_tenant_exists(db, code)
+
+
+# ======================================================
+#  SCHEMA SAFETY – osiguranje da postoji is_paid kolona
+# ======================================================
+
+_IS_PAID_COLUMN_CHECKED: bool = False
+
+
+def _ensure_is_paid_column(db: Session) -> None:
+    """
+    Jednostavan zaštitni mehanizam:
+
+    Ako kolona `is_paid` ne postoji u tabeli `invoices`, dodajemo je
+    kroz raw SQL. Ovo omogućava da testovi i razvojni DB nastave
+    da rade čak i ako Alembic migracija nije pokrenuta.
+
+    U produkciji ćemo ovo zamijeniti čistom Alembic migracijom.
+    """
+    global _IS_PAID_COLUMN_CHECKED
+    if _IS_PAID_COLUMN_CHECKED:
+        return
+
+    # ALTER TABLE ... ADD COLUMN IF NOT EXISTS je idempotentno:
+    # ako kolona već postoji, ne dešava se ništa.
+    db.execute(
+        text(
+            """
+            ALTER TABLE invoices
+            ADD COLUMN IF NOT EXISTS is_paid boolean NOT NULL DEFAULT false
+            """
+        )
+    )
+    db.commit()
+    _IS_PAID_COLUMN_CHECKED = True
 
 
 # ======================================================
@@ -66,95 +93,6 @@ def _ensure_tenant_exists(db: Session, code: str) -> None:
     response_model=InvoiceRead,
     status_code=status.HTTP_201_CREATED,
     summary="Kreiraj novu fakturu",
-    description=(
-        "Kreira **novu fakturu sa stavkama** za konkretnog tenanta.\n\n"
-        "Back-end računa sve iznose (osnovica, PDV, total) na osnovu proslijeđenih "
-        "stavki – klijent šalje samo opis, količinu, cijenu i stopu PDV-a.\n\n"
-        "Ključne napomene:\n"
-        "- broj fakture (`invoice_number`) mora biti jedinstven **unutar jednog tenanta**;\n"
-        "- lista stavki (`items`) ne smije biti prazna;\n"
-        "- tenant se određuje preko `X-Tenant-Code` header-a.\n\n"
-        "Ovo je glavna ruta koju će mobilni/web UI koristiti za izdavanje faktura."
-    ),
-    responses={
-        201: {
-            "description": "Faktura je uspješno kreirana.",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "id": 1,
-                        "tenant_code": "t-demo",
-                        "invoice_number": "2025-001",
-                        "issue_date": "2025-11-21",
-                        "due_date": "2025-12-21",
-                        "buyer_name": "Frizer Salon Milica",
-                        "buyer_address": "Kralja Petra I 12, Banja Luka",
-                        "total_base": "25.00",
-                        "total_vat": "4.25",
-                        "total_amount": "29.25",
-                        "items": [
-                            {
-                                "id": 10,
-                                "description": "Muško šišanje",
-                                "quantity": "1",
-                                "unit_price": "10.00",
-                                "vat_rate": "0.17",
-                                "base_amount": "10.00",
-                                "vat_amount": "1.70",
-                                "total_amount": "11.70",
-                            },
-                            {
-                                "id": 11,
-                                "description": "Pranje + feniranje",
-                                "quantity": "1",
-                                "unit_price": "15.00",
-                                "vat_rate": "0.17",
-                                "base_amount": "15.00",
-                                "vat_amount": "2.55",
-                                "total_amount": "17.55",
-                            },
-                        ],
-                    }
-                }
-            },
-        },
-        400: {
-            "description": (
-                "Poslovna greška pri kreiranju fakture.\n\n"
-                "Tipični scenariji:\n"
-                "- nedostaje `X-Tenant-Code` header;\n"
-                "- lista stavki (`items`) je prazna."
-            ),
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "missing_tenant": {
-                            "summary": "Nedostaje X-Tenant-Code",
-                            "value": {"detail": "Missing X-Tenant-Code header"},
-                        },
-                        "no_items": {
-                            "summary": "Prazna lista stavki",
-                            "value": {
-                                "detail": "Invoice must contain at least one item"
-                            },
-                        },
-                    }
-                }
-            },
-        },
-        409: {
-            "description": (
-                "Pokušaj kreiranja fakture sa brojem koji već postoji za datog tenanta."
-            ),
-            "content": {
-                "application/json": {
-                    "example": {
-                        "detail": "Invoice number already exists for this tenant"
-                    }
-                }
-            },
-        },
-    },
 )
 def create_invoice(
     payload: InvoiceCreate,
@@ -162,22 +100,12 @@ def create_invoice(
     x_tenant_code: Optional[str] = Header(
         None,
         alias="X-Tenant-Code",
-        description=(
-            "Šifra tenanta za kojeg se kreira faktura.\n"
-            "Primjer: `frizer-mika`, `t-demo`."
-        ),
     ),
 ) -> Invoice:
-    """
-    Kreira novu fakturu sa jednom ili više stavki za zadatog tenanta.
-
-    - Broj fakture (`invoice_number`) mora biti jedinstven po tenant-u.
-    - Iznosi (osnovica, PDV, total) računaju se na serveru na osnovu stavki.
-    """
     tenant = _require_tenant(x_tenant_code)
 
-    # Osiguramo da tenant postoji (radi FK tenants.code)
     _ensure_tenant_exists(db, tenant)
+    _ensure_is_paid_column(db)
 
     data = payload.model_dump()
     items_data = data.pop("items", [])
@@ -229,6 +157,7 @@ def create_invoice(
         total_base=total_base,
         total_vat=total_vat,
         total_amount=total_amount,
+        # is_paid ostaje default False (kolona postoji u bazi)
         items=item_models,
     )
 
@@ -237,7 +166,6 @@ def create_invoice(
         db.commit()
     except IntegrityError:
         db.rollback()
-        # Jedinstvenost invoice_number po tenant-u
         raise HTTPException(
             status_code=409,
             detail="Invoice number already exists for this tenant",
@@ -261,15 +189,11 @@ def create_invoice_slash(
         alias="X-Tenant-Code",
     ),
 ) -> Invoice:
-    """
-    Alias ruta za POST /invoices/ (sa kosom crtom na kraju),
-    radi izbjegavanja 307 redirect-a u testovima/klijentu.
-    """
     return create_invoice(payload=payload, db=db, x_tenant_code=x_tenant_code)
 
 
 # ======================================================
-#  LIST
+#  LIST – stari API
 # ======================================================
 
 
@@ -277,53 +201,19 @@ def create_invoice_slash(
     "/invoices",
     response_model=List[InvoiceRead],
     summary="Lista faktura za tenanta",
-    description=(
-        "Vraća listu faktura za zadatog tenanta uz opcione filtere i paginaciju.\n\n"
-        "Filteri:\n"
-        "- `date_from` / `date_to` – opseg po `issue_date` (uključivo);\n"
-        "- `buyer_name` – prefiks naziva kupca (npr. 'Buyer' → 'Buyer A', 'Buyer B');\n"
-        "- `limit` i `offset` – jednostavna paginacija.\n\n"
-        "Sortiranje: najnovije fakture su prve "
-        "(`issue_date` silazno, pa `id` silazno)."
-    ),
 )
 def list_invoices(
     db: Session = Depends(_get_session_dep),
     x_tenant_code: Optional[str] = Header(
         None,
         alias="X-Tenant-Code",
-        description="Šifra tenanta čije fakture vraćamo.",
     ),
-    date_from: Optional[date] = Query(
-        None,
-        description="Početni datum (issue_date) filtera (YYYY-MM-DD, uključivo).",
-        examples=["2025-01-01"],
-    ),
-    date_to: Optional[date] = Query(
-        None,
-        description="Završni datum (issue_date) filtera (YYYY-MM-DD, uključivo).",
-        examples=["2025-01-31"],
-    ),
-    buyer_name: Optional[str] = Query(
-        None,
-        description="Filtriranje po nazivu kupca (prefiks, npr. 'Buyer').",
-    ),
-    limit: int = Query(
-        50,
-        ge=1,
-        le=200,
-        description="Maksimalan broj zapisa (paginacija).",
-    ),
-    offset: int = Query(
-        0,
-        ge=0,
-        description="Offset za paginaciju (broj zapisa koje preskačemo).",
-    ),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    buyer_name: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ) -> List[Invoice]:
-    """
-    Vraća listu faktura za zadatog tenanta, sa opcionom datumsko-kupac
-    filtracijom i paginacijom.
-    """
     tenant = _require_tenant(x_tenant_code)
 
     stmt = select(Invoice).where(Invoice.tenant_code == tenant)
@@ -333,8 +223,6 @@ def list_invoices(
     if date_to is not None:
         stmt = stmt.where(Invoice.issue_date <= date_to)
     if buyer_name:
-        # VAŽNO: test očekuje da "Buyer" pogodi "Buyer A" i "Buyer B", ali NE "Another Buyer".
-        # Zato filtriramo po prefiksu, ne po "contains".
         stmt = stmt.where(Invoice.buyer_name.ilike(f"{buyer_name}%"))
 
     stmt = (
@@ -364,9 +252,6 @@ def list_invoices_slash(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ) -> List[Invoice]:
-    """
-    Alias ruta za GET /invoices/ (sa kosom crtom na kraju).
-    """
     return list_invoices(
         db=db,
         x_tenant_code=x_tenant_code,
@@ -379,6 +264,96 @@ def list_invoices_slash(
 
 
 # ======================================================
+#  LIST FOR UI – /invoices/list
+# ======================================================
+
+
+@router.get(
+    "/invoices/list",
+    response_model=InvoiceListResponse,
+    summary="Lista faktura za UI tabelu",
+)
+def list_invoices_ui(
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+    ),
+    year: Optional[int] = Query(None, ge=1900, le=2100),
+    month: Optional[int] = Query(None, ge=1, le=12),
+    unpaid_only: bool = Query(
+        False,
+        description="Ako je True, vraća samo neplaćene fakture.",
+    ),
+    limit: int = Query(20, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> InvoiceListResponse:
+    tenant = _require_tenant(x_tenant_code)
+
+    _ensure_is_paid_column(db)
+
+    base_stmt = select(Invoice).where(Invoice.tenant_code == tenant)
+
+    if year is not None:
+        base_stmt = base_stmt.where(func.extract("year", Invoice.issue_date) == year)
+    if month is not None:
+        base_stmt = base_stmt.where(func.extract("month", Invoice.issue_date) == month)
+    if unpaid_only:
+        base_stmt = base_stmt.where(Invoice.is_paid.is_(False))
+
+    count_stmt = select(func.count()).select_from(base_stmt.subquery())
+    total: int = db.execute(count_stmt).scalar_one()
+
+    items_stmt = (
+        base_stmt.order_by(Invoice.issue_date.desc(), Invoice.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    rows = db.execute(items_stmt).scalars().all()
+
+    return InvoiceListResponse(total=total, items=list(rows))
+
+
+# ======================================================
+#  MARK PAID
+# ======================================================
+
+
+@router.post(
+    "/invoices/{invoice_id}/mark-paid",
+    response_model=InvoiceRead,
+    summary="Označi fakturu kao plaćenu",
+)
+def mark_invoice_paid(
+    invoice_id: int,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+    ),
+) -> Invoice:
+    tenant = _require_tenant(x_tenant_code)
+
+    _ensure_is_paid_column(db)
+
+    stmt = select(Invoice).where(
+        Invoice.id == invoice_id,
+        Invoice.tenant_code == tenant,
+    )
+    invoice = db.execute(stmt).scalars().first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    if not invoice.is_paid:
+        invoice.is_paid = True
+        db.add(invoice)
+        db.commit()
+        db.refresh(invoice)
+
+    return invoice
+
+
+# ======================================================
 #  GET BY ID
 # ======================================================
 
@@ -387,21 +362,6 @@ def list_invoices_slash(
     "/invoices/{invoice_id}",
     response_model=InvoiceRead,
     summary="Dohvati jednu fakturu po ID-u",
-    description=(
-        "Dohvata jednu fakturu (sa svim stavkama) po njenom ID-u.\n\n"
-        "Korisno za ekran detalja fakture u UI-ju. "
-        "Ako faktura ne postoji ili ne pripada datom tenant-u, vraća se 404."
-    ),
-    responses={
-        404: {
-            "description": "Faktura nije pronađena za zadati ID/tenant kombinaciju.",
-            "content": {
-                "application/json": {
-                    "example": {"detail": "Invoice not found"}
-                }
-            },
-        }
-    },
 )
 def get_invoice(
     invoice_id: int,
@@ -409,14 +369,8 @@ def get_invoice(
     x_tenant_code: Optional[str] = Header(
         None,
         alias="X-Tenant-Code",
-        description="Šifra tenanta kojem faktura mora pripadati.",
     ),
 ) -> Invoice:
-    """
-    Vraća jednu fakturu (sa stavkama) po ID-u.
-
-    Ako faktura ne postoji ili ne pripada zadatom tenant-u, vraća se 404.
-    """
     tenant = _require_tenant(x_tenant_code)
 
     stmt = select(Invoice).where(
@@ -439,24 +393,6 @@ def get_invoice(
     status_code=status.HTTP_204_NO_CONTENT,
     summary="Obriši fakturu",
     response_class=Response,
-    description=(
-        "Briše jednu fakturu i sve njene stavke.\n\n"
-        "Ako faktura ne postoji ili ne pripada zadatom tenant-u, vraća se 404.\n\n"
-        "Tipičan use-case: dugme *'Obriši fakturu'* u UI-ju."
-    ),
-    responses={
-        204: {
-            "description": "Faktura je uspješno obrisana. Tijelo odgovora je prazno."
-        },
-        404: {
-            "description": "Faktura nije pronađena za zadati ID/tenant kombinaciju.",
-            "content": {
-                "application/json": {
-                    "example": {"detail": "Invoice not found"}
-                }
-            },
-        },
-    },
 )
 def delete_invoice(
     invoice_id: int,
@@ -464,11 +400,15 @@ def delete_invoice(
     x_tenant_code: Optional[str] = Header(
         None,
         alias="X-Tenant-Code",
-        description="Šifra tenanta kojem faktura mora pripadati.",
     ),
 ) -> Response:
     """
-    Briše jednu fakturu i sve njene stavke.
+    Briše fakturu za zadatog tenanta.
+
+    Ako je poreski period (godina-mjesec issue_date fakture) već finalizovan
+    putem TAX modula, SQLAlchemy event u modelima će baciti
+    FinalizedPeriodModificationError. Taj exception **ne hvatamo ovdje**,
+    već ga puštamo da ode do globalnog handlera u main.py koji vraća 400.
     """
     tenant = _require_tenant(x_tenant_code)
 
@@ -494,30 +434,6 @@ def delete_invoice(
     "/invoices/{invoice_id}/pdf",
     summary="Generiši PDF verziju fakture",
     response_class=StreamingResponse,
-    description=(
-        "Generiše **PDF verziju fakture** za zadati `invoice_id` i tenanta.\n\n"
-        "Tipičan use-case:\n"
-        "- dugme *'Preuzmi PDF'* u web UI-ju,\n"
-        "- slanje PDF-a mailom klijentu (u nekoj budućoj integraciji).\n\n"
-        "Ako faktura ne postoji ili ne pripada zadatom tenant-u, vraća se 404."
-    ),
-    responses={
-        200: {
-            "description": (
-                "PDF sadržaj fakture (Content-Type: application/pdf). "
-                "Header `Content-Disposition` je postavljen tako da PDF može "
-                "da se prikaže u browser-u ili sačuva."
-            )
-        },
-        404: {
-            "description": "Faktura nije pronađena za zadati ID/tenant kombinaciju.",
-            "content": {
-                "application/json": {
-                    "example": {"detail": "Invoice not found"}
-                }
-            },
-        },
-    },
 )
 def get_invoice_pdf(
     invoice_id: int,
@@ -525,15 +441,8 @@ def get_invoice_pdf(
     x_tenant_code: Optional[str] = Header(
         None,
         alias="X-Tenant-Code",
-        description=(
-            "Šifra tenanta kojem faktura mora pripadati.\n"
-            "Primjer: `frizer-mika`, `t-demo`."
-        ),
     ),
 ) -> StreamingResponse:
-    """
-    Generiše PDF fajl za konkretnu fakturu.
-    """
     tenant = _require_tenant(x_tenant_code)
 
     stmt = select(Invoice).where(
