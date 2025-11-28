@@ -13,13 +13,14 @@ from fastapi import (
     UploadFile,
     status,
     Response,
+    Query,
 )
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import InvoiceAttachment
+from app.models import Invoice, InvoiceAttachment
 from app.schemas.invoice_attachment import InvoiceAttachmentRead
 from app.tenant_security import require_tenant_code, ensure_tenant_exists
 
@@ -204,7 +205,7 @@ def upload_invoice_attachment(
 
 
 # ======================================================
-#  LIST ATTACHMENTS ZA TENANTA
+#  LIST ATTACHMENTS ZA TENANTA (+ opcioni filter po fakturi)
 # ======================================================
 
 
@@ -215,6 +216,9 @@ def upload_invoice_attachment(
     description=(
         "Vraća listu svih uploadovanih attachment-a ulaznih faktura "
         "za zadatog tenanta.\n\n"
+        "Opcioni filter:\n"
+        "- `invoice_id` – ako je zadat, vraćaju se samo attachment-i "
+        "povezani sa tom fakturom.\n\n"
         "Ovo služi kao baza za ekran 'ulazne fakture' u UI-ju, gdje korisnik "
         "može vidjeti koje je fajlove uploadovao i kojim redoslijedom će se "
         "obrađivati (OCR, parsiranje, povezivanje sa troškovima, itd.)."
@@ -226,6 +230,13 @@ def list_invoice_attachments(
         None,
         alias="X-Tenant-Code",
         description="Šifra tenanta čije attachment-e vraćamo.",
+    ),
+    invoice_id: Optional[int] = Query(
+        None,
+        description=(
+            "Opcioni filter: ID fakture. Ako je zadat, vraćaju se samo attachment-i "
+            "koji su povezani sa tom fakturom."
+        ),
     ),
 ) -> List[InvoiceAttachmentRead]:
     """
@@ -239,10 +250,14 @@ def list_invoice_attachments(
     # ali ga ipak pozivamo radi konzistentnosti i budućih ekstenzija.
     _ensure_tenant_exists(db, tenant)
 
-    stmt = (
-        select(InvoiceAttachment)
-        .where(InvoiceAttachment.tenant_code == tenant)
-        .order_by(InvoiceAttachment.created_at.desc(), InvoiceAttachment.id.desc())
+    stmt = select(InvoiceAttachment).where(InvoiceAttachment.tenant_code == tenant)
+
+    if invoice_id is not None:
+        stmt = stmt.where(InvoiceAttachment.invoice_id == invoice_id)
+
+    stmt = stmt.order_by(
+        InvoiceAttachment.created_at.desc(),
+        InvoiceAttachment.id.desc(),
     )
 
     records = db.execute(stmt).scalars().all()
@@ -371,3 +386,78 @@ def download_invoice_attachment(
         media_type=media_type,
         filename=filename,
     )
+
+
+# ======================================================
+#  LINK ATTACHMENT → INVOICE
+# ======================================================
+
+
+@router.post(
+    "/{attachment_id}/link-to-invoice",
+    response_model=InvoiceAttachmentRead,
+    summary="Poveži attachment sa konkretnom fakturom",
+    description=(
+        "Povezuje postojeći attachment ulazne fakture sa konkretnom fakturom "
+        "(`invoice_id`) za istog tenanta.\n\n"
+        "Tipičan tok u UI-ju:\n"
+        "1. korisnik uploaduje skeniranu/slikanu fakturu (attachment),\n"
+        "2. nakon ručnog unosa ili OCR-a, kreira se ulazna faktura,\n"
+        "3. ovaj endpoint koristi se da se attachment 'zakači' na tu fakturu.\n\n"
+        "Ako attachment ili faktura ne postoje, ili ne pripadaju zadatom tenantu, "
+        "vraća se 404."
+    ),
+)
+def link_attachment_to_invoice(
+    attachment_id: int,
+    payload: dict,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem attachment i faktura moraju pripadati.",
+    ),
+) -> InvoiceAttachmentRead:
+    """
+    Povezuje attachment sa fakturom:
+
+    - validira tenant-a,
+    - provjerava da attachment postoji za tog tenanta,
+    - provjerava da faktura postoji za tog tenanta,
+    - postavlja invoice_id na attachment-u i status 'linked_to_invoice',
+    - vraća ažurirani attachment.
+    """
+    tenant = _require_tenant(x_tenant_code)
+    _ensure_tenant_exists(db, tenant)
+
+    invoice_id = payload.get("invoice_id")
+    if not isinstance(invoice_id, int):
+        raise HTTPException(status_code=400, detail="invoice_id is required and must be int")
+
+    # 1) Attachment mora postojati i pripadati tenantu
+    stmt_att = select(InvoiceAttachment).where(
+        InvoiceAttachment.id == attachment_id,
+        InvoiceAttachment.tenant_code == tenant,
+    )
+    attachment = db.execute(stmt_att).scalars().first()
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    # 2) Faktura mora postojati i pripadati istom tenantu
+    stmt_inv = select(Invoice).where(
+        Invoice.id == invoice_id,
+        Invoice.tenant_code == tenant,
+    )
+    invoice = db.execute(stmt_inv).scalars().first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # 3) Linkovanje
+    attachment.invoice_id = invoice.id
+    attachment.status = "linked_to_invoice"
+
+    db.add(attachment)
+    db.commit()
+    db.refresh(attachment)
+
+    return attachment

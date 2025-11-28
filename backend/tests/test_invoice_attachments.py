@@ -172,3 +172,119 @@ def test_invoice_attachment_download_flow() -> None:
     assert filename in content_disp
     # Sadržaj fajla
     assert download_resp.content == content
+
+
+def test_invoice_attachment_link_to_invoice_and_filter_by_invoice() -> None:
+    """
+    Tok:
+
+    - kreiramo fakturu za tenanta,
+    - uploadujemo attachment za istog tenanta,
+    - povežemo attachment sa fakturom (link-to-invoice),
+    - listamo sa invoice_id filterom i provjeravamo da je attachment tu
+      i da ima postavljen invoice_id i status 'linked_to_invoice'.
+    """
+    tenant_code = "att-tenant-link"
+    headers = {"X-Tenant-Code": tenant_code}
+
+    # 1) Kreiramo fakturu za ovog tenanta
+    invoice_payload = {
+        "invoice_number": "LINK-001",
+        "issue_date": "2025-01-10",
+        "due_date": "2025-01-20",
+        "buyer_name": "Link Buyer d.o.o.",
+        "buyer_address": "Banja Luka",
+        "items": [
+            {
+                "description": "Usluga X",
+                "quantity": "1.00",
+                "unit_price": "100.00",
+                "vat_rate": "0.17",
+            }
+        ],
+    }
+    inv_resp = client.post("/invoices/", json=invoice_payload, headers=headers)
+    assert inv_resp.status_code == 201, inv_resp.text
+    invoice_data = inv_resp.json()
+    invoice_id = invoice_data["id"]
+    assert isinstance(invoice_id, int)
+
+    # 2) Upload attachment za istog tenanta
+    filename = "ulazna-faktura-link.pdf"
+    content = b"%PDF-1.4\nLINK TEST"
+    upload_resp = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": (filename, content, "application/pdf"),
+        },
+    )
+    assert upload_resp.status_code == 201, upload_resp.text
+    att_data = upload_resp.json()
+    attachment_id = att_data["id"]
+    assert isinstance(attachment_id, int)
+    assert att_data["invoice_id"] is None
+
+    # 3) Link attachment -> invoice
+    link_resp = client.post(
+        f"/invoice-attachments/{attachment_id}/link-to-invoice",
+        headers=headers,
+        json={"invoice_id": invoice_id},
+    )
+    assert link_resp.status_code == 200, link_resp.text
+    linked = link_resp.json()
+    assert linked["id"] == attachment_id
+    assert linked["tenant_code"] == tenant_code
+    assert linked["invoice_id"] == invoice_id
+    assert linked["status"] == "linked_to_invoice"
+
+    # 4) List sa invoice_id filterom
+    list_resp = client.get(
+        "/invoice-attachments",
+        headers=headers,
+        params={"invoice_id": invoice_id},
+    )
+    assert list_resp.status_code == 200
+    items = list_resp.json()
+    assert isinstance(items, list)
+    assert len(items) >= 1
+    ids = [item["id"] for item in items]
+    assert attachment_id in ids
+    # svi vratjeni attachment-i treba da imaju isti invoice_id
+    for item in items:
+        assert item["invoice_id"] == invoice_id
+
+
+def test_invoice_attachment_link_to_invoice_fails_for_wrong_invoice() -> None:
+    """
+    Negativni scenario:
+
+    - uploadujemo attachment za jednog tenanta,
+    - pokušamo da ga povežemo sa invoice_id koji ne postoji
+      ili ne pripada tom tenantu -> očekujemo 404 'Invoice not found'.
+    """
+    tenant_code = "att-tenant-link-neg"
+    headers = {"X-Tenant-Code": tenant_code}
+
+    # Upload attachment
+    upload_resp = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": ("test-neg.pdf", b"NEG", "application/pdf"),
+        },
+    )
+    assert upload_resp.status_code == 201, upload_resp.text
+    att_data = upload_resp.json()
+    attachment_id = att_data["id"]
+    assert isinstance(attachment_id, int)
+
+    # Pokušaj linkovanja na nepostojeći invoice_id
+    link_resp = client.post(
+        f"/invoice-attachments/{attachment_id}/link-to-invoice",
+        headers=headers,
+        json={"invoice_id": 999999},
+    )
+    assert link_resp.status_code == 404
+    body = link_resp.json()
+    assert body.get("detail") == "Invoice not found"
