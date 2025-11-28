@@ -93,6 +93,68 @@ def _ensure_is_paid_column(db: Session) -> None:
     response_model=InvoiceRead,
     status_code=status.HTTP_201_CREATED,
     summary="Kreiraj novu fakturu",
+    description=(
+        "Kreira novu izlaznu fakturu za zadatog tenanta.\n\n"
+        "Tenant se određuje iz `X-Tenant-Code` headera, dok se stavke fakture "
+        "šalju u polju `items`.\n\n"
+        "Backend za svaku stavku računa osnovicu, PDV i ukupan iznos, a zatim "
+        "i agregate (`total_base`, `total_vat`, `total_amount`) na nivou fakture."
+    ),
+    responses={
+        201: {
+            "description": "Faktura je uspješno kreirana.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": 1,
+                        "tenant_code": "t-demo",
+                        "invoice_number": "2025-001",
+                        "issue_date": "2025-11-21",
+                        "due_date": "2025-12-21",
+                        "buyer_name": "Frizer Salon Milica",
+                        "buyer_address": "Kralja Petra I 12, Banja Luka",
+                        "total_base": "25.00",
+                        "total_vat": "4.25",
+                        "total_amount": "29.25",
+                        "is_paid": False,
+                        "items": [
+                            {
+                                "id": 10,
+                                "description": "Muško šišanje",
+                                "quantity": "1",
+                                "unit_price": "10.00",
+                                "vat_rate": "0.17",
+                                "base_amount": "10.00",
+                                "vat_amount": "1.70",
+                                "total_amount": "11.70",
+                            },
+                            {
+                                "id": 11,
+                                "description": "Pranje + feniranje",
+                                "quantity": "1",
+                                "unit_price": "15.00",
+                                "vat_rate": "0.17",
+                                "base_amount": "15.00",
+                                "vat_amount": "2.55",
+                                "total_amount": "17.55",
+                            },
+                        ],
+                    }
+                }
+            },
+        },
+        400: {
+            "description": "Nedostaje `X-Tenant-Code` header ili payload nije validan.",
+        },
+        409: {
+            "description": "Broj fakture već postoji za datog tenanta.",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Invoice number already exists for this tenant"}
+                }
+            },
+        },
+    },
 )
 def create_invoice(
     payload: InvoiceCreate,
@@ -201,6 +263,13 @@ def create_invoice_slash(
     "/invoices",
     response_model=List[InvoiceRead],
     summary="Lista faktura za tenanta",
+    description=(
+        "Vraća listu faktura za zadatog tenanta uz osnovne filtere i paginaciju.\n\n"
+        "Podržani filteri:\n"
+        "- `date_from` / `date_to` – opseg po `issue_date` (uključivo),\n"
+        "- `buyer_name` – prefiks naziva kupca (npr. 'Frizer').\n\n"
+        "Sortiranje: najnovije fakture su prve (`issue_date` ↓ pa `id` ↓)."
+    ),
 )
 def list_invoices(
     db: Session = Depends(_get_session_dep),
@@ -272,6 +341,56 @@ def list_invoices_slash(
     "/invoices/list",
     response_model=InvoiceListResponse,
     summary="Lista faktura za UI tabelu",
+    description=(
+        "UI-friendly lista faktura za jednog tenanta.\n\n"
+        "Vraća objekt sa:\n"
+        "- `total` – ukupan broj faktura koje zadovoljavaju filtere,\n"
+        "- `items` – jedna stranica podataka za UI tabelu.\n\n"
+        "Podržani filteri:\n"
+        "- `year` i `month` – filtriranje po `issue_date` godini/mjesecu,\n"
+        "- `unpaid_only` – ako je `true`, vraća samo neplaćene fakture.\n"
+    ),
+    responses={
+        200: {
+            "description": "Uspješno vraćena lista faktura za UI tabelu.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "total": 2,
+                        "items": [
+                            {
+                                "id": 1,
+                                "invoice_number": "2025-001",
+                                "issue_date": "2025-11-21",
+                                "due_date": "2025-12-21",
+                                "buyer_name": "Frizer Salon Milica",
+                                "buyer_address": "Kralja Petra I 12, Banja Luka",
+                                "total_base": "25.00",
+                                "total_vat": "4.25",
+                                "total_amount": "29.25",
+                                "is_paid": False,
+                            },
+                            {
+                                "id": 2,
+                                "invoice_number": "2025-002",
+                                "issue_date": "2025-11-25",
+                                "due_date": None,
+                                "buyer_name": "Salon Ljepote Ana",
+                                "buyer_address": None,
+                                "total_base": "40.00",
+                                "total_vat": "6.80",
+                                "total_amount": "46.80",
+                                "is_paid": True,
+                            },
+                        ],
+                    }
+                }
+            },
+        },
+        400: {
+            "description": "Nedostaje `X-Tenant-Code` header ili su filter parametri nevalidni.",
+        },
+    },
 )
 def list_invoices_ui(
     db: Session = Depends(_get_session_dep),
@@ -323,6 +442,53 @@ def list_invoices_ui(
     "/invoices/{invoice_id}/mark-paid",
     response_model=InvoiceRead,
     summary="Označi fakturu kao plaćenu",
+    description=(
+        "Postavlja polje `is_paid` na `true` za fakturu određenog tenanta.\n\n"
+        "Ako je faktura već plaćena, endpoint je idempotentan – samo vraća postojeće stanje.\n"
+        "Ako faktura ne postoji ili ne pripada tenant-u, vraća se 404."
+    ),
+    responses={
+        200: {
+            "description": "Faktura je označena kao plaćena (ili je već bila plaćena).",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "id": 1,
+                        "tenant_code": "t-demo",
+                        "invoice_number": "2025-001",
+                        "issue_date": "2025-11-21",
+                        "due_date": "2025-12-21",
+                        "buyer_name": "Frizer Salon Milica",
+                        "buyer_address": "Kralja Petra I 12, Banja Luka",
+                        "total_base": "25.00",
+                        "total_vat": "4.25",
+                        "total_amount": "29.25",
+                        "is_paid": True,
+                        "items": [
+                            {
+                                "id": 10,
+                                "description": "Muško šišanje",
+                                "quantity": "1",
+                                "unit_price": "10.00",
+                                "vat_rate": "0.17",
+                                "base_amount": "10.00",
+                                "vat_amount": "1.70",
+                                "total_amount": "11.70",
+                            }
+                        ],
+                    }
+                }
+            },
+        },
+        404: {
+            "description": "Faktura ne postoji ili ne pripada datom tenant-u.",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Invoice not found"}
+                }
+            },
+        },
+    },
 )
 def mark_invoice_paid(
     invoice_id: int,
@@ -434,6 +600,31 @@ def delete_invoice(
     "/invoices/{invoice_id}/pdf",
     summary="Generiši PDF verziju fakture",
     response_class=StreamingResponse,
+    description=(
+        "Generiše PDF verziju fakture i vraća je kao `application/pdf` odgovor.\n\n"
+        "Tipični scenariji:\n"
+        "- direktan prikaz u browseru,\n"
+        "- download i slanje fakture klijentu e-mailom.\n\n"
+        "Ako faktura ne postoji ili ne pripada datom tenant-u, vraća se 404."
+    ),
+    responses={
+        200: {
+            "description": "PDF fakture je uspješno generisan.",
+            "content": {
+                "application/pdf": {
+                    "schema": {"type": "string", "format": "binary"}
+                }
+            },
+        },
+        404: {
+            "description": "Faktura nije pronađena za zadati ID/tenant kombinaciju.",
+            "content": {
+                "application/json": {
+                    "example": {"detail": "Invoice not found"}
+                }
+            },
+        },
+    },
 )
 def get_invoice_pdf(
     invoice_id: int,

@@ -13,12 +13,17 @@ from fastapi import (
     status,
 )
 from sqlalchemy import select, func
+    # NOTE: func koristi se za year/month ekstrakcije i count
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
 from app.models import InputInvoice
-from app.schemas.input_invoice import InputInvoiceCreate, InputInvoiceRead
+from app.schemas.input_invoice import (
+    InputInvoiceCreate,
+    InputInvoiceRead,
+    InputInvoiceListResponse,
+)
 from app.tenant_security import require_tenant_code, ensure_tenant_exists
 
 router = APIRouter(
@@ -288,6 +293,7 @@ def list_input_invoices_slash(
 
 @router.get(
     "/input-invoices/list",
+    response_model=InputInvoiceListResponse,
     summary="UI lista ulaznih faktura (total + items)",
     description=(
         "UI-friendly lista ulaznih faktura za tabelu:\n"
@@ -296,6 +302,49 @@ def list_input_invoices_slash(
         "`total` je ukupan broj zapisa koji zadovoljavaju filtere (bez obzira na limit),\n"
         "dok `items` sadrži jednu stranicu podataka za prikaz u UI-ju."
     ),
+    responses={
+        200: {
+            "description": "Uspješno vraćena lista ulaznih faktura za UI tabelu.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "total": 2,
+                        "items": [
+                            {
+                                "id": 1,
+                                "tenant_code": "t-demo",
+                                "supplier_name": "Elektrodistribucija Banja Luka",
+                                "invoice_number": "2025-INV-001",
+                                "issue_date": "2025-11-01",
+                                "due_date": "2025-11-15",
+                                "total_base": "100.00",
+                                "total_vat": "17.00",
+                                "total_amount": "117.00",
+                                "currency": "BAM",
+                                "created_at": "2025-11-28T10:00:00+00:00",
+                            },
+                            {
+                                "id": 2,
+                                "tenant_code": "t-demo",
+                                "supplier_name": "Telekom Srpske",
+                                "invoice_number": "2025-INV-002",
+                                "issue_date": "2025-11-05",
+                                "due_date": "2025-11-20",
+                                "total_base": "50.00",
+                                "total_vat": "8.50",
+                                "total_amount": "58.50",
+                                "currency": "BAM",
+                                "created_at": "2025-11-28T11:30:00+00:00",
+                            },
+                        ],
+                    }
+                }
+            },
+        },
+        400: {
+            "description": "Nedostaje `X-Tenant-Code` header ili su filter parametri nevalidni.",
+        },
+    },
 )
 def list_input_invoices_ui(
     db: Session = Depends(_get_session_dep),
@@ -331,7 +380,7 @@ def list_input_invoices_ui(
         ge=0,
         description="Offset za paginaciju (broj redova koje preskačemo).",
     ),
-):
+) -> InputInvoiceListResponse:
     """
     UI lista ulaznih faktura – vraća total + items.
     """
@@ -360,28 +409,10 @@ def list_input_invoices_ui(
     )
     rows = db.execute(items_stmt).scalars().all()
 
-    items = []
-    for inv in rows:
-        items.append(
-            {
-                "id": inv.id,
-                "tenant_code": inv.tenant_code,
-                "supplier_name": inv.supplier_name,
-                "invoice_number": inv.invoice_number,
-                "issue_date": inv.issue_date.isoformat(),
-                "due_date": inv.due_date.isoformat() if inv.due_date else None,
-                "total_base": str(inv.total_base),
-                "total_vat": str(inv.total_vat),
-                "total_amount": str(inv.total_amount),
-                "currency": inv.currency,
-                "created_at": inv.created_at.isoformat() if inv.created_at else None,
-            }
-        )
-
-    return {
-        "total": int(total),
-        "items": items,
-    }
+    return InputInvoiceListResponse(
+        total=int(total),
+        items=rows,
+    )
 
 
 @router.get(

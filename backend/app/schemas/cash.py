@@ -188,7 +188,8 @@ class CashRowItem(BaseModel):
     - datum,
     - vrstu (income/expense),
     - iznos,
-    - napomenu.
+    - napomenu,
+    - vrijeme kreiranja (created_at).
     """
 
     model_config = BaseConfig
@@ -219,6 +220,11 @@ class CashRowItem(BaseModel):
         serialization_alias="note",
         description="Napomena (ako postoji).",
         examples=["Note 001-2025-01"],
+    )
+    created_at: datetime = Field(
+        ...,
+        description="Vrijeme kreiranja zapisa (UTC datetime).",
+        examples=["2025-01-15T10:30:00Z"],
     )
 
 

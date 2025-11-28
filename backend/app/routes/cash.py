@@ -15,6 +15,8 @@ from app.schemas.cash import (
     CashEntryRead,
     CashEntryUpdate,
     CashSummaryRead,
+    CashRowItem,
+    CashListResponse,
 )
 from app.tenant_security import require_tenant_code, ensure_tenant_exists
 
@@ -275,6 +277,7 @@ def list_cash(
 
 @router.get(
     "/list",
+    response_model=CashListResponse,
     summary="Lista cash unosa za UI tabelu",
     description=(
         "Vraća objekt sa poljima:\n"
@@ -322,7 +325,7 @@ def list_cash_ui(
         ge=0,
         description="Broj zapisa koje preskačemo prije vraćanja rezultata.",
     ),
-) -> dict:
+) -> CashListResponse:
     """
     Lista cash unosa za UI tabelu sa totalom i paginacijom.
     """
@@ -351,12 +354,12 @@ def list_cash_ui(
     )
     rows = db.execute(items_stmt).scalars().all()
 
-    # Koristimo CashEntryRead da dobijemo konzistentan oblik (sa aliasima, npr. `note`)
-    items: List[dict] = [
-        CashEntryRead.model_validate(row).model_dump(by_alias=True) for row in rows
+    # Mapiramo direktno u CashRowItem (from_attributes=True)
+    items: List[CashRowItem] = [
+        CashRowItem.model_validate(row) for row in rows
     ]
 
-    return {"total": total, "items": items}
+    return CashListResponse(total=total, items=items)
 
 
 # ======================================================
@@ -432,7 +435,7 @@ def get_cash(
     status_code=status.HTTP_201_CREATED,
     summary="Kreiraj novi cash unos",
     description=(
-        "Kreira novi cash unos (**prihod** ili **rashod**) za zadatog tenanta.\n\n"
+        "Kreira novi cash unos (**prihod** ili **rashod**) za zadatog tenenta.\n\n"
         "Tenant se određuje iz `X-Tenant-Code` headera i **ne nalazi se** u tijelu "
         "zahtjeva.\n\n"
         "Primjer zahtjeva:\n\n"

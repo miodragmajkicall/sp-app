@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, List
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -145,4 +145,98 @@ class InputInvoiceRead(InputInvoiceBase):
     created_at: datetime = Field(
         ...,
         description="Vrijeme kreiranja zapisa u bazi.",
+    )
+
+
+# ============================================================
+#  UI LISTING – REDOVI + RESPONSE MODEL
+# ============================================================
+
+
+class InputInvoiceRowItem(BaseModel):
+    """
+    Pojedinačni red za UI tabelu ulaznih faktura.
+
+    Ovo je "tanka" projekcija podataka potrebna za listanje u tabeli:
+    - osnovne informacije o dobavljaču,
+    - broj i datumi fakture,
+    - zbirni iznosi,
+    - valuta i vrijeme kreiranja.
+    """
+
+    model_config = BaseConfig
+
+    id: int = Field(..., description="ID ulazne fakture (BIGINT).")
+    tenant_code: str = Field(..., description="Tenant kod kojem faktura pripada.")
+    supplier_name: str = Field(..., description="Naziv dobavljača.")
+    invoice_number: str = Field(..., description="Broj ulazne fakture.")
+    issue_date: date = Field(..., description="Datum izdavanja ulazne fakture.")
+    due_date: Optional[date] = Field(
+        None,
+        description="Rok dospijeća (ako je poznat).",
+    )
+    total_base: Decimal = Field(..., description="Osnovica bez PDV-a.")
+    total_vat: Decimal = Field(..., description="Iznos PDV-a.")
+    total_amount: Decimal = Field(..., description="Ukupan iznos sa PDV-om.")
+    currency: str = Field(..., description="Valuta u kojoj je faktura izražena.")
+    created_at: Optional[datetime] = Field(
+        None,
+        description="Vrijeme kreiranja zapisa (može biti null kod starih migracija).",
+    )
+
+
+class InputInvoiceListResponse(BaseModel):
+    """
+    Response model za UI endpoint GET /input-invoices/list.
+
+    - `total` – ukupan broj ulaznih faktura koje zadovoljavaju aktivne filtere
+    - `items` – jedna "stranica" podataka za prikaz u tabeli
+    """
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+        json_schema_extra={
+            "example": {
+                "total": 2,
+                "items": [
+                    {
+                        "id": 1,
+                        "tenant_code": "t-demo",
+                        "supplier_name": "Elektrodistribucija Banja Luka",
+                        "invoice_number": "2025-INV-001",
+                        "issue_date": "2025-11-01",
+                        "due_date": "2025-11-15",
+                        "total_base": "100.00",
+                        "total_vat": "17.00",
+                        "total_amount": "117.00",
+                        "currency": "BAM",
+                        "created_at": "2025-11-28T10:00:00+00:00",
+                    },
+                    {
+                        "id": 2,
+                        "tenant_code": "t-demo",
+                        "supplier_name": "Telekom Srpske",
+                        "invoice_number": "2025-INV-002",
+                        "issue_date": "2025-11-05",
+                        "due_date": "2025-11-20",
+                        "total_base": "50.00",
+                        "total_vat": "8.50",
+                        "total_amount": "58.50",
+                        "currency": "BAM",
+                        "created_at": "2025-11-28T11:30:00+00:00",
+                    },
+                ],
+            }
+        },
+    )
+
+    total: int = Field(
+        ...,
+        ge=0,
+        description="Ukupan broj ulaznih faktura koje zadovoljavaju aktivne filtere.",
+    )
+    items: List[InputInvoiceRowItem] = Field(
+        ...,
+        description="Lista ulaznih faktura (jedna stranica za UI tabelu).",
     )
