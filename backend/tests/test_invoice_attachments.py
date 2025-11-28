@@ -40,6 +40,8 @@ def test_invoice_attachment_upload_and_list_happy_path() -> None:
     assert data["size_bytes"] == len(content)
     assert data["status"] == "uploaded"
     assert "created_at" in data
+    # Nova kolona treba da postoji u odgovoru (nullable)
+    assert "input_invoice_id" in data
 
     # 2) List za istog tenanta
     list_resp = client.get(
@@ -180,7 +182,7 @@ def test_invoice_attachment_link_to_invoice_and_filter_by_invoice() -> None:
     """
     Tok:
 
-    - kreiramo fakturu za tenanta,
+    - kreiramo izlaznu fakturu za tenanta,
     - uploadujemo attachment za istog tenanta,
     - povežemo attachment sa fakturom (link-to-invoice),
     - listamo sa invoice_id filterom i provjeravamo da je attachment tu
@@ -226,8 +228,9 @@ def test_invoice_attachment_link_to_invoice_and_filter_by_invoice() -> None:
     attachment_id = att_data["id"]
     assert isinstance(attachment_id, int)
     assert att_data["invoice_id"] is None
+    assert att_data["input_invoice_id"] is None
 
-    # 3) Link attachment -> invoice
+    # 3) Link attachment -> izlazna faktura
     link_resp = client.post(
         f"/invoice-attachments/{attachment_id}/link-to-invoice",
         headers=headers,
@@ -252,7 +255,7 @@ def test_invoice_attachment_link_to_invoice_and_filter_by_invoice() -> None:
     assert len(items) >= 1
     ids = [item["id"] for item in items]
     assert attachment_id in ids
-    # svi vratjeni attachment-i treba da imaju isti invoice_id
+    # svi vraćeni attachment-i treba da imaju isti invoice_id
     for item in items:
         assert item["invoice_id"] == invoice_id
 
@@ -373,3 +376,105 @@ def test_invoice_attachment_status_invalid_value() -> None:
     assert bad_resp.status_code == 400
     body = bad_resp.json()
     assert body.get("detail") == "Invalid status value"
+
+
+def test_invoice_attachment_link_to_input_invoice_ok() -> None:
+    """
+    Tok za ulazne fakture:
+
+    - kreiramo ulaznu fakturu za tenanta,
+    - uploadujemo attachment,
+    - povežemo attachment sa ulaznom fakturom (link-to-input-invoice),
+    - provjeravamo da su input_invoice_id i status ispravno postavljeni.
+    """
+    tenant_code = f"att-tenant-link-input-{int(time.time())}"
+    headers = {"X-Tenant-Code": tenant_code}
+
+    # 1) Kreiramo ulaznu fakturu za ovog tenanta
+    input_invoice_payload = {
+        "supplier_name": "Dobavljač X",
+        "supplier_tax_id": "9876543210000",
+        "supplier_address": "Ulica 1, Banja Luka",
+        "invoice_number": "INP-001",
+        "issue_date": "2025-02-01",
+        "due_date": "2025-02-10",
+        "total_base": "50.00",
+        "total_vat": "8.50",
+        "total_amount": "58.50",
+        "currency": "BAM",
+        "note": "Test ulazne fakture",
+    }
+    inp_resp = client.post(
+        "/input-invoices",
+        json=input_invoice_payload,
+        headers=headers,
+    )
+    assert inp_resp.status_code == 201, inp_resp.text
+    input_invoice = inp_resp.json()
+    input_invoice_id = input_invoice["id"]
+    assert isinstance(input_invoice_id, int)
+
+    # 2) Upload attachment za istog tenanta
+    filename = "ulazna-faktura-input-link.pdf"
+    content = b"%PDF-1.4\nINPUT LINK TEST"
+    upload_resp = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": (filename, content, "application/pdf"),
+        },
+    )
+    assert upload_resp.status_code == 201, upload_resp.text
+    att_data = upload_resp.json()
+    attachment_id = att_data["id"]
+    assert isinstance(attachment_id, int)
+    assert att_data["input_invoice_id"] is None
+
+    # 3) Link attachment -> ulazna faktura
+    link_resp = client.post(
+        f"/invoice-attachments/{attachment_id}/link-to-input-invoice",
+        headers=headers,
+        json={"input_invoice_id": input_invoice_id},
+    )
+    assert link_resp.status_code == 200, link_resp.text
+    linked = link_resp.json()
+    assert linked["id"] == attachment_id
+    assert linked["tenant_code"] == tenant_code
+    assert linked["input_invoice_id"] == input_invoice_id
+    # korisitmo status 'matched_to_invoice' za uspješno uparenu ulaznu fakturu
+    assert linked["status"] == "matched_to_invoice"
+
+
+def test_invoice_attachment_link_to_input_invoice_fails_for_wrong_input_invoice() -> None:
+    """
+    Negativni scenario za ulazne fakture:
+
+    - uploadujemo attachment za tenanta,
+    - pokušamo da ga povežemo sa input_invoice_id koji ne postoji
+      ili ne pripada tom tenantu -> očekujemo 404 'Input invoice not found'.
+    """
+    tenant_code = "att-tenant-link-input-neg"
+    headers = {"X-Tenant-Code": tenant_code}
+
+    # Upload attachment
+    upload_resp = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": ("input-neg.pdf", b"NEG", "application/pdf"),
+        },
+    )
+    assert upload_resp.status_code == 201, upload_resp.text
+    att_data = upload_resp.json()
+    attachment_id = att_data["id"]
+    assert isinstance(attachment_id, int)
+
+    # Pokušaj linkovanja na nepostojeći input_invoice_id
+    link_resp = client.post(
+        f"/invoice-attachments/{attachment_id}/link-to-input-invoice",
+        headers=headers,
+        json={"input_invoice_id": 999999},
+    )
+    assert link_resp.status_code == 404
+    body = link_resp.json()
+    assert body.get("detail") == "Input invoice not found"

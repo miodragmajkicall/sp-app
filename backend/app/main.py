@@ -7,6 +7,7 @@ from .routes import debug as debug_routes
 from .routes import cash as cash_routes
 from .routes import invoices as invoices_routes
 from .routes import invoice_attachments as invoice_attachments_routes
+from .routes import input_invoices as input_invoices_routes
 from .routes import tax as tax_routes
 from .routes import sam as sam_routes
 from .routes import dashboard as dashboard_routes
@@ -39,6 +40,18 @@ tags_metadata = [
             "uključujući izračun osnovice, PDV-a i ukupnog iznosa.\n\n"
             "U ovaj domen spadaju i **attachment-i ulaznih faktura** koji se uploaduju "
             "radi kasnije OCR obrade i automatskog unosa ulaznih računa."
+        ),
+    },
+    {
+        "name": "input-invoices",
+        "description": (
+            "Ulazne fakture (računi dobavljača) po tenantu – troškovi.\n\n"
+            "Ovaj modul služi za evidenciju računa tipa:\n"
+            "- zakup poslovnog prostora,\n"
+            "- struja, voda, internet,\n"
+            "- nabavka robe i materijala.\n\n"
+            "Ulazne fakture će se kasnije povezivati sa attachment-ima i cash modulom "
+            "kao izvor rashoda."
         ),
     },
     {
@@ -91,12 +104,13 @@ app = FastAPI(
         "- vođenje evidencije prihoda i rashoda po tenantu (cash modul)\n"
         "- izdavanje faktura sa stavkama i PDV obračunom (invoices modul)\n"
         "- upload attachment-a ulaznih faktura radi kasnije OCR obrade (invoice-attachments)\n"
+        "- evidenciju ulaznih faktura (input-invoices) kao troškova po tenantu\n"
         "- DUMMY porezni modul za razvoj i simulaciju mjesečnih/godišnjih obračuna (tax modul)\n"
         "- SAM pregled obaveza prema državi za jednog SP-a (sam modul)\n"
         "- dashboard sa ključnim brojkama po godini (dashboard modul)\n"
         "- health-check endpointi za potrebe monitoringa i CI/CD\n\n"
         "Dokumentacija je organizovana po tagovima: **health**, **tenants**, **cash**, "
-        "**invoices**, **tax**, **sam**, **dashboard** i **debug**."
+        "**invoices**, **input-invoices**, **tax**, **sam**, **dashboard** i **debug**."
     ),
     openapi_tags=tags_metadata,
 )
@@ -128,6 +142,7 @@ app.include_router(debug_routes.router)
 app.include_router(cash_routes.router)
 app.include_router(invoices_routes.router)
 app.include_router(invoice_attachments_routes.router)
+app.include_router(input_invoices_routes.router)
 app.include_router(tax_routes.router)
 app.include_router(sam_routes.router)
 app.include_router(dashboard_routes.router)

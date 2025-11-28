@@ -179,15 +179,16 @@ class InvoiceItem(Base):
 
 
 # ======================================================
-#  INVOICE ATTACHMENTS (ulazne fakture - fajlovi)
+#  INVOICE ATTACHMENTS (fajlovi računa)
 # ======================================================
 class InvoiceAttachment(Base):
     """
-    Attachment ulazne fakture (skener/slika računa, PDF, itd.).
+    Attachment fakture/računa (skener/slika računa, PDF, itd.).
 
     Sam attachment je fajl na disku, dok se u ovoj tabeli čuvaju:
     - tenant_code,
-    - opcioni invoice_id (kada ga povežemo sa konkretnom ulaznom fakturom),
+    - opcioni invoice_id (link na izlaznu fakturu),
+    - opcioni input_invoice_id (link na ulaznu fakturu – račun dobavljača),
     - ime fajla i content-type,
     - veličina,
     - putanja na disku (storage_path),
@@ -205,10 +206,17 @@ class InvoiceAttachment(Base):
         nullable=False,
     )
 
-    # Kada attachment bude povezan sa konkretnom ulaznom fakturom
+    # Kada je attachment povezan sa konkretnom izlaznom fakturom
     invoice_id = Column(
         BigInteger,
         ForeignKey("invoices.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Kada je attachment povezan sa konkretnom ulaznom fakturom (račun dobavljača)
+    input_invoice_id = Column(
+        BigInteger,
+        ForeignKey("input_invoices.id", ondelete="SET NULL"),
         nullable=True,
     )
 
@@ -229,6 +237,78 @@ class InvoiceAttachment(Base):
         DateTime(timezone=True),
         nullable=False,
         server_default=func.now(),
+    )
+
+    # Relacija ka ulaznoj fakturi (opciono)
+    input_invoice = relationship("InputInvoice", back_populates="attachments")
+
+
+# ======================================================
+#  INPUT INVOICES (ULAZNE FAKTURE – TROŠKOVI)
+# ======================================================
+class InputInvoice(Base):
+    """
+    Ulazna faktura (račun dobavljača) kao poseban entitet.
+
+    Primjeri:
+    - račun za zakup prostora
+    - račun za struju, vodu, internet
+    - račun dobavljača za robu itd.
+
+    Polja:
+    - tenant_code: kojem preduzetniku pripada
+    - supplier_*: podaci o dobavljaču
+    - invoice_number: broj računa kod dobavljača
+    - issue_date / due_date: datumi
+    - total_base / total_vat / total_amount: finansijski iznosi
+    - currency: npr. "BAM"
+    - note: interna napomena
+    """
+
+    __tablename__ = "input_invoices"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    tenant_code = Column(
+        String(64),
+        ForeignKey("tenants.code", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    supplier_name = Column(String(128), nullable=False)
+    supplier_tax_id = Column(String(64), nullable=True)
+    supplier_address = Column(String(256), nullable=True)
+
+    invoice_number = Column(String(64), nullable=False)
+    issue_date = Column(Date, nullable=False)
+    due_date = Column(Date, nullable=True)
+
+    total_base = Column(Numeric(14, 2), nullable=False, default=0)
+    total_vat = Column(Numeric(14, 2), nullable=False, default=0)
+    total_amount = Column(Numeric(14, 2), nullable=False, default=0)
+
+    currency = Column(String(8), nullable=False, default="BAM")
+    note = Column(Text, nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_code",
+            "supplier_name",
+            "invoice_number",
+            name="uq_input_invoice_per_supplier_tenant",
+        ),
+    )
+
+    # Attachment-i povezani sa ovom ulaznom fakturom
+    attachments = relationship(
+        "InvoiceAttachment",
+        back_populates="input_invoice",
     )
 
 
