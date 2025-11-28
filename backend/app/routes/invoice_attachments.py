@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Dict, List, Optional
+import os
+from pathlib import Path
+from typing import List, Optional
 
 from fastapi import (
     APIRouter,
@@ -12,12 +12,15 @@ from fastapi import (
     HTTPException,
     UploadFile,
     status,
+    Response,
 )
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.tenant_security import require_tenant_code, ensure_tenant_exists
+from app.models import InvoiceAttachment
 from app.schemas.invoice_attachment import InvoiceAttachmentRead
+from app.tenant_security import require_tenant_code, ensure_tenant_exists
 
 router = APIRouter(
     prefix="/invoice-attachments",
@@ -26,33 +29,33 @@ router = APIRouter(
 
 
 # ======================================================
-#  INTERNAL IN-MEMORY STORE (v1 bez DB)
+#  CONFIG: LOKALNI FILE STORAGE
 # ======================================================
 
-
-@dataclass
-class _AttachmentRecord:
-    id: int
-    tenant_code: str
-    filename: str
-    content_type: str
-    size_bytes: int
-    created_at: datetime
-    status: str
-    content: bytes  # binarni sadržaj fajla (za kasniju OCR obradu)
+# Osnovni direktorij za čuvanje fajlova attachment-a.
+# Može se override-ovati preko env var: INVOICE_ATTACHMENTS_DIR
+STORAGE_ROOT = Path(os.getenv("INVOICE_ATTACHMENTS_DIR", "data/invoice_attachments"))
 
 
-# Jednostavan in-memory store po procesu.
-# Kasnije se može zamijeniti za DB (tabela invoice_attachments).
-_ATTACHMENTS: Dict[int, _AttachmentRecord] = {}
-_NEXT_ID: int = 1
+def _ensure_storage_root() -> None:
+    """
+    Osigurava da osnovni direktorij za storage postoji.
+    """
+    STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 
 
-def _next_id() -> int:
-    global _NEXT_ID
-    value = _NEXT_ID
-    _NEXT_ID += 1
-    return value
+def _safe_filename(original: str | None) -> str:
+    """
+    Vrlo jednostavna sanitizacija imena fajla:
+    - uzimamo samo basename,
+    - zamjenjujemo / i \ sa _,
+    - ako je ime prazno, koristimo 'uploaded-file'.
+    """
+    if not original:
+        return "uploaded-file"
+    name = os.path.basename(original)
+    name = name.replace("/", "_").replace("\\", "_")
+    return name or "uploaded-file"
 
 
 def _require_tenant(x_tenant_code: Optional[str]) -> str:
@@ -64,9 +67,7 @@ def _require_tenant(x_tenant_code: Optional[str]) -> str:
 
 def _ensure_tenant_exists(db: Session, code: str) -> None:
     """
-    Osigurava da tenant postoji u bazi (radi FK konzistentnosti u
-    ostatku sistema). Ovde ga koristimo samo da se držimo istog
-    ponašanja kao invoices modul.
+    Osigurava da tenant postoji u bazi (radi FK konzistentnosti).
     """
     ensure_tenant_exists(db, code)
 
@@ -86,7 +87,7 @@ def _ensure_tenant_exists(db: Session, code: str) -> None:
         "za konkretnog tenanta.\n\n"
         "Ovo je prvi korak u pipeline-u za OCR i automatski unos ulaznih računa:\n"
         "- korisnik (ili mobilna aplikacija) pošalje skeniranu/slikanu fakturu,\n"
-        "- backend je sačuva kao attachment uz tenanta,\n"
+        "- backend je sačuva kao attachment uz tenanta (DB + filesystem),\n"
         "- kasnije drugi proces/endpoint može pokrenuti OCR i kreiranje ulazne fakture."
     ),
     responses={
@@ -105,6 +106,10 @@ def _ensure_tenant_exists(db: Session, code: str) -> None:
                         "missing_file": {
                             "summary": "Fajl nije poslat",
                             "value": {"detail": "File is required"},
+                        },
+                        "empty_file": {
+                            "summary": "Prazan fajl",
+                            "value": {"detail": "Uploaded file is empty"},
                         },
                     }
                 }
@@ -125,10 +130,11 @@ def upload_invoice_attachment(
     ),
 ) -> InvoiceAttachmentRead:
     """
-    Uploaduje jedan attachment i vraća metapodatke o njemu.
+    Uploaduje jedan attachment, snima binarni fajl na disk i metapodatke u DB.
 
-    Trenutno se attachment čuva u in-memory store-u (_ATTACHMENTS),
-    a kasnije se lako može prebaciti u DB bez mijenjanja API-ja.
+    API ugovor ostaje isti kao ranije:
+    - vraćamo InvoiceAttachmentRead (id, tenant_code, filename, content_type,
+      size_bytes, status, created_at).
     """
     tenant = _require_tenant(x_tenant_code)
 
@@ -136,8 +142,11 @@ def upload_invoice_attachment(
     _ensure_tenant_exists(db, tenant)
 
     if file is None:
+        # Teoretski ne bi trebalo da se desi jer je 'file' obavezan u FastAPI,
+        # ali ostavljamo provjeru radi robusnosti.
         raise HTTPException(status_code=400, detail="File is required")
 
+    # Pročitamo sadržaj fajla u memoriju (za sada je ovo sasvim ok)
     file_bytes = file.file.read()
     size_bytes = len(file_bytes)
 
@@ -147,30 +156,50 @@ def upload_invoice_attachment(
             detail="Uploaded file is empty",
         )
 
-    attachment_id = _next_id()
-    now = datetime.now(timezone.utc)
+    content_type = file.content_type or "application/octet-stream"
+    original_name = _safe_filename(file.filename)
 
-    record = _AttachmentRecord(
-        id=attachment_id,
+    # Osiguramo da direktorij postoji
+    _ensure_storage_root()
+
+    # 1) Kreiramo red u DB sa privremenim storage_path vrijednostima
+    attachment = InvoiceAttachment(
         tenant_code=tenant,
-        filename=file.filename or "uploaded-file",
-        content_type=file.content_type or "application/octet-stream",
+        invoice_id=None,  # još nije povezano sa konkretnom ulaznom fakturom
+        filename=original_name,
+        content_type=content_type,
         size_bytes=size_bytes,
-        created_at=now,
+        storage_path="__TEMP__",  # placeholder dok ne znamo ID
         status="uploaded",
-        content=file_bytes,
     )
-    _ATTACHMENTS[attachment_id] = record
 
-    return InvoiceAttachmentRead(
-        id=record.id,
-        tenant_code=record.tenant_code,
-        filename=record.filename,
-        content_type=record.content_type,
-        size_bytes=record.size_bytes,
-        status=record.status,
-        created_at=record.created_at,
-    )
+    db.add(attachment)
+    db.flush()  # dobijamo attachment.id iz sekvence
+
+    # 2) Sada znamo ID → gradimo relativnu putanju i snimamo fajl na disk
+    tenant_dir = STORAGE_ROOT / tenant
+    tenant_dir.mkdir(parents=True, exist_ok=True)
+
+    relative_path = f"{tenant}/{attachment.id}_{original_name}"
+    full_path = STORAGE_ROOT / relative_path
+
+    try:
+        full_path.write_bytes(file_bytes)
+    except OSError as exc:
+        # Ako snimanje fajla padne, rollback i prijavi grešku
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to store attachment file: {exc}",
+        ) from exc
+
+    # 3) Ažuriramo storage_path i commit-ujemo
+    attachment.storage_path = str(relative_path)
+    db.commit()
+    db.refresh(attachment)
+
+    # FastAPI + Pydantic će od SQLAlchemy objekta napraviti InvoiceAttachmentRead
+    return attachment
 
 
 # ======================================================
@@ -199,33 +228,80 @@ def list_invoice_attachments(
     ),
 ) -> List[InvoiceAttachmentRead]:
     """
-    Lista attachment-a za jednog tenanta.
+    Lista attachment-a za jednog tenanta, iz baze.
 
-    Pošto u ovoj verziji attachment-e držimo u memoriji procesa,
-    ovo je jednostavan filter preko internog store-a.
+    Sortiramo po created_at silazno (najnoviji prvi), zatim po id.
     """
     tenant = _require_tenant(x_tenant_code)
 
-    # ensure_tenant_exists ovde nije striktno neophodan (jer ne diramo DB),
-    # ali ga ipak pozivamo radi konzistentnosti i budućeg prelaska na DB.
+    # ensure_tenant_exists ovde nije strogo neophodan za SELECT,
+    # ali ga ipak pozivamo radi konzistentnosti i budućih ekstenzija.
     _ensure_tenant_exists(db, tenant)
 
-    records = [
-        a for a in _ATTACHMENTS.values() if a.tenant_code == tenant
-    ]
+    stmt = (
+        select(InvoiceAttachment)
+        .where(InvoiceAttachment.tenant_code == tenant)
+        .order_by(InvoiceAttachment.created_at.desc(), InvoiceAttachment.id.desc())
+    )
 
-    # Sortiramo po created_at silazno (najnoviji prvi)
-    records.sort(key=lambda r: r.created_at, reverse=True)
+    records = db.execute(stmt).scalars().all()
+    return list(records)
 
-    return [
-        InvoiceAttachmentRead(
-            id=r.id,
-            tenant_code=r.tenant_code,
-            filename=r.filename,
-            content_type=r.content_type,
-            size_bytes=r.size_bytes,
-            status=r.status,
-            created_at=r.created_at,
-        )
-        for r in records
-    ]
+
+# ======================================================
+#  DELETE ATTACHMENT
+# ======================================================
+
+
+@router.delete(
+    "/{attachment_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    response_class=Response,
+    summary="Obriši attachment ulazne fakture",
+    description=(
+        "Briše jedan attachment ulazne fakture za zadatog tenanta.\n\n"
+        "Operacija radi dvije stvari:\n"
+        "- briše zapis iz baze (`invoice_attachments`),\n"
+        "- pokušava obrisati i fajl sa disk-a (ako postoji).\n\n"
+        "Ako attachment ne postoji ili ne pripada datom tenantu, vraća se 404."
+    ),
+)
+def delete_invoice_attachment(
+    attachment_id: int,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem attachment mora pripadati.",
+    ),
+) -> Response:
+    """
+    Briše jedan attachment (DB zapis + fajl na disku) za konkretnog tenanta.
+    """
+    tenant = _require_tenant(x_tenant_code)
+
+    # ensure_tenant_exists radi konzistentnosti
+    _ensure_tenant_exists(db, tenant)
+
+    stmt = select(InvoiceAttachment).where(
+        InvoiceAttachment.id == attachment_id,
+        InvoiceAttachment.tenant_code == tenant,
+    )
+    attachment = db.execute(stmt).scalars().first()
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    # Pokušamo obrisati fajl sa diska, ali ne pravimo 500 ako fajl fizički ne postoji.
+    if attachment.storage_path:
+        full_path = STORAGE_ROOT / attachment.storage_path
+        try:
+            if full_path.exists():
+                full_path.unlink()
+        except OSError:
+            # Za ovaj nivo aplikacije nije kritično ako je fajl već nestao,
+            # bitno je da se biznis entitet skloni iz sistema.
+            pass
+
+    db.delete(attachment)
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

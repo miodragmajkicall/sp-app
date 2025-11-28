@@ -77,3 +77,57 @@ def test_invoice_attachment_requires_tenant_and_file() -> None:
         headers={"X-Tenant-Code": "att-tenant-b"},
     )
     assert resp_no_file.status_code == 422
+
+
+def test_invoice_attachment_delete_flow() -> None:
+    """
+    CRUD tok za attachment:
+
+    - uploadujemo fajl za konkretnog tenanta,
+    - provjeravamo da je u listi,
+    - brišemo ga preko DELETE /invoice-attachments/{id},
+    - ponovo listamo i provjeravamo da više nije u listi.
+    """
+    tenant_code = "att-tenant-delete"
+    filename = "ulazna-faktura-delete.pdf"
+    content = b"%PDF-1.4\nDELETE TEST"
+
+    # 1) Upload
+    upload_resp = client.post(
+        "/invoice-attachments",
+        headers={"X-Tenant-Code": tenant_code},
+        files={
+            "file": (filename, content, "application/pdf"),
+        },
+    )
+    assert upload_resp.status_code == 201, upload_resp.text
+    data = upload_resp.json()
+    attachment_id = data["id"]
+    assert isinstance(attachment_id, int)
+
+    # 2) List prije brisanja -> attachment mora postojati
+    list_before = client.get(
+        "/invoice-attachments",
+        headers={"X-Tenant-Code": tenant_code},
+    )
+    assert list_before.status_code == 200
+    items_before = list_before.json()
+    ids_before = [item["id"] for item in items_before]
+    assert attachment_id in ids_before
+
+    # 3) DELETE
+    delete_resp = client.delete(
+        f"/invoice-attachments/{attachment_id}",
+        headers={"X-Tenant-Code": tenant_code},
+    )
+    assert delete_resp.status_code == 204, delete_resp.text
+
+    # 4) List nakon brisanja -> attachment više ne smije biti u listi
+    list_after = client.get(
+        "/invoice-attachments",
+        headers={"X-Tenant-Code": tenant_code},
+    )
+    assert list_after.status_code == 200
+    items_after = list_after.json()
+    ids_after = [item["id"] for item in items_after]
+    assert attachment_id not in ids_after

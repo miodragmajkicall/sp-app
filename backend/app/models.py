@@ -159,7 +159,7 @@ class InvoiceItem(Base):
     description = Column(Text, nullable=False)
 
     quantity = Column(Numeric(12, 2), nullable=False, default=1)
-    unit_price = Column(Numeric(12, 2), nullable=False, default=0)
+    unit_price = Column(Numeric(14, 2), nullable=False, default=0)
 
     # PDV stopa – npr. 0.17 = 17%
     vat_rate = Column(Numeric(5, 4), nullable=False, default=0)
@@ -175,6 +175,60 @@ class InvoiceItem(Base):
         CheckConstraint("quantity > 0", name="ck_item_quantity_positive"),
         CheckConstraint("unit_price >= 0", name="ck_item_unit_price_nonneg"),
         CheckConstraint("vat_rate >= 0", name="ck_item_vat_rate_nonneg"),
+    )
+
+
+# ======================================================
+#  INVOICE ATTACHMENTS (ulazne fakture - fajlovi)
+# ======================================================
+class InvoiceAttachment(Base):
+    """
+    Attachment ulazne fakture (skener/slika računa, PDF, itd.).
+
+    Sam attachment je fajl na disku, dok se u ovoj tabeli čuvaju:
+    - tenant_code,
+    - opcioni invoice_id (kada ga povežemo sa konkretnom ulaznom fakturom),
+    - ime fajla i content-type,
+    - veličina,
+    - putanja na disku (storage_path),
+    - status obrade (uploaded, ocr_pending, ...),
+    - created_at timestamp.
+    """
+
+    __tablename__ = "invoice_attachments"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    tenant_code = Column(
+        String(64),
+        ForeignKey("tenants.code", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    # Kada attachment bude povezan sa konkretnom ulaznom fakturom
+    invoice_id = Column(
+        BigInteger,
+        ForeignKey("invoices.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    filename = Column(String(256), nullable=False)
+    content_type = Column(String(128), nullable=False)
+    size_bytes = Column(BigInteger, nullable=False)
+
+    # Relativna ili apsolutna putanja do fajla na disku
+    storage_path = Column(Text, nullable=False)
+
+    status = Column(
+        String(32),
+        nullable=False,
+        default="uploaded",
+    )
+
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
     )
 
 
