@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.db import get_session as _get_session_dep
 from app.models import TaxMonthlyResult
 from app.schemas.sam import SamMonthlyItem, SamOverviewRead, SamYearlySummary
+from app.tenant_security import require_tenant_code
 
 router = APIRouter(
     prefix="/sam",
@@ -17,20 +18,26 @@ router = APIRouter(
 
 
 def _require_tenant(
-    x_tenant_code: Optional[str] = Header(default=None, alias="X-Tenant-Code"),
+    x_tenant_code: Optional[str] = Header(
+        default=None,
+        alias="X-Tenant-Code",
+        description=(
+            "Šifra tenanta za kojeg čitamo SAM overview.\n"
+            "Primjer: `frizer-mika`, `t-demo`."
+        ),
+    ),
 ) -> str:
     """
     Minimalna validacija tenanta za SAM.
 
     Sve se radi u kontekstu jednog tenanta:
     - header X-Tenant-Code je obavezan.
+
+    Implementacija delegira na shared helper `require_tenant_code` kako bi
+    poruka o grešci bila konzistentna sa ostatkom sistema:
+    - `Missing X-Tenant-Code header`.
     """
-    if not x_tenant_code:
-        raise HTTPException(
-            status_code=400,
-            detail="X-Tenant-Code header is required for SAM endpoints.",
-        )
-    return x_tenant_code
+    return require_tenant_code(x_tenant_code)
 
 
 def _d0() -> Decimal:

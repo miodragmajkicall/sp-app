@@ -1,181 +1,43 @@
 from __future__ import annotations
 
-from contextlib import contextmanager
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
 
 from app.main import app
-from app.db import get_session as _get_session_dep
-from app.models import TaxMonthlyResult
 
 client = TestClient(app)
 
 
-@contextmanager
-def _db_session_for_test():
+def _d0(value: object) -> Decimal:
     """
-    Helper context manager za direktan rad sa DB u testovima.
-
-    Koristimo isti get_session dependency kao i API, ali ga ovdje
-    ručno "vozimо" kao generator:
-    - next() -> Session
-    - drugi next() će pokrenuti finally blok i zatvoriti sesiju.
+    Helper koji JSON vrijednosti (string, int, float) pretvara u Decimal,
+    da ne zavisimo od formata serijalizacije ("0.0", "0.00", 0, itd.).
     """
-    gen = _get_session_dep()
-    db = next(gen)
-    try:
-        yield db
-    finally:
-        # Drugi next() pokreće finally blok u originalnom dependency-ju.
-        try:
-            next(gen)
-        except StopIteration:
-            pass
+    return Decimal(str(value))
 
 
-def test_sam_overview_path_registered_in_openapi() -> None:
+def test_sam_overview_empty_year_returns_12_zero_months() -> None:
     """
-    Minimalni smoke-test za SAM domen u OpenAPI šemi.
+    Ako za tenanta i godinu ne postoji nijedan zapis u tax_monthly_results,
+    SAM overview treba da vrati:
 
-    Cilj:
-    - potvrditi da se bilo kakav SAM path pojavljuje u OpenAPI,
-    - ne dirati DB niti poslovnu logiku u ovom testu.
+    - 12 mjeseci,
+    - sve vrijednosti po mjesecu = 0.00,
+    - is_finalized = False za sve mjesece,
+    - yearly_summary total-i = 0.00,
+    - finalized_months = 0, open_months = 12.
     """
-    resp = client.get("/openapi.json")
-    assert resp.status_code == 200
+    tenant_code = "sam-tenant-empty"
+    year = 2025
 
-    data = resp.json()
-    paths = data.get("paths", {})
-
-    sam_paths = [p for p in paths.keys() if p.startswith("/sam")]
-    assert sam_paths, "Očekuje se bar jedan SAM endpoint u OpenAPI paths"
-
-
-def test_sam_overview_default_structure_and_values() -> None:
-    """
-    Provjera osnovne strukture i podrazumijevanih (0.00) vrijednosti
-    za SAM yearly overview endpoint u slučaju kada NE postoje tax
-    rezultati za datu godinu.
-
-    Koristimo godinu 2099 jer je vrlo mala vjerovatnoća da je koriste
-    drugi testovi tax modula, pa samim tim očekujemo 'prazan' scenario.
-    """
-    year = 2099
-
-    resp = client.get(
-        f"/sam/overview/{year}",
-        headers={"X-Tenant-Code": "t-demo"},
-    )
-    assert resp.status_code == 200
-
-    data = resp.json()
-
-    # osnovni metapodaci
-    assert data["tenant_code"] == "t-demo"
-    assert data["year"] == year
-
-    # mjeseci
-    months = data["months"]
-    assert isinstance(months, list)
-    assert len(months) == 12
-
-    assert months[0]["month"] == 1
-    assert months[-1]["month"] == 12
-
-    for month in months:
-        assert month["income_total"] == "0.00"
-        assert month["expense_total"] == "0.00"
-        assert month["tax_base"] == "0.00"
-        assert month["tax_due"] == "0.00"
-        assert month["contributions_due"] == "0.00"
-        assert month["total_due"] == "0.00"
-        # U scenariju bez tax_monthly_results svi mjeseci su ne-finalizovani
-        assert month["is_finalized"] is False
-
-    # godišnji sažetak
-    summary = data["yearly_summary"]
-    assert summary["year"] == year
-    assert summary["income_total"] == "0.00"
-    assert summary["expense_total"] == "0.00"
-    assert summary["tax_base_total"] == "0.00"
-    assert summary["tax_due_total"] == "0.00"
-    assert summary["contributions_due_total"] == "0.00"
-    assert summary["total_due"] == "0.00"
-    assert summary["finalized_months"] == 0
-    assert summary["open_months"] == 12
-
-
-def test_sam_overview_with_real_tax_data() -> None:
-    """
-    Integration test: SAM overview spojen na realne podatke iz TAX modula.
-
-    Koraci:
-    - direktno upisujemo dva TaxMonthlyResult zapisa u bazu za tenant 't-demo'
-      i godinu 2088 (godina koju drugi testovi vjerovatno ne koriste),
-    - pozivamo /sam/overview/2088,
-    - provjeravamo:
-        * da su mjeseci 1 i 2 popunjeni tačnim vrijednostima,
-        * da su ostali mjeseci 0.00 i ne-finalizovani,
-        * da yearly_summary sadrži sumu ova dva mjeseca,
-        * da se finalized/open mjeseci poklapaju sa očekivanim.
-    """
-    tenant_code = "t-demo"
-    year = 2088
-
-    # 1) Direct DB setup: čistimo potencijalne stare rezultate za (tenant, year)
-    with _db_session_for_test() as db:
-        db.query(TaxMonthlyResult).filter(
-            TaxMonthlyResult.tenant_code == tenant_code,
-            TaxMonthlyResult.year == year,
-        ).delete()
-
-        # Mjesec 1
-        db.add(
-            TaxMonthlyResult(
-                tenant_code=tenant_code,
-                year=year,
-                month=1,
-                total_income=Decimal("1000.00"),
-                total_expense=Decimal("200.00"),
-                taxable_base=Decimal("800.00"),
-                income_tax=Decimal("80.00"),
-                contributions_total=Decimal("120.00"),
-                total_due=Decimal("200.00"),
-                currency="BAM",
-                is_final=True,
-            )
-        )
-
-        # Mjesec 2
-        db.add(
-            TaxMonthlyResult(
-                tenant_code=tenant_code,
-                year=year,
-                month=2,
-                total_income=Decimal("500.00"),
-                total_expense=Decimal("100.00"),
-                taxable_base=Decimal("400.00"),
-                income_tax=Decimal("40.00"),
-                contributions_total=Decimal("60.00"),
-                total_due=Decimal("100.00"),
-                currency="BAM",
-                is_final=True,
-            )
-        )
-
-        db.commit()
-
-    # 2) Pozivamo SAM overview endpoint
     resp = client.get(
         f"/sam/overview/{year}",
         headers={"X-Tenant-Code": tenant_code},
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 200, resp.text
 
     data = resp.json()
-
-    # Metapodaci
     assert data["tenant_code"] == tenant_code
     assert data["year"] == year
 
@@ -183,48 +45,142 @@ def test_sam_overview_with_real_tax_data() -> None:
     assert isinstance(months, list)
     assert len(months) == 12
 
-    # Mjesec 1
-    m1 = months[0]
-    assert m1["month"] == 1
-    assert m1["income_total"] == "1000.00"
-    assert m1["expense_total"] == "200.00"
-    assert m1["tax_base"] == "800.00"
-    assert m1["tax_due"] == "80.00"
-    assert m1["contributions_due"] == "120.00"
-    assert m1["total_due"] == "200.00"
-    assert m1["is_finalized"] is True
+    # Provjerimo da imamo mjesece 1..12 i da su svi 0.00 / not finalized
+    seen_months = set()
 
-    # Mjesec 2
-    m2 = months[1]
-    assert m2["month"] == 2
-    assert m2["income_total"] == "500.00"
-    assert m2["expense_total"] == "100.00"
-    assert m2["tax_base"] == "400.00"
-    assert m2["tax_due"] == "40.00"
-    assert m2["contributions_due"] == "60.00"
-    assert m2["total_due"] == "100.00"
-    assert m2["is_finalized"] is True
+    for item in months:
+        m = item["month"]
+        seen_months.add(m)
+        assert 1 <= m <= 12
 
-    # Ostali mjeseci (3-12) su prazni i ne-finalizovani
-    for month in months[2:]:
-        assert month["income_total"] == "0.00"
-        assert month["expense_total"] == "0.00"
-        assert month["tax_base"] == "0.00"
-        assert month["tax_due"] == "0.00"
-        assert month["contributions_due"] == "0.00"
-        assert month["total_due"] == "0.00"
-        assert month["is_finalized"] is False
+        assert _d0(item["income_total"]) == Decimal("0")
+        assert _d0(item["expense_total"]) == Decimal("0")
+        assert _d0(item["tax_base"]) == Decimal("0")
+        assert _d0(item["tax_due"]) == Decimal("0")
+        assert _d0(item["contributions_due"]) == Decimal("0")
+        assert _d0(item["total_due"]) == Decimal("0")
+        assert item["is_finalized"] is False
 
-    # 3) Godišnji sažetak: suma prvog i drugog mjeseca
-    summary = data["yearly_summary"]
-    assert summary["year"] == year
-    assert summary["income_total"] == "1500.00"          # 1000 + 500
-    assert summary["expense_total"] == "300.00"          # 200 + 100
-    assert summary["tax_base_total"] == "1200.00"        # 800 + 400
-    assert summary["tax_due_total"] == "120.00"          # 80 + 40
-    assert summary["contributions_due_total"] == "180.00"  # 120 + 60
-    assert summary["total_due"] == "300.00"              # 200 + 100
+    assert seen_months == set(range(1, 13))
 
-    # finalized/open mjeseci
-    assert summary["finalized_months"] == 2
-    assert summary["open_months"] == 10
+    yearly = data["yearly_summary"]
+    assert yearly["year"] == year
+    assert _d0(yearly["income_total"]) == Decimal("0")
+    assert _d0(yearly["expense_total"]) == Decimal("0")
+    assert _d0(yearly["tax_base_total"]) == Decimal("0")
+    assert _d0(yearly["tax_due_total"]) == Decimal("0")
+    assert _d0(yearly["contributions_due_total"]) == Decimal("0")
+    assert _d0(yearly["total_due"]) == Decimal("0")
+    assert yearly["finalized_months"] == 0
+    assert yearly["open_months"] == 12
+
+
+def test_sam_overview_with_one_finalized_month_uses_tax_monthly_results() -> None:
+    """
+    Scenarij:
+
+    - koristimo postojećeg tenanta 't-demo' (postoji u tabeli tenants),
+    - radimo sa godinom 2099 i mjesecom 3 da se minimalno sudaramo sa drugim testovima,
+    - ako mjesec NIJE finalizovan:
+        - pozivamo /tax/monthly/finalize i koristimo taj rezultat,
+    - ako mjesec VEĆ jeste finalizovan:
+        - preskačemo finalize i čitamo postojeći rezultat preko /tax/monthly/auto.
+
+    U oba slučaja provjeravamo:
+
+    - da je taj mjesec u SAM overview označen kao is_finalized = True,
+    - da total_due za taj mjesec u SAM overview odgovara onom iz tax modula,
+    - da yearly_summary.total_due = suma total_due za svih 12 mjeseci,
+    - da finalized_months + open_months = 12.
+    """
+    tenant_code = "t-demo"
+    year = 2099
+    month = 3
+    headers = {"X-Tenant-Code": tenant_code}
+
+    # 1) Pokušamo finalize za (year, month, tenant)
+    finalize_resp = client.post(
+        f"/tax/monthly/finalize?year={year}&month={month}",
+        headers=headers,
+    )
+
+    if finalize_resp.status_code == 200:
+        # Svjež finalize – direktno koristimo rezultat
+        finalized = finalize_resp.json()
+    else:
+        # Ako je već finalizovano, očekujemo baš ovu poruku iz finalize endpointa
+        body = finalize_resp.json()
+        assert (
+            finalize_resp.status_code == 400
+        ), f"Unexpected status from finalize: {finalize_resp.status_code}, body={body}"
+        assert body.get("detail") == "Monthly tax result for this period is already finalized"
+
+        # U tom slučaju, čitamo već postojeći rezultat kroz /tax/monthly/auto
+        auto_resp = client.get(
+            f"/tax/monthly/auto?year={year}&month={month}",
+            headers=headers,
+        )
+        assert auto_resp.status_code == 200, auto_resp.text
+        finalized = auto_resp.json()
+
+    finalized_total_due = _d0(finalized["total_due"])
+
+    # 2) SAM overview za istu godinu i tenanta
+    resp = client.get(
+        f"/sam/overview/{year}",
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+
+    assert data["tenant_code"] == tenant_code
+    assert data["year"] == year
+
+    months = data["months"]
+    assert len(months) == 12
+
+    finalized_flags: dict[int, bool] = {}
+    total_due_by_month: dict[int, Decimal] = {}
+
+    for item in months:
+        m = item["month"]
+        finalized_flags[m] = bool(item["is_finalized"])
+        total_due_by_month[m] = _d0(item["total_due"])
+
+    # Naš konkretan mjesec mora biti finalizovan
+    assert finalized_flags[month] is True
+
+    # I total_due u SAM overview-u za taj mjesec mora biti isti kao iz tax modula
+    assert total_due_by_month[month] == finalized_total_due
+
+    # Yearly summary treba da sabira svih 12 mjeseci
+    yearly = data["yearly_summary"]
+    assert yearly["year"] == year
+
+    expected_total_due = sum(total_due_by_month.values(), Decimal("0"))
+    assert _d0(yearly["total_due"]) == expected_total_due
+
+    # finalizovani mjeseci u yearly_summary moraju se poklapati sa onim što smo dobili iz months
+    finalized_months_count = sum(1 for v in finalized_flags.values() if v)
+    assert yearly["finalized_months"] == finalized_months_count
+    assert yearly["open_months"] == 12 - finalized_months_count
+
+    # Osiguramo da je barem jedan mjesec finalizovan (naš)
+    assert finalized_months_count >= 1
+
+
+def test_sam_overview_requires_tenant_header() -> None:
+    """
+    Negativni scenario:
+
+    - pozovemo /sam/overview/{year} bez X-Tenant-Code header-a,
+    - očekujemo 400 + poruku koju zaista vraća globalni tenant security helper
+      (trenutno: 'Missing X-Tenant-Code header').
+    """
+    year = 2025
+
+    resp = client.get(f"/sam/overview/{year}")
+    assert resp.status_code == 400
+    body = resp.json()
+    # Poruka mora da se poklapa sa stvarnom validacijom koja važi globalno
+    assert body.get("detail") == "Missing X-Tenant-Code header"

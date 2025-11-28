@@ -12,6 +12,7 @@ from app.db import get_session as _get_session_dep
 from app.models import (
     CashEntry,
     Invoice,
+    InputInvoice,
     TaxMonthlyResult,
     TaxYearlyResult,
     TaxMonthlyFinalizeHistory,
@@ -149,8 +150,13 @@ def _aggregate_monthly_income_and_expense(
     """
     Agregira prihode i rashode za zadati mjesec iz:
 
+    **Prihodi:**
     - `invoices` (kolona `total_amount`, po `issue_date`)
-    - `cash_entries` (kolona `amount`, po `entry_date` i `kind`)
+    - `cash_entries` (kolona `amount` za `kind='income'`, po `entry_date`)
+
+    **Rashodi:**
+    - `cash_entries` (kolona `amount` za `kind='expense'`, po `entry_date`)
+    - `input_invoices` (kolona `total_amount`, po `issue_date`)
 
     Ovo je centralno mjesto koje kontroliše šta sve ulazi u poreski obračun.
     """
@@ -201,9 +207,20 @@ def _aggregate_monthly_income_and_expense(
     cash_income = cash_row.cash_income or Decimal("0.00")
     cash_expense = cash_row.cash_expense or Decimal("0.00")
 
+    # 3) Rashodi iz input_invoices (ulazne fakture)
+    stmt_input_invoices = select(
+        func.coalesce(func.sum(InputInvoice.total_amount), 0).label("input_expense")
+    ).where(
+        InputInvoice.tenant_code == tenant_code,
+        InputInvoice.issue_date >= month_start,
+        InputInvoice.issue_date < month_end,
+    )
+    input_row = db.execute(stmt_input_invoices).one()
+    input_expense = input_row.input_expense or Decimal("0.00")
+
     # Kombinacija izvora
     total_income = invoice_income + cash_income
-    total_expense = cash_expense
+    total_expense = cash_expense + input_expense
 
     return total_income, total_expense
 
@@ -345,12 +362,19 @@ def preview_monthly_tax(
 @router.get(
     "/tax/monthly/auto",
     response_model=MonthlyTaxSummaryRead,
-    summary="Automatski mjesečni obračun iz invoices + cash (DUMMY)",
+    summary="Automatski mjesečni obračun iz invoices + cash + input_invoices (DUMMY)",
     description=(
         "Automatski mjesečni porezni obračun za jednog tenenta na osnovu podataka "
-        "iz baze (`invoices` + `cash_entries`).\n\n"
+        "iz baze (`invoices` + `cash_entries` + `input_invoices`).\n\n"
         "Ako već postoji finalizovan rezultat u `tax_monthly_results`, vraća se "
         "persistirani obračun umjesto novog preračuna.\n\n"
+        "Agregacija izvora:\n"
+        "- prihodi:\n"
+        "    - suma `Invoice.total_amount` za zadati mjesec (po `issue_date`)\n"
+        "    - PLUS suma `CashEntry.amount` za zapise sa `kind='income'`\n"
+        "- rashodi:\n"
+        "    - suma `CashEntry.amount` za zapise sa `kind='expense'`\n"
+        "    - PLUS suma `InputInvoice.total_amount` za ulazne fakture (po `issue_date`).\n\n"
         "Primjer poziva:\n"
         "`GET /tax/monthly/auto?year=2025&month=1` "
         "sa headerom `X-Tenant-Code: t-demo`."
@@ -435,6 +459,8 @@ def auto_monthly_tax(
         - PLUS suma `CashEntry.amount` za zapise sa `kind='income'`
     - rashodi:
         - suma `CashEntry.amount` za zapise sa `kind='expense'`
+        - PLUS suma `InputInvoice.total_amount` kao trošak ulaznih faktura
+          za isti mjesec (po `issue_date`).
 
     Datumski opseg:
     - od prvog dana mjeseca (uključivo)
@@ -473,7 +499,7 @@ def auto_monthly_tax(
             currency=existing.currency,
         )
 
-    # 1) Agregacija iz invoices + cash_entries
+    # 1) Agregacija iz invoices + cash_entries + input_invoices
     total_income, total_expense = _aggregate_monthly_income_and_expense(
         year=year,
         month=month,
@@ -602,7 +628,8 @@ def finalize_monthly_tax(
 
     1. Provjerava da li već postoji zapis u `tax_monthly_results`
        za zadati (tenant_code, year, month). Ako postoji → 400.
-    2. Agregira prihode/rashode iz invoices + cash_entries (ista logika kao /auto).
+    2. Agregira prihode/rashode iz invoices + cash_entries + input_invoices
+       (ista logika kao /auto).
     3. Primjenjuje DUMMY obračun (_compute_monthly_summary).
     4. Snima rezultat u `tax_monthly_results` kao finalizovan (`is_final=True`).
     5. Upisuje audit red u `tax_monthly_finalize_history` sa snapshotom vrijednosti
@@ -632,7 +659,7 @@ def finalize_monthly_tax(
             detail="Monthly tax result for this period is already finalized",
         )
 
-    # 2) Agregacija prihoda/rashoda iz invoices + cash_entries
+    # 2) Agregacija prihoda/rashoda iz invoices + cash_entries + input_invoices
     total_income, total_expense = _aggregate_monthly_income_and_expense(
         year=year,
         month=month,
@@ -754,7 +781,7 @@ def monthly_tax_history(
         None,
         alias="X-Tenant-Code",
         description=(
-            "Šifra tenanta za kojeg se čita istorija mjesečnih obračuna.\n"
+            "Šifra tenenta za kojeg se čita istorija mjesečnih obračuna.\n"
             "Primjer: `frizer-mika`, `t-demo`."
         ),
     ),
@@ -811,7 +838,7 @@ def monthly_tax_history(
     responses={
         200: {
             "description": (
-                "Status za sve mjesece u zadatoj godini za konkretnog tenanta."
+                "Status za sve mjesece u zadatoj godini za konkretnog tenenta."
             )
         },
         400: {
@@ -846,7 +873,7 @@ def monthly_tax_status(
         None,
         alias="X-Tenant-Code",
         description=(
-            "Šifra tenanta za kojeg se provjerava status mjesečnih obračuna.\n"
+            "Šifra tenenta za kojeg se provjerava status mjesečnih obračuna.\n"
             "Primjer: `frizer-mika`, `t-demo`."
         ),
     ),
