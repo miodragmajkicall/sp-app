@@ -131,3 +131,44 @@ def test_invoice_attachment_delete_flow() -> None:
     items_after = list_after.json()
     ids_after = [item["id"] for item in items_after]
     assert attachment_id not in ids_after
+
+
+def test_invoice_attachment_download_flow() -> None:
+    """
+    Download tok za attachment:
+
+    - uploadujemo fajl za konkretnog tenanta,
+    - pozivamo GET /invoice-attachments/{id}/download,
+    - provjeravamo status, Content-Type, Content-Disposition i sadržaj fajla.
+    """
+    tenant_code = "att-tenant-download"
+    filename = "ulazna-faktura-download.pdf"
+    content = b"%PDF-1.4\nDOWNLOAD TEST"
+
+    # 1) Upload
+    upload_resp = client.post(
+        "/invoice-attachments",
+        headers={"X-Tenant-Code": tenant_code},
+        files={
+            "file": (filename, content, "application/pdf"),
+        },
+    )
+    assert upload_resp.status_code == 201, upload_resp.text
+    data = upload_resp.json()
+    attachment_id = data["id"]
+    assert isinstance(attachment_id, int)
+
+    # 2) Download
+    download_resp = client.get(
+        f"/invoice-attachments/{attachment_id}/download",
+        headers={"X-Tenant-Code": tenant_code},
+    )
+    assert download_resp.status_code == 200, download_resp.text
+    # Content-Type
+    assert download_resp.headers["content-type"].startswith("application/pdf")
+    # Content-Disposition treba da sadrži filename
+    content_disp = download_resp.headers.get("content-disposition", "")
+    assert "filename=" in content_disp
+    assert filename in content_disp
+    # Sadržaj fajla
+    assert download_resp.content == content

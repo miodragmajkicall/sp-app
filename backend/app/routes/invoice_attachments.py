@@ -14,6 +14,7 @@ from fastapi import (
     status,
     Response,
 )
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -305,3 +306,68 @@ def delete_invoice_attachment(
     db.delete(attachment)
     db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ======================================================
+#  DOWNLOAD ATTACHMENT (FAJL)
+# ======================================================
+
+
+@router.get(
+    "/{attachment_id}/download",
+    response_class=FileResponse,
+    summary="Preuzmi fajl attachment-a ulazne fakture",
+    description=(
+        "Vraća binarni sadržaj jednog attachment-a ulazne fakture za zadatog tenanta.\n\n"
+        "Tipičan use case:\n"
+        "- web UI: dugme 'Preuzmi originalnu fakturu',\n"
+        "- mobilna aplikacija: prikaz skenirane/slikane fakture.\n\n"
+        "Ako attachment ne postoji ili ne pripada datom tenantu, vraća se 404.\n"
+        "Ako je fajl fizički nestao sa diska (npr. ručno obrisan), vraća se 404."
+    ),
+)
+def download_invoice_attachment(
+    attachment_id: int,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem attachment mora pripadati.",
+    ),
+) -> FileResponse:
+    """
+    Download/preview binarnog fajla za jedan attachment.
+
+    - provjeravamo tenant,
+    - provjeravamo da attachment postoji i pripada tom tenantu,
+    - provjeravamo da fajl postoji na disku,
+    - vraćamo FileResponse sa odgovarajućim Content-Type i filename.
+    """
+    tenant = _require_tenant(x_tenant_code)
+
+    # ensure_tenant_exists radi konzistentnosti
+    _ensure_tenant_exists(db, tenant)
+
+    stmt = select(InvoiceAttachment).where(
+        InvoiceAttachment.id == attachment_id,
+        InvoiceAttachment.tenant_code == tenant,
+    )
+    attachment = db.execute(stmt).scalars().first()
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    if not attachment.storage_path:
+        raise HTTPException(status_code=404, detail="File not found")
+
+    full_path = STORAGE_ROOT / attachment.storage_path
+    if not full_path.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+
+    media_type = attachment.content_type or "application/octet-stream"
+    filename = attachment.filename or "attachment.bin"
+
+    return FileResponse(
+        path=full_path,
+        media_type=media_type,
+        filename=filename,
+    )
