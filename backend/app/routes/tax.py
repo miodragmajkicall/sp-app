@@ -73,7 +73,7 @@ def _month_bounds(year: int, month: int) -> tuple[date, date]:
     - `start` = prvi dan mjeseca (uključivo)
     - `end`   = prvi dan sljedećeg mjeseca (isključivo)
 
-    Ovaj opseg koristimo za filtriranje po datumu u invoices/cash tabelama.
+    Ovaj opseg koristimo za filtriranje po datumu u invoices/cash/input_invoices tabelama.
     """
     if month == 12:
         start = date(year, 12, 1)
@@ -159,6 +159,10 @@ def _aggregate_monthly_income_and_expense(
     - `input_invoices` (kolona `total_amount`, po `issue_date`)
 
     Ovo je centralno mjesto koje kontroliše šta sve ulazi u poreski obračun.
+
+    > Napomena: iako InputInvoice ulazi u rashod, sama InputInvoice tabela
+    > trenutno nije obuhvaćena model-level business lock-om (izmjene su dozvoljene
+    > i nakon finalizacije), dok su Invoice i CashEntry zaključani po periodu.
     """
     month_start, month_end = _month_bounds(year, month)
 
@@ -469,8 +473,9 @@ def auto_monthly_tax(
     Ako je mjesec već finalizovan (postoji zapis u `tax_monthly_results`),
     vraća se **persistirani rezultat** umjesto ponovnog preračuna.
 
-    > **Napomena:** Model je pojednostavljen i služi kao razvojni DUMMY obračun,
-    > a ne kao pravno-validan poreski sistem.
+    > **Napomena:** Business lock na nivou modela trenutno obuhvata
+    > `Invoice` i `CashEntry` (zabrana izmjene/brisanja nakon finalize),
+    > dok `InputInvoice` za sada ostaje fleksibilan (izmjene su dozvoljene).
     """
     tenant = _require_tenant(x_tenant_code)
     cfg = TAX_DUMMY_CONFIG
@@ -530,9 +535,12 @@ def auto_monthly_tax(
         "Ako za isti `(tenant_code, year, month)` već postoji zapis, finalize "
         "se odbija sa HTTP 400.\n\n"
         "Nakon finalizacije:\n"
-        "- svi pokušaji **izmjene ili brisanja** podataka koji utiču na taj period "
-        "(fakture / cash unosi u tom mjesecu) biće blokirani i vratiće HTTP 400 "
-        "sa porukom tipa `Cannot modify data for finalized tax period YYYY-MM`.\n\n"
+        "- svi pokušaji **izmjene ili brisanja** podataka u tabelama `invoices` "
+        "  i `cash_entries` za taj period biće blokirani (model-level business lock),\n"
+        "- /tax/monthly/auto će vraćati zaključani rezultat umjesto novog preračuna.\n\n"
+        "Vrijednosti iz `input_invoices` ulaze u obračun rashoda, ali sama "
+        "InputInvoice tabela još uvijek nije zaključana (izmjene su dozvoljene, "
+        "što se po potrebi može pooštriti u budućim verzijama).\n\n"
         "Svaki uspješan finalize dodatno upisuje red u `tax_monthly_finalize_history` "
         "kao audit log (snapshot vrijednosti + metadata o akciji).\n\n"
         "Primjer poziva:\n"
@@ -617,7 +625,7 @@ def finalize_monthly_tax(
         None,
         alias="X-Tenant-Code",
         description=(
-            "Šifra tenanta za kojeg finalizujemo mjesečni obračun.\n"
+            "Šifra tenenta za kojeg finalizujemo mjesečni obračun.\n"
             "Primjer: `frizer-mika`, `t-demo`."
         ),
     ),
@@ -638,8 +646,8 @@ def finalize_monthly_tax(
 
     Nakon što je mjesec finalizovan:
     - /tax/monthly/auto će vraćati persistirani rezultat (bez novog preračuna).
-    - pokušaji izmjene/brisanja faktura i cash unosa u tom mjesecu na nivou
-      modela će biti blokirani (globalni business lock u modelima).
+    - pokušaji izmjene/brisanja faktura (`Invoice`) i cash unosa (`CashEntry`)
+      u tom mjesecu na nivou modela biće blokirani (globalni business lock).
     """
     tenant = _require_tenant(x_tenant_code)
     cfg = TAX_DUMMY_CONFIG
@@ -984,7 +992,7 @@ def yearly_tax_preview(
         None,
         alias="X-Tenant-Code",
         description=(
-            "Šifra tenanta za kojeg se računa godišnji obračun.\n"
+            "Šifra tenenta za kojeg se računa godišnji obračun.\n"
             "Primjer: `frizer-mika`, `t-demo`."
         ),
     ),
@@ -1142,7 +1150,7 @@ def yearly_tax_finalize(
         None,
         alias="X-Tenant-Code",
         description=(
-            "Šifra tenanta za kojeg finalizujemo godišnji obračun.\n"
+            "Šifra tenenta za kojeg finalizujemo godišnji obračun.\n"
             "Primjer: `frizer-mika`, `t-demo`."
         ),
     ),
@@ -1156,7 +1164,7 @@ def yearly_tax_finalize(
        za (tenant_code, year). Ako postoji → 400.
     2. Učita sve finalizovane mjesece iz `tax_monthly_results` (is_final=True).
        Ako nema nijednog → 400.
-    3. Sabere polja (isti algoritam kao `/tax/yearly/preview`).
+    3. Sabere vrijednosti (isti algoritam kao `/tax/yearly/preview`).
     4. Snimi rezultat u `tax_yearly_results` kao finalizovan (`is_final=True`).
     5. Vrati zbirne vrijednosti kao `YearlyTaxSummaryRead`.
     """

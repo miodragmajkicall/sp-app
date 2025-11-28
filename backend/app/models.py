@@ -27,6 +27,18 @@ class FinalizedPeriodModificationError(Exception):
     """
     Business greška koja označava pokušaj izmjene ili brisanja podataka
     koji pripadaju već finalizovanom poreznom mjesecu.
+
+    Trenutno se ova greška podiže kroz SQLAlchemy event hook-ove na modelima:
+    - CashEntry (before_update, before_delete)
+    - Invoice   (before_update, before_delete)
+
+    To znači da, nakon što je mjesec finalizovan u `tax_monthly_results`
+    (is_final = True), nije dozvoljeno:
+    - mijenjati osnovne podatke zapisa (npr. datum, iznos) u tom mjesecu
+    - brisati zapise koji pripadaju tom mjesecu.
+
+    Cilj je da poreski period bude poslovno zaključan i da se ne može tiho
+    mijenjati osnovica nakon finalizacije.
     """
 
     def __init__(self, tenant_code: str, year: int, month: int) -> None:
@@ -187,6 +199,10 @@ class InvoiceItem(Base):
 class InvoiceAttachment(Base):
     """
     Attachment fakture/računa (skener/slika računa, PDF, itd.).
+
+    Napomena:
+    - ova tabela **nije** direktno zaključana business lock-om po periodima,
+      jer sama promjena fajla ne utiče na numerički poreski obračun.
     """
 
     __tablename__ = "invoice_attachments"
@@ -242,6 +258,14 @@ class InvoiceAttachment(Base):
 class InputInvoice(Base):
     """
     Ulazna faktura (račun dobavljača) kao poseban entitet.
+
+    Napomena:
+    - vrijednosti iz ove tabele (total_amount po issue_date) ulaze u
+      DUMMY obračun rashoda u tax modulu,
+    - ali sama InputInvoice trenutno **nije** obuhvaćena business lock-om
+      (dozvoljene su izmjene i nakon finalizacije mjesečnog obračuna).
+      Ovo možemo proširiti u jednoj od narednih iteracija, kada se kod i UI
+      dodatno stabilizuju.
     """
 
     __tablename__ = "input_invoices"
@@ -297,6 +321,11 @@ class InputInvoice(Base):
 class TaxMonthlyResult(Base):
     """
     Persistirani mjesečni obračun poreza/doprinosa po tenantu.
+
+    Ovaj entitet predstavlja zaključani rezultat za jedan (year, month, tenant).
+    Kada postoji zapis sa is_final=True, mjesec se tretira kao finalizovan,
+    a izmjene/brisanja na CashEntry i Invoice modelima za taj period
+    biće blokirane na nivou modela.
     """
 
     __tablename__ = "tax_monthly_results"
@@ -345,6 +374,9 @@ class TaxMonthlyResult(Base):
 class TaxYearlyResult(Base):
     """
     Persistirani GODIŠNJI obračun poreza/doprinosa po tenantu.
+
+    Godišnji rezultat se računa sabiranjem finalizovanih mjesečnih
+    rezultata i služi kao summary za izvještaje i uplate na nivou cijele godine.
     """
 
     __tablename__ = "tax_yearly_results"
@@ -392,6 +424,9 @@ class TaxYearlyResult(Base):
 class TaxMonthlyFinalizeHistory(Base):
     """
     Audit log za operacije nad mjesečnim poreznim obračunom.
+
+    Svaki uspješan finalize mjesečnog obračuna upisuje jedan red u ovu tabelu,
+    sa snapshot-om tadašnjih vrijednosti i osnovnim metadata o akciji.
     """
 
     __tablename__ = "tax_monthly_finalize_history"
@@ -438,7 +473,14 @@ class TaxMonthlyFinalizeHistory(Base):
 def _ensure_month_not_finalized(obj: object, date_value: date | None) -> None:
     """
     Provjerava da li je mjesec za dati tenant_code i datum već finalizovan
-    u tabeli tax_monthly_results. Ako jeste → baca FinalizedPeriodModificationError.
+    u tabeli `tax_monthly_results` (is_final = True).
+
+    Ako je period finalizovan → baca FinalizedPeriodModificationError.
+
+    Ovu helper funkciju pozivaju SQLAlchemy event hook-ovi prije update/delete
+    na modelima CashEntry i Invoice. Time se osigurava da se nakon finalize
+    rezultata za dati mjesec ne može više mijenjati niti brisati osnovni podatak
+    koji ulazi u poreski obračun za taj period.
     """
     if date_value is None:
         return
@@ -476,23 +518,44 @@ def _ensure_month_not_finalized(obj: object, date_value: date | None) -> None:
 
 @event.listens_for(Invoice, "before_update")
 def _invoice_before_update(mapper, connection, target: Invoice) -> None:
+    """
+    Globalni business lock za Invoice prije izmjene.
+
+    Svaki pokušaj izmjene fakture (npr. promjena datuma, iznosa, kupca...)
+    provjerava da li je mjesec `issue_date` finalizovan. Ako jeste → zabrana.
+    """
     if target.issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
 
 
 @event.listens_for(Invoice, "before_delete")
 def _invoice_before_delete(mapper, connection, target: Invoice) -> None:
+    """
+    Globalni business lock za Invoice prije brisanja.
+
+    Ako faktura pripada finalizovanom mjesecu (po `issue_date`), brisanje
+    se blokira.
+    """
     if target.issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
 
 
 @event.listens_for(CashEntry, "before_update")
 def _cash_entry_before_update(mapper, connection, target: CashEntry) -> None:
+    """
+    Globalni business lock za CashEntry prije izmjene.
+
+    Ako je porezni period (year/month po `entry_date`) već finalizovan
+    u `tax_monthly_results`, izmjena zapisa se blokira.
+    """
     if target.entry_date:
         _ensure_month_not_finalized(target, target.entry_date)
 
 
 @event.listens_for(CashEntry, "before_delete")
 def _cash_entry_before_delete(mapper, connection, target: CashEntry) -> None:
+    """
+    Globalni business lock za CashEntry prije brisanja.
+    """
     if target.entry_date:
         _ensure_month_not_finalized(target, target.entry_date)
