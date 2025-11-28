@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -184,7 +186,7 @@ def test_invoice_attachment_link_to_invoice_and_filter_by_invoice() -> None:
     - listamo sa invoice_id filterom i provjeravamo da je attachment tu
       i da ima postavljen invoice_id i status 'linked_to_invoice'.
     """
-    tenant_code = "att-tenant-link"
+    tenant_code = f"att-tenant-link-{int(time.time())}"
     headers = {"X-Tenant-Code": tenant_code}
 
     # 1) Kreiramo fakturu za ovog tenanta
@@ -288,3 +290,86 @@ def test_invoice_attachment_link_to_invoice_fails_for_wrong_invoice() -> None:
     assert link_resp.status_code == 404
     body = link_resp.json()
     assert body.get("detail") == "Invoice not found"
+
+
+def test_invoice_attachment_status_update_flow() -> None:
+    """
+    OCR skeleton flow:
+
+    - uploadujemo attachment za tenanta,
+    - status po defaultu treba da bude 'uploaded',
+    - postavljamo status na 'ocr_pending',
+    - zatim na 'ocr_done',
+    - provjeravamo da se statusi pravilno ažuriraju.
+    """
+    tenant_code = "att-tenant-status"
+    headers = {"X-Tenant-Code": tenant_code}
+
+    # 1) Upload
+    upload_resp = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": ("status-test.pdf", b"STATUS", "application/pdf"),
+        },
+    )
+    assert upload_resp.status_code == 201, upload_resp.text
+    data = upload_resp.json()
+    attachment_id = data["id"]
+    assert isinstance(attachment_id, int)
+    assert data["status"] == "uploaded"
+
+    # 2) Status -> ocr_pending
+    pending_resp = client.post(
+        f"/invoice-attachments/{attachment_id}/status",
+        headers=headers,
+        json={"status": "ocr_pending"},
+    )
+    assert pending_resp.status_code == 200, pending_resp.text
+    pending = pending_resp.json()
+    assert pending["id"] == attachment_id
+    assert pending["status"] == "ocr_pending"
+
+    # 3) Status -> ocr_done
+    done_resp = client.post(
+        f"/invoice-attachments/{attachment_id}/status",
+        headers=headers,
+        json={"status": "ocr_done"},
+    )
+    assert done_resp.status_code == 200, done_resp.text
+    done = done_resp.json()
+    assert done["id"] == attachment_id
+    assert done["status"] == "ocr_done"
+
+
+def test_invoice_attachment_status_invalid_value() -> None:
+    """
+    Negativni scenario:
+
+    - uploadujemo attachment za tenanta,
+    - pokušamo da postavimo status na nedozvoljenu vrijednost,
+    - očekujemo 400 + 'Invalid status value'.
+    """
+    tenant_code = "att-tenant-status-neg"
+    headers = {"X-Tenant-Code": tenant_code}
+
+    upload_resp = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": ("status-neg.pdf", b"NEG", "application/pdf"),
+        },
+    )
+    assert upload_resp.status_code == 201, upload_resp.text
+    data = upload_resp.json()
+    attachment_id = data["id"]
+    assert isinstance(attachment_id, int)
+
+    bad_resp = client.post(
+        f"/invoice-attachments/{attachment_id}/status",
+        headers=headers,
+        json={"status": "not-a-valid-status"},
+    )
+    assert bad_resp.status_code == 400
+    body = bad_resp.json()
+    assert body.get("detail") == "Invalid status value"

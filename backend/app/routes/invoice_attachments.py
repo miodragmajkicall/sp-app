@@ -29,7 +29,6 @@ router = APIRouter(
     tags=["invoices"],  # dio invoices domena (ulazne fakture)
 )
 
-
 # ======================================================
 #  CONFIG: LOKALNI FILE STORAGE
 # ======================================================
@@ -37,6 +36,16 @@ router = APIRouter(
 # Osnovni direktorij za čuvanje fajlova attachment-a.
 # Može se override-ovati preko env var: INVOICE_ATTACHMENTS_DIR
 STORAGE_ROOT = Path(os.getenv("INVOICE_ATTACHMENTS_DIR", "data/invoice_attachments"))
+
+# Dozvoljeni statusi obrade attachment-a.
+ALLOWED_ATTACHMENT_STATUSES = {
+    "uploaded",
+    "linked_to_invoice",
+    "ocr_pending",
+    "ocr_done",
+    "matched_to_invoice",
+    "error",
+}
 
 
 def _ensure_storage_root() -> None:
@@ -136,7 +145,7 @@ def upload_invoice_attachment(
 
     API ugovor ostaje isti kao ranije:
     - vraćamo InvoiceAttachmentRead (id, tenant_code, filename, content_type,
-      size_bytes, status, created_at).
+      size_bytes, status, created_at, invoice_id).
     """
     tenant = _require_tenant(x_tenant_code)
 
@@ -456,6 +465,71 @@ def link_attachment_to_invoice(
     attachment.invoice_id = invoice.id
     attachment.status = "linked_to_invoice"
 
+    db.add(attachment)
+    db.commit()
+    db.refresh(attachment)
+
+    return attachment
+
+
+# ======================================================
+#  OCR STATUS SKELETON: UPDATE STATUS
+# ======================================================
+
+
+@router.post(
+    "/{attachment_id}/status",
+    response_model=InvoiceAttachmentRead,
+    summary="Ažuriraj status obrade attachment-a",
+    description=(
+        "Ažurira status obrade za jedan attachment ulazne fakture.\n\n"
+        "Dozvoljene vrijednosti:\n"
+        "- `uploaded`\n"
+        "- `linked_to_invoice`\n"
+        "- `ocr_pending`\n"
+        "- `ocr_done`\n"
+        "- `matched_to_invoice`\n"
+        "- `error`\n\n"
+        "Ovo je skeleton za budući OCR pipeline – npr. worker može da postavi "
+        "`ocr_pending` kada krene obrada, `ocr_done` kada je analiza završena, "
+        "a kasnije `matched_to_invoice` kada je attachment uparen sa ulaznom fakturom."
+    ),
+)
+def update_attachment_status(
+    attachment_id: int,
+    payload: dict,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem attachment mora pripadati.",
+    ),
+) -> InvoiceAttachmentRead:
+    """
+    Mijenja status attachment-a u okviru dozvoljenih vrijednosti.
+
+    Ne uvodimo kompleksna pravila tranzicija (state machine) u ovoj fazi,
+    već samo provjeravamo:
+    - da je `status` validan string,
+    - da je u listi ALLOWED_ATTACHMENT_STATUSES,
+    - da attachment pripada zadatom tenant-u.
+    """
+    tenant = _require_tenant(x_tenant_code)
+    _ensure_tenant_exists(db, tenant)
+
+    new_status = payload.get("status")
+    if not isinstance(new_status, str) or new_status not in ALLOWED_ATTACHMENT_STATUSES:
+        raise HTTPException(status_code=400, detail="Invalid status value")
+
+    stmt = select(InvoiceAttachment).where(
+        InvoiceAttachment.id == attachment_id,
+        InvoiceAttachment.tenant_code == tenant,
+    )
+    attachment = db.execute(stmt).scalars().first()
+    if not attachment:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+
+    attachment.status = new_status
     db.add(attachment)
     db.commit()
     db.refresh(attachment)
