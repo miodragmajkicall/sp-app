@@ -33,3 +33,4 @@ alembic.ini.bak
 .env
 .env.*
 !.env.example
+backend/data/invoice_attachments/
