@@ -1,54 +1,29 @@
-# backend/app/db.py
 import os
-from typing import Optional, Generator
-
-from fastapi import Header
+from contextlib import contextmanager
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker, Session
 
-# DATABASE_URL iz env-a ili default iz docker-compose-a
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql+psycopg2://sp_app:sp_app@db:5432/sp_app",
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL must be set via backend/.env")
+
+# Stabilna konekcija (pre-ping) i razuman isolation level
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,
+    isolation_level="READ COMMITTED",
 )
 
-engine = create_engine(DATABASE_URL, pool_pre_ping=True, future=True)
-SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False, future=True)
+SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
-
-def get_session(
-    tenant_code: Optional[str] = Header(
-        default=None,
-        alias="X-Tenant-Code",
-        convert_underscores=False,
-    )
-) -> Generator[Session, None, None]:
-    """
-    FastAPI dependency: otvara DB session i, ako je prosleđen X-Tenant-Code,
-    postavlja search_path na '<tenant_code>, public'.
-    """
-    db = SessionLocal()
+def get_session() -> Session:
+    db: Session = SessionLocal()
     try:
-        if tenant_code:
-            db.execute(text("SET search_path TO :schema, public"), {"schema": tenant_code})
         yield db
     finally:
         db.close()
 
-
-# Legacy alias (ako negdje postoji stari import get_db)
-def get_db(
-    tenant_code: Optional[str] = Header(
-        default=None,
-        alias="X-Tenant-Code",
-        convert_underscores=False,
-    )
-) -> Generator[Session, None, None]:
-    yield from get_session(tenant_code)
-
-
-def ping() -> bool:
-    """Jednostavan DB health check (koristi se u /health)."""
+def db_ping() -> bool:
     with engine.connect() as conn:
         conn.execute(text("SELECT 1"))
     return True
