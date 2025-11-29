@@ -15,6 +15,7 @@ from app.routes import (
     tax,
     dashboard,
     sam,
+    reports,
 )
 from app.models import FinalizedPeriodModificationError
 
@@ -57,6 +58,10 @@ tags_metadata = [
         "description": "SAM blok – pregled prihoda, rashoda i obaveza.",
     },
     {
+        "name": "reports",
+        "description": "Finansijski izvještaji i pregledi (cashflow, P&L, itd.).",
+    },
+    {
         "name": "meta",
         "description": "Meta informacije o API-ju (verzija, opis, moduli).",
     },
@@ -85,7 +90,7 @@ app.add_middleware(
 )
 
 # ======================================================
-#  GLOBALNI HANDLER ZA FINALIZOVANE PERIODЕ
+#  GLOBALNI HANDLER ZA FINALIZOVANE PERIODE
 # ======================================================
 
 
@@ -167,3 +172,6 @@ app.include_router(dashboard.router)
 
 # SAM blok (sumarni financijski pregled)
 app.include_router(sam.router)
+
+# Reports (godišnji cashflow, itd.)
+app.include_router(reports.router)

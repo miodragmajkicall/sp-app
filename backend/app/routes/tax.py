@@ -163,9 +163,10 @@ def _aggregate_monthly_income_and_expense(
 
     Ovo je centralno mjesto koje kontroliše šta sve ulazi u poreski obračun.
 
-    > Napomena: iako InputInvoice ulazi u rashod, sama InputInvoice tabela
-    > trenutno nije obuhvaćena model-level business lock-om (izmjene su dozvoljene
-    > i nakon finalizacije), dok su Invoice i CashEntry zaključani po periodu.
+    Napomena:
+    - sada i `InputInvoice` učestvuje u business lock mehanizmu (model-level),
+      tako da se nakon finalizacije mjeseca ne mogu tiho mijenjati ni ulazne
+      fakture koje ulaze u ovaj obračun.
     """
     month_start, month_end = _month_bounds(year, month)
 
@@ -331,7 +332,7 @@ def preview_monthly_tax(
         None,
         alias="X-Tenant-Code",
         description=(
-            "Šifra tenanta za kojeg radimo simulaciju mjesečnog obračuna.\n"
+            "Šifra tenenta za kojeg radimo simulaciju mjesečnog obračuna.\n"
             "Primjer: `frizer-mika`, `t-demo`."
         ),
     ),
@@ -364,7 +365,7 @@ def preview_monthly_tax(
 
 
 # ======================================================
-#  MJESEČNI OBRAČUN – AUTO
+#  MJESEČNI OBRAČун – AUTO
 # ======================================================
 @router.get(
     "/tax/monthly/auto",
@@ -476,9 +477,9 @@ def auto_monthly_tax(
     Ako je mjesec već finalizovan (postoji zapis u `tax_monthly_results`),
     vraća se **persistirani rezultat** umjesto ponovnog preračuna.
 
-    > **Napomena:** Business lock na nivou modela trenutno obuhvata
-    > `Invoice` i `CashEntry` (zabrana izmjene/brisanja nakon finalize),
-    > dok `InputInvoice` za sada ostaje fleksibilan (izmjene su dozvoljene).
+    > **Napomena:** Business lock na nivou modela sada obuhvata
+    > `Invoice`, `CashEntry` i `InputInvoice` (zabrana izmjene/brisanja nakon finalize),
+    > tako da je osnovica obračuna za finalizovane mjesece poslovno zaključana.
     """
     tenant = _require_tenant(x_tenant_code)
     cfg = TAX_DUMMY_CONFIG
@@ -538,12 +539,12 @@ def auto_monthly_tax(
         "Ako za isti `(tenant_code, year, month)` već postoji zapis, finalize "
         "se odbija sa HTTP 400.\n\n"
         "Nakon finalizacije:\n"
-        "- svi pokušaji **izmjene ili brisanja** podataka u tabelama `invoices` "
-        "  i `cash_entries` za taj period biće blokirani (model-level business lock),\n"
+        "- svi pokušaji **izmjene ili brisanja** podataka u tabelama `invoices`, "
+        "  `cash_entries` i `input_invoices` za taj period biće blokirani "
+        "  (model-level business lock),\n"
         "- /tax/monthly/auto će vraćati zaključani rezultat umjesto novog preračuna.\n\n"
-        "Vrijednosti iz `input_invoices` ulaze u obračun rashoda, ali sama "
-        "InputInvoice tabela još uvijek nije zaključana (izmjene su dozvoljene, "
-        "što se po potrebi može pooštriti u budućim verzijama).\n\n"
+        "Vrijednosti iz `input_invoices` ulaze u obračun rashoda, a zahvaljujući "
+        "business lock-u i sama InputInvoice tabela je sada zaključana po periodima.\n\n"
         "Svaki uspješan finalize dodatno upisuje red u `tax_monthly_finalize_history` "
         "kao audit log (snapshot vrijednosti + metadata o akciji).\n\n"
         "Primjer poziva:\n"
@@ -649,8 +650,9 @@ def finalize_monthly_tax(
 
     Nakon što je mjesec finalizovan:
     - /tax/monthly/auto će vraćati persistirani rezultat (bez novog preračuna).
-    - pokušaji izmjene/brisanja faktura (`Invoice`) i cash unosa (`CashEntry`)
-      u tom mjesecu na nivou modela biće blokirani (globalni business lock).
+    - pokušaji izmjene/brisanja faktura (`Invoice`), cash unosa (`CashEntry`)
+      i ulaznih faktura (`InputInvoice`) u tom mjesecu na nivou modela biće
+      blokirani (globalni business lock).
     """
     tenant = _require_tenant(x_tenant_code)
     cfg = TAX_DUMMY_CONFIG
@@ -891,7 +893,7 @@ def monthly_tax_status(
     db: Session = Depends(_get_session_dep),
 ) -> MonthlyTaxStatusResponse:
     """
-    Vraća status mjesečnih obračuna za godinu/tenanta.
+    Vraća status mjesečnih obračuna za godinu/tenenta.
 
     Implementacija:
     - učita sve zapise iz `tax_monthly_results` za (tenant_code, year)
@@ -937,6 +939,109 @@ def monthly_tax_status(
         year=year,
         tenant_code=tenant,
         items=items,
+    )
+
+
+# ======================================================
+#  MJESEČNI OBRAČUN – CSV EXPORT
+# ======================================================
+@router.get(
+    "/tax/monthly/export",
+    summary="Export mjesečnog poreznog obračuna u CSV",
+    description=(
+        "Exportuje mjesečni porezni obračun za jednog tenenta u CSV format, "
+        "na osnovu iste logike kao `/tax/monthly/auto`.\n\n"
+        "CSV sadrži jednu vrstu (jedan red) sa vrijednostima za zadati mjesec:\n"
+        "kolone: year,month,tenant_code,total_income,total_expense,"
+        "taxable_base,income_tax,contributions_total,total_due,currency,is_final\n\n"
+        "Idealan je za slanje knjigovođi ili uvoz u eksterni sistem."
+    ),
+)
+def export_monthly_tax_csv(
+    year: int = Query(
+        ...,
+        ge=2000,
+        le=2100,
+        description="Godina za koju se exportuje mjesečni obračun.",
+        examples=[2025],
+    ),
+    month: int = Query(
+        ...,
+        ge=1,
+        le=12,
+        description="Mjesec za koji se exportuje mjesečni obračun (1-12).",
+        examples=[1],
+    ),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description=(
+            "Šifra tenenta za kojeg se exportuje mjesečni obračun.\n"
+            "Primjer: `frizer-mika`, `t-demo`."
+        ),
+    ),
+    db: Session = Depends(_get_session_dep),
+) -> Response:
+    """
+    CSV export mjesečnog poreznog obračuna.
+
+    Interno poziva `auto_monthly_tax` kako bi koristio istu logiku
+    agregacije i business lock-a. Ako je mjesec finalizovan, u CSV ide
+    zaključani rezultat; ako nije, ide trenutni DUMMY obračun.
+    """
+    summary = auto_monthly_tax(
+        year=year,
+        month=month,
+        x_tenant_code=x_tenant_code,
+        db=db,
+    )
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+
+    writer.writerow(
+        [
+            "year",
+            "month",
+            "tenant_code",
+            "total_income",
+            "total_expense",
+            "taxable_base",
+            "income_tax",
+            "contributions_total",
+            "total_due",
+            "currency",
+            "is_final",
+        ]
+    )
+
+    writer.writerow(
+        [
+            summary.year,
+            summary.month,
+            summary.tenant_code,
+            str(summary.total_income),
+            str(summary.total_expense),
+            str(summary.taxable_base),
+            str(summary.income_tax),
+            str(summary.contributions_total),
+            str(summary.total_due),
+            summary.currency,
+            "true" if summary.is_final else "false",
+        ]
+    )
+
+    csv_content = buffer.getvalue()
+    buffer.close()
+
+    filename = f"tax-monthly-{summary.tenant_code}-{summary.year}-{summary.month:02d}.csv"
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
     )
 
 
@@ -1067,7 +1172,7 @@ def yearly_tax_preview(
 
 
 # ======================================================
-#  GODIŠNJI OBRAČUN – FINALIZE
+#  GODIŠNJI OBRAЧUN – FINALIZE
 # ======================================================
 @router.post(
     "/tax/yearly/finalize",

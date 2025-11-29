@@ -29,9 +29,9 @@ class FinalizedPeriodModificationError(Exception):
     koji pripadaju već finalizovanom poreznom mjesecu.
 
     Trenutno se ova greška podiže kroz SQLAlchemy event hook-ove na modelima:
-    - CashEntry    (before_update, before_delete)
-    - Invoice      (before_update, before_delete)
-    - InputInvoice (before_update, before_delete)
+    - CashEntry     (before_update, before_delete)
+    - Invoice       (before_update, before_delete)
+    - InputInvoice  (before_update, before_delete)
 
     To znači da, nakon što je mjesec finalizovan u `tax_monthly_results`
     (is_final = True), nije dozvoljeno:
@@ -260,14 +260,15 @@ class InputInvoice(Base):
     """
     Ulazna faktura (račun dobavljača) kao poseban entitet.
 
-    Napomena:
-    - vrijednosti iz ove tabele (`total_amount` po `issue_date`) ulaze u
+    Napomena (VAŽNO):
+    - vrijednosti iz ove tabele (total_amount po issue_date) ulaze u
       DUMMY obračun rashoda u tax modulu,
-    - InputInvoice je obuhvaćena business lock-om po periodu, isto kao i
-      Invoice i CashEntry:
-        - nakon finalizacije `TaxMonthlyResult` za dati (year, month, tenant)
-          zabranjene su izmjene i brisanja zapisa za taj mjesec
-          (po `issue_date`).
+    - nakon uvođenja business lock-a, InputInvoice je sada obuhvaćena
+      istim model-level zaštitnim mehanizmom kao i Invoice/CashEntry:
+        - prije update/delete provjerava se da li je mjesec (year/month
+          po `issue_date`) finalizovan u `tax_monthly_results`,
+        - ako jeste, pokušaj izmjene ili brisanja baca
+          `FinalizedPeriodModificationError` i transakcija se poništava.
     """
 
     __tablename__ = "input_invoices"
@@ -480,8 +481,8 @@ def _ensure_month_not_finalized(obj: object, date_value: date | None) -> None:
     Ako je period finalizovan → baca FinalizedPeriodModificationError.
 
     Ovu helper funkciju pozivaju SQLAlchemy event hook-ovi prije update/delete
-    na modelima CashEntry, Invoice i InputInvoice. Time se osigurava da se
-    nakon finalize rezultata za dati mjesec ne može više mijenjati niti brisati
+    na modelima CashEntry, Invoice i InputInvoice. Time se osigurava da se nakon
+    finalize rezultata za dati mjesec ne može više mijenjati niti brisati
     osnovni podatak koji ulazi u poreski obračun za taj period.
     """
     if date_value is None:
@@ -568,8 +569,8 @@ def _input_invoice_before_update(mapper, connection, target: InputInvoice) -> No
     """
     Globalni business lock za InputInvoice prije izmjene.
 
-    Ako ulazna faktura pripada finalizovanom poreznom mjesecu (po `issue_date`),
-    izmjena se blokira.
+    Ako je porezni period (year/month po `issue_date`) već finalizovan
+    u `tax_monthly_results`, izmjena zapisa se blokira.
     """
     if target.issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
