@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import csv
+import io
 from decimal import Decimal
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path
+from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
@@ -43,127 +46,24 @@ def _require_tenant(
 def _d0() -> Decimal:
     """
     Helper za Decimal(0.00) sa 2 decimale.
-
-    Koristi se kao početna vrijednost u sumiranju (sum(iterable, _d0())).
     """
     return Decimal("0.00")
 
 
-@router.get(
-    "/overview/{year}",
-    response_model=SamOverviewRead,
-    summary="Godišnji SAM overview (12 mjeseci + godišnji sažetak)",
-    description=(
-        "Vraća kombinovani SAM pregled obaveza samostalnog preduzetnika za zadanu godinu.\n\n"
-        "Ovaj endpoint spaja podatke iz TAX modula (`tax_monthly_results`) u format pogodan "
-        "za dashboard i grafove:\n\n"
-        "- za finalizovane mjesece koristi vrijednosti iz `TaxMonthlyResult`,\n"
-        "- za mjesece bez zapisa vraća početne vrijednosti 0.00 i `is_finalized = false`,\n"
-        "- uvijek vraća tačno 12 elemenata u listi `months`.\n\n"
-        "Na ovaj način UI dobija stabilan shape (uvijek 12 mjeseci) i tačne podatke za zaključane mjesece.\n"
-        "Kasnije se endpoint može proširiti integracijom sa preview obračunom za otvorene mjesece."
-    ),
-    operation_id="sam_overview",
-    responses={
-        200: {
-            "description": "Uspješan SAM overview za zadanu godinu i tenanta.",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "tenant_code": "t-demo",
-                        "year": 2025,
-                        "months": [
-                            {
-                                "month": 1,
-                                "month_label": "01.2025",
-                                "income_total": "5000.00",
-                                "expense_total": "1500.00",
-                                "tax_base": "2000.00",
-                                "tax_due": "200.00",
-                                "contributions_due": "520.00",
-                                "total_due": "720.00",
-                                "is_finalized": True,
-                            },
-                            {
-                                "month": 2,
-                                "month_label": "02.2025",
-                                "income_total": "0.00",
-                                "expense_total": "0.00",
-                                "tax_base": "0.00",
-                                "tax_due": "0.00",
-                                "contributions_due": "0.00",
-                                "total_due": "0.00",
-                                "is_finalized": False,
-                            },
-                        ],
-                        "yearly_summary": {
-                            "year": 2025,
-                            "income_total": "5000.00",
-                            "expense_total": "1500.00",
-                            "tax_base_total": "2000.00",
-                            "tax_due_total": "200.00",
-                            "contributions_due_total": "520.00",
-                            "total_due": "720.00",
-                            "finalized_months": 1,
-                            "open_months": 11,
-                        },
-                    }
-                }
-            },
-        },
-        400: {
-            "description": (
-                "Greška u zahtjevu.\n\n"
-                "Tipični scenariji:\n"
-                "- nedostaje `X-Tenant-Code` header → `Missing X-Tenant-Code header`\n"
-                "- godina je van dozvoljenog opsega 2000–2100."
-            ),
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "missing_tenant": {
-                            "summary": "Nedostaje X-Tenant-Code",
-                            "value": {"detail": "Missing X-Tenant-Code header"},
-                        },
-                        "invalid_year": {
-                            "summary": "Godina van dozvoljenog opsega",
-                            "value": {
-                                "detail": "Godina mora biti u rasponu 2000–2100."
-                            },
-                        },
-                    }
-                }
-            },
-        },
-    },
-)
-def get_sam_overview(
-    year: int = Path(
-        ...,
-        description="Godina SAM pregleda (YYYY). Dozvoljeni opseg: 2000–2100.",
-        examples=[2025],
-    ),
-    tenant_code: str = Depends(_require_tenant),
-    db: Session = Depends(_get_session_dep),
+def _build_sam_overview(
+    *,
+    year: int,
+    tenant_code: str,
+    db: Session,
 ) -> SamOverviewRead:
     """
-    SAM overview spojen na TAX modul (`tax_monthly_results`).
+    Interna helper funkcija koja gradi SAM overview za zadatu godinu/tenanta.
 
-    Koraci:
+    Koriste je i:
+    - GET /sam/overview/{year} (JSON)
+    - GET /sam/overview/{year}/export (CSV)
 
-    1. Validira se raspon godine (2000–2100). Ako je godina van opsega → HTTP 400.
-    2. Učitavaju se svi `TaxMonthlyResult` zapisi za (tenant_code, year).
-    3. Za svaki mjesec 1-12:
-        - ako postoji zapis u bazi → vrijednosti se pune iz `TaxMonthlyResult`,
-        - ako ne postoji → koristi se 0.00 za sve iznose i `is_finalized=False`.
-    4. Izračunava se godišnji sažetak (`SamYearlySummary`) kao suma iznosa po mjesecima,
-       uz broj finalizovanih i otvorenih mjeseci.
-
-    Ovaj endpoint je idealan za:
-
-    - godišnji graf prihoda/rashoda,
-    - listu mjeseci sa statusom (zaključan / otvoren),
-    - brzu kontrolnu tablu za SP korisnika.
+    Tako osiguravamo da oba endpoint-a imaju identičnu logiku.
     """
     if year < 2000 or year > 2100:
         raise HTTPException(
@@ -247,4 +147,147 @@ def get_sam_overview(
         year=year,
         months=months,
         yearly_summary=yearly_summary,
+    )
+
+
+@router.get(
+    "/overview/{year}",
+    response_model=SamOverviewRead,
+    summary="Godišnji SAM overview (kombinovani monthly + yearly odgovor).",
+    description=(
+        "Vraća kombinovani SAM pregled obaveza samostalnog preduzetnika za zadanu godinu.\n\n"
+        "Ova verzija endpointa koristi **realne podatke iz tax_monthly_results** gdje postoje:\n"
+        "- za finalizovane mjesece koristi vrijednosti iz `TaxMonthlyResult`,\n"
+        "- za mjesece bez zapisa vraća početne vrijednosti 0.00 i `is_finalized = false`.\n\n"
+        "Na ovaj način UI dobija stabilan shape (uvijek 12 mjeseci) i tačne podatke za zaključane mjesece.\n"
+        "Kasnije se može nadograditi i integracijom sa preview obračunom za otvorene mjesece."
+    ),
+)
+def get_sam_overview(
+    year: int,
+    tenant_code: str = Depends(_require_tenant),
+    db: Session = Depends(_get_session_dep),
+) -> SamOverviewRead:
+    """
+    SAM overview spojen na TAX modul (tax_monthly_results).
+
+    - validira raspon godine,
+    - čita sve `TaxMonthlyResult` za (tenant_code, year),
+    - za svaki mjesec 1-12:
+        - ako postoji zapis u bazi → puni se iz realnih vrijednosti,
+        - ako ne postoji → puni se sa 0.00 i `is_finalized=False`,
+    - računa godišnji sažetak (suma svih 12 mjeseci).
+    """
+    return _build_sam_overview(year=year, tenant_code=tenant_code, db=db)
+
+
+@router.get(
+    "/overview/{year}/export",
+    summary="Export SAM overview pregleda u CSV format",
+    description=(
+        "Exportuje kompletan SAM overview za zadatu godinu i tenant-a u CSV fajl.\n\n"
+        "Struktura CSV-a:\n"
+        "1) Sekcija 'months' – 12 redova (po mjesecu):\n"
+        "   columns: section,month,month_label,income_total,expense_total,"
+        "tax_base,tax_due,contributions_due,total_due,is_finalized\n\n"
+        "2) Prazan red\n\n"
+        "3) Sekcija 'yearly' – jedan red sa godišnjim sažetkom:\n"
+        "   columns: section,year,income_total,expense_total,tax_base_total,"
+        "tax_due_total,contributions_due_total,total_due,finalized_months,open_months\n\n"
+        "CSV je pogodan za uvoz u Excel ili dalje knjigovodstvene alate."
+    ),
+)
+def export_sam_overview_csv(
+    year: int,
+    tenant_code: str = Depends(_require_tenant),
+    db: Session = Depends(_get_session_dep),
+) -> Response:
+    """
+    CSV export SAM overview-a za zadatu godinu i tenant-a.
+
+    Koristi istu internu logiku kao i JSON endpoint, preko `_build_sam_overview`,
+    tako da su podaci uvijek 1:1 usklađeni.
+    """
+    overview = _build_sam_overview(year=year, tenant_code=tenant_code, db=db)
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+
+    # 1) Monthly sekcija
+    writer.writerow(
+        [
+            "section",
+            "month",
+            "month_label",
+            "income_total",
+            "expense_total",
+            "tax_base",
+            "tax_due",
+            "contributions_due",
+            "total_due",
+            "is_finalized",
+        ]
+    )
+
+    for m in overview.months:
+        writer.writerow(
+            [
+                "month",
+                m.month,
+                m.month_label,
+                str(m.income_total),
+                str(m.expense_total),
+                str(m.tax_base),
+                str(m.tax_due),
+                str(m.contributions_due),
+                str(m.total_due),
+                "true" if m.is_finalized else "false",
+            ]
+        )
+
+    # Prazan red kao separator
+    writer.writerow([])
+
+    # 2) Yearly sekcija
+    ys = overview.yearly_summary
+    writer.writerow(
+        [
+            "section",
+            "year",
+            "income_total",
+            "expense_total",
+            "tax_base_total",
+            "tax_due_total",
+            "contributions_due_total",
+            "total_due",
+            "finalized_months",
+            "open_months",
+        ]
+    )
+    writer.writerow(
+        [
+            "yearly",
+            ys.year,
+            str(ys.income_total),
+            str(ys.expense_total),
+            str(ys.tax_base_total),
+            str(ys.tax_due_total),
+            str(ys.contributions_due_total),
+            str(ys.total_due),
+            ys.finalized_months,
+            ys.open_months,
+        ]
+    )
+
+    csv_content = buffer.getvalue()
+    buffer.close()
+
+    filename = f"sam-overview-{tenant_code}-{year}.csv"
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
     )

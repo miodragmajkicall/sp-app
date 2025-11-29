@@ -13,16 +13,17 @@ from fastapi import (
     status,
 )
 from sqlalchemy import select, func
-    # NOTE: func koristi se za year/month ekstrakcije i count
+# NOTE: func koristi se za year/month ekstrakcije i count
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import InputInvoice
+from app.models import InputInvoice, FinalizedPeriodModificationError
 from app.schemas.input_invoice import (
     InputInvoiceCreate,
     InputInvoiceRead,
     InputInvoiceListResponse,
+    InputInvoiceUpdate,
 )
 from app.tenant_security import require_tenant_code, ensure_tenant_exists
 
@@ -492,3 +493,170 @@ def get_input_invoice(
     if not obj:
         raise HTTPException(status_code=404, detail="Input invoice not found")
     return obj
+
+
+# ======================================================
+#  UPDATE
+# ======================================================
+
+
+@router.put(
+    "/input-invoices/{invoice_id}",
+    response_model=InputInvoiceRead,
+    summary="Ažuriraj postojeću ulaznu fakturu",
+    description=(
+        "Ažurira postojeću ulaznu fakturu za zadatog tenanta.\n\n"
+        "Podržava djelimične izmjene preko `InputInvoiceUpdate` šeme:\n"
+        "- moguće je promijeniti dobavljača, broj, iznose, datume i napomenu;\n"
+        "- business lock na nivou modela **blokira izmjene** za finalizovane mjesece "
+        "(po `issue_date`)."
+    ),
+    responses={
+        200: {
+            "description": "Ulazna faktura je uspješno ažurirana.",
+        },
+        400: {
+            "description": (
+                "Poslovna greška – najčešće pokušaj izmjene ulazne fakture "
+                "u već finalizovanom poreznom mjesecu."
+            ),
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": (
+                            "Cannot modify data for finalized tax period 2025-01 for "
+                            "tenant t-demo."
+                        )
+                    }
+                }
+            },
+        },
+        404: {
+            "description": "Ulazna faktura nije pronađena za dati ID/tenant.",
+        },
+        409: {
+            "description": (
+                "Pokušaj promjene na kombinaciju (tenant_code, supplier_name, invoice_number) "
+                "koja već postoji."
+            ),
+        },
+    },
+)
+def update_input_invoice(
+    invoice_id: int,
+    payload: InputInvoiceUpdate,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem ulazna faktura mora pripadati.",
+    ),
+) -> InputInvoice:
+    """
+    Djelimično ažurira postojeću ulaznu fakturu.
+
+    - Ako faktura ne postoji ili ne pripada tenantu → 404.
+    - Ako je mjesec fakture finalizovan → 400 (FinalizedPeriodModificationError).
+    - Ako dođe do unique konflikta → 409.
+    """
+    tenant = _require_tenant(x_tenant_code)
+
+    stmt = select(InputInvoice).where(
+        InputInvoice.id == invoice_id,
+        InputInvoice.tenant_code == tenant,
+    )
+    obj = db.execute(stmt).scalars().first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="Input invoice not found")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    for field_name, value in update_data.items():
+        setattr(obj, field_name, value)
+
+    try:
+        db.commit()
+    except FinalizedPeriodModificationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Input invoice already exists for this supplier and tenant",
+        )
+
+    db.refresh(obj)
+    return obj
+
+
+# ======================================================
+#  DELETE
+# ======================================================
+
+
+@router.delete(
+    "/input-invoices/{invoice_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Obriši ulaznu fakturu",
+    description=(
+        "Briše ulaznu fakturu za zadatog tenanta.\n\n"
+        "Ako faktura ne postoji ili ne pripada tenantu → 404.\n"
+        "Ako faktura pripada finalizovanom poreznom mjesecu → 400 (business lock)."
+    ),
+    responses={
+        204: {
+            "description": "Ulazna faktura je uspješno obrisana.",
+        },
+        400: {
+            "description": (
+                "Poslovna greška – pokušaj brisanja ulazne fakture za finalizovan mjesec."
+            ),
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": (
+                            "Cannot modify data for finalized tax period 2025-01 for "
+                            "tenant t-demo."
+                        )
+                    }
+                }
+            },
+        },
+        404: {
+            "description": "Ulazna faktura nije pronađena za dati ID/tenant.",
+        },
+    },
+)
+def delete_input_invoice(
+    invoice_id: int,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem ulazna faktura mora pripadati.",
+    ),
+) -> Response:
+    """
+    Briše jednu ulaznu fakturu.
+
+    - 404 ako faktura ne postoji ili ne pripada tenantu.
+    - 400 ako je mjesec već finalizovan (business lock).
+    """
+    tenant = _require_tenant(x_tenant_code)
+
+    stmt = select(InputInvoice).where(
+        InputInvoice.id == invoice_id,
+        InputInvoice.tenant_code == tenant,
+    )
+    obj = db.execute(stmt).scalars().first()
+    if not obj:
+        raise HTTPException(status_code=404, detail="Input invoice not found")
+
+    try:
+        db.delete(obj)
+        db.commit()
+    except FinalizedPeriodModificationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

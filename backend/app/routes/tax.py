@@ -5,6 +5,7 @@ from decimal import Decimal
 from typing import Optional, Tuple
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
@@ -25,6 +26,8 @@ from app.schemas.tax import (
     YearlyTaxSummaryRead,
 )
 from app.tenant_security import require_tenant_code
+import csv
+import io
 
 router = APIRouter(
     tags=["tax"],
@@ -447,7 +450,7 @@ def auto_monthly_tax(
         None,
         alias="X-Tenant-Code",
         description=(
-            "Šifra tenanta za kojeg radimo automatski mjesečni obračun.\n"
+            "Šifra tenenta za kojeg radimo automatski mjesečni obračun.\n"
             "Primjer: `frizer-mika`, `t-demo`."
         ),
     ),
@@ -1255,4 +1258,94 @@ def yearly_tax_finalize(
         contributions_total=contributions_total,
         total_due=total_due,
         currency=currency,
+    )
+
+
+# ======================================================
+#  GODIŠNJI OBRAČUN – CSV EXPORT
+# ======================================================
+@router.get(
+    "/tax/yearly/export",
+    summary="Export godišnjeg poreznog obračuna u CSV",
+    description=(
+        "Exportuje godišnji porezni obračun za jednog tenenta u CSV format, "
+        "na osnovu iste logike kao `/tax/yearly/preview`.\n\n"
+        "CSV sadrži jednu vrstu (jedan red) sa agregiranim vrijednostima za godinu:\n"
+        "columns: year,tenant_code,months_included,total_income,total_expense,"
+        "taxable_base,income_tax,contributions_total,total_due,currency\n\n"
+        "Idealan je za slanje knjigovođi ili uvoz u eksterni sistem."
+    ),
+)
+def export_yearly_tax_csv(
+    year: int = Query(
+        ...,
+        ge=2000,
+        le=2100,
+        description="Godina za koju se exportuje godišnji obračun.",
+        examples=[2025],
+    ),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description=(
+            "Šifra tenenta za kojeg se exportuje godišnji obračun.\n"
+            "Primjer: `frizer-mika`, `t-demo`."
+        ),
+    ),
+    db: Session = Depends(_get_session_dep),
+) -> Response:
+    """
+    CSV export godišnjeg poreznog obračuna.
+
+    Interno poziva `yearly_tax_preview` kako bi koristio istu logiku sabiranja
+    finalizovanih mjesečnih rezultata. Ako nema finalizovanih mjeseci za godinu,
+    dobiće se red sa nulama (months_included=0).
+    """
+    # Reuse iste logike kao /tax/yearly/preview
+    summary = yearly_tax_preview(year=year, x_tenant_code=x_tenant_code, db=db)
+
+    buffer = io.StringIO()
+    writer = csv.writer(buffer)
+
+    writer.writerow(
+        [
+            "year",
+            "tenant_code",
+            "months_included",
+            "total_income",
+            "total_expense",
+            "taxable_base",
+            "income_tax",
+            "contributions_total",
+            "total_due",
+            "currency",
+        ]
+    )
+
+    writer.writerow(
+        [
+            summary.year,
+            summary.tenant_code,
+            summary.months_included,
+            str(summary.total_income),
+            str(summary.total_expense),
+            str(summary.taxable_base),
+            str(summary.income_tax),
+            str(summary.contributions_total),
+            str(summary.total_due),
+            summary.currency,
+        ]
+    )
+
+    csv_content = buffer.getvalue()
+    buffer.close()
+
+    filename = f"tax-yearly-{summary.tenant_code}-{summary.year}.csv"
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
     )

@@ -123,6 +123,92 @@ class InputInvoiceCreate(InputInvoiceBase):
 
 
 # ============================================================
+#  INPUT INVOICE UPDATE
+# ============================================================
+
+
+class InputInvoiceUpdate(BaseModel):
+    """
+    Šema za djelimičnu izmjenu postojeće ulazne fakture.
+
+    Sva polja su opciona – klijent šalje samo ono što želi promijeniti.
+    Business lock na nivou modela (InputInvoice.before_update) će spriječiti
+    izmjene za finalizovane mjesece.
+    """
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+        json_schema_extra={
+            "example": {
+                "supplier_name": "Elektrodistribucija Banja Luka",
+                "due_date": "2025-11-20",
+                "note": "Ispravka roka dospijeća i dopuna napomene.",
+            }
+        },
+    )
+
+    supplier_name: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=128,
+        description="Naziv dobavljača (ako se ažurira).",
+    )
+    supplier_tax_id: Optional[str] = Field(
+        None,
+        max_length=64,
+        description="PIB/JIB dobavljača (ako se ažurira).",
+    )
+    supplier_address: Optional[str] = Field(
+        None,
+        max_length=256,
+        description="Adresa dobavljača (ako se ažurira).",
+    )
+
+    invoice_number: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=64,
+        description="Broj ulazne fakture kod dobavljača (ako se ažurira).",
+    )
+    issue_date: Optional[date] = Field(
+        None,
+        description="Novi datum izdavanja ulazne fakture (YYYY-MM-DD, opcionalno).",
+    )
+    due_date: Optional[date] = Field(
+        None,
+        description="Novi rok dospijeća (opcionalno).",
+    )
+
+    total_base: Optional[Decimal] = Field(
+        None,
+        ge=0,
+        description="Nova osnovica bez PDV-a (>= 0, opcionalno).",
+    )
+    total_vat: Optional[Decimal] = Field(
+        None,
+        ge=0,
+        description="Novi iznos PDV-a (>= 0, opcionalno).",
+    )
+    total_amount: Optional[Decimal] = Field(
+        None,
+        ge=0,
+        description="Novi ukupan iznos sa PDV-om (>= 0, opcionalno).",
+    )
+
+    currency: Optional[str] = Field(
+        None,
+        min_length=1,
+        max_length=8,
+        description="Nova valuta (ako se mijenja).",
+    )
+    note: Optional[str] = Field(
+        None,
+        description="Nova interna napomena (ako se mijenja).",
+    )
+
+
+# ============================================================
 #  INPUT INVOICE READ
 # ============================================================
 

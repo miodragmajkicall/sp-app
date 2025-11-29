@@ -34,7 +34,8 @@ def _require_tenant(x_tenant_code: Optional[str]) -> str:
     """
     Shared helper za čitanje i validaciju X-Tenant-Code header-a.
 
-    Delegira na globalni require_tenant_code tako da je poruka konzistentna:
+    Delegira na globalni require_tenant_code tako da je poruka konzistentna
+    u cijelom sistemu:
     - ako header nedostaje → 400 + "Missing X-Tenant-Code header"
     """
     return require_tenant_code(x_tenant_code)
@@ -42,8 +43,11 @@ def _require_tenant(x_tenant_code: Optional[str]) -> str:
 
 def _ensure_tenant_exists_wrapper(db: Session, code: str) -> None:
     """
-    Osigurava da tenant postoji u bazi (radi konzistentnosti
-    sa ostatkom sistema).
+    Osigurava da tenant postoji u bazi (radi konzistentnosti sa ostatkom sistema).
+
+    Koristi se kao thin-wrapper oko ensure_tenant_exists helper-a, tako da
+    dashboard endpointi mogu da rade i u "self-service" / demo scenarijima
+    (bez prethodnog ručnog unosa tenanta).
     """
     ensure_tenant_exists(db, code)
 
@@ -56,13 +60,14 @@ def _ensure_tenant_exists_wrapper(db: Session, code: str) -> None:
     response_model=DashboardYearSummary,
     summary="Godišnji dashboard sa ključnim brojkama",
     description=(
-        "Vraća kombinovani sažetak za jednog tenenta i zadatu godinu:\n\n"
-        "- **cash**: ukupni prihodi, rashodi i neto cashflow (iz `cash_entries`),\n"
-        "- **invoices**: broj izlaznih faktura i njihov ukupni iznos (iz `invoices`),\n"
-        "- **tax**: broj obračunatih mjeseci i ukupna obaveza prema državi "
-        "(iz `tax_monthly_results`),\n"
-        "- **sam**: pojednostavljen SAM sažetak (godišnja obaveza + flag da li "
-        "postoje obračuni).\n\n"
+        "Vraća kombinovani sažetak za jednog tenenta i zadatu godinu.\n\n"
+        "Izvori podataka:\n"
+        "- **cash**: `cash_entries` (income/expense po `entry_date`),\n"
+        "- **invoices**: `invoices` (broj i ukupni iznos po `issue_date`),\n"
+        "- **tax**: `tax_monthly_results` (broj obračunatih mjeseci i ukupna "
+        "obaveza prema državi),\n"
+        "- **sam**: lagani SAM bridge – godišnja obaveza prema državi uz flag "
+        "da li postoji bar jedan obračun.\n\n"
         "Ovo je osnovni endpoint za početni ekran (dashboard) u UI-ju."
     ),
 )
@@ -77,9 +82,18 @@ def get_dashboard_year_summary(
 ) -> DashboardYearSummary:
     """
     Kombinuje više modula u jedan yearly dashboard response.
+
+    Trenutno važeći opseg godina je 2000–2100; sve van toga tretiramo kao
+    grešku (400) radi konzistentnosti sa TAX/SAM modulima.
     """
     tenant = _require_tenant(x_tenant_code)
     _ensure_tenant_exists_wrapper(db, tenant)
+
+    if year < 2000 or year > 2100:
+        raise HTTPException(
+            status_code=400,
+            detail="Year must be between 2000 and 2100.",
+        )
 
     # ============================
     #  CASH SUMMARY
@@ -157,7 +171,7 @@ def get_dashboard_year_summary(
     )
 
     # ============================
-    #  SAM SUMMARY (lightweight bridge ka SAM modulu)
+    #  SAM SUMMARY (lightweight bridge ka SAM/TAX modulu)
     # ============================
     sam_summary = DashboardSamSummary(
         year=year,
@@ -194,7 +208,7 @@ def _compute_monthly_dashboard(
     - cash agregacija za (year, month),
     - invoices agregacija za (year, month),
     - tax_monthly_results za (year, month),
-    - SAM mjesečni sažetak.
+    - lagani SAM mjesečni sažetak (oslonjen na tax_monthly_results).
     """
 
     # ----------------------------
@@ -312,9 +326,10 @@ def _compute_monthly_dashboard(
     summary="Mjesečni dashboard za zadanu godinu i mjesec",
     description=(
         "Vraća kombinovani mjesečni sažetak (cash + fakture + tax + SAM) za jednog "
-        "tenanta i konkretan (year, month) par.\n\n"
-        "Tipično se koristi kada korisnik u UI-ju mijenja mjesec u nekom dropdownu "
-        "ili kalendaru."
+        "tenenta i konkretan (year, month) par.\n\n"
+        "Tipični scenariji u UI-ju:\n"
+        "- korisnik bira mjesec iz kalendara ili dropdowna,\n"
+        "- prikaz grafika / kartica za jedan izabrani mjesec."
     ),
 )
 def get_dashboard_monthly_summary(
@@ -355,12 +370,14 @@ def get_dashboard_monthly_summary(
 @router.get(
     "/monthly/current",
     response_model=DashboardMonthlySummary,
-    summary="Mjesečni dashboard za trenutni mjesec (ili ručno zadat preko query parametara)",
+    summary="Mjesečni dashboard za trenutni mjesec (ili ručno zadat year/month)",
     description=(
         "Vraća mjesečni dashboard za **trenutni mjesec na serveru**, ili za godinu/mjesec "
         "koji se eksplicitno pošalju kao query parametri `year` i `month`.\n\n"
-        "Ako se year i month izostave → koristi se današnji datum (date.today()).\n"
-        "Ako se pošalje samo jedan od parametara → vraća 400 (oboje ili nijedan)."
+        "Pravila:\n"
+        "- ako se `year` i `month` izostave → koristi se današnji datum (`date.today()`),\n"
+        "- ako je zadat samo `year` ili samo `month` → 400 (oboje ili nijedan),\n"
+        "- vrijednosti za year/month važe u opsegu 2000–2100 / 1–12."
     ),
 )
 def get_dashboard_monthly_current(
@@ -368,7 +385,7 @@ def get_dashboard_monthly_current(
     x_tenant_code: Optional[str] = Header(
         None,
         alias="X-Tenant-Code",
-        description="Šifra tenanta za kojeg se generiše mjesečni dashboard.",
+        description="Šifra tenenta za kojeg se generiše mjesečni dashboard.",
     ),
     year: Optional[int] = Query(
         None,
@@ -399,6 +416,17 @@ def get_dashboard_monthly_current(
         month = today.month
 
     assert year is not None and month is not None  # za type-checkere
+
+    if year < 2000 or year > 2100:
+        raise HTTPException(
+            status_code=400,
+            detail="Year must be between 2000 and 2100.",
+        )
+    if month < 1 or month > 12:
+        raise HTTPException(
+            status_code=400,
+            detail="Month must be between 1 and 12.",
+        )
 
     return _compute_monthly_dashboard(
         db=db,
