@@ -1,7 +1,19 @@
+// /home/miso/dev/sp-app/sp-app/frontend/src/types/cash.ts
+
 export interface CashEntry {
   id: number;
-  occurred_at?: string; // datum transakcije
+
+  // backend koristi entry_date, a negdje se pojavljivao i occurred_at – podržavamo oba
+  entry_date?: string;
+  occurred_at?: string;
+
   kind?: "income" | "expense" | string;
-  amount?: number;
+  amount?: number | string;
+
+  // backend U ODGOVORU šalje opis kao "note",
+  // ali ostavljamo i "description" radi kompatibilnosti
+  note?: string | null;
   description?: string | null;
+
+  created_at?: string;
 }
