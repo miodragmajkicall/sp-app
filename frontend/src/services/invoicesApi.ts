@@ -6,11 +6,23 @@ import type {
   InvoiceCreatePayload,
 } from "../types/invoice";
 
+export interface FetchInvoicesListOptions {
+  /** ako je true – backend vraća samo neplaćene (unpaid_only) */
+  unpaidOnly?: boolean;
+}
+
 /**
  * GET – UI-friendly lista izlaznih faktura
  * Koristi backend endpoint /invoices/list koji vraća { total, items }.
+ *
+ * Opcioni filter:
+ * - unpaidOnly: ako je true, šaljemo ?unpaid_only=true (samo neplaćene)
  */
-export async function fetchInvoicesList(): Promise<InvoiceListResponse> {
+export async function fetchInvoicesList(
+  options?: FetchInvoicesListOptions,
+): Promise<InvoiceListResponse> {
+  const unpaidOnly = options?.unpaidOnly === true;
+
   const res = await apiClient.get<{
     total: number;
     items: Array<{
@@ -23,7 +35,9 @@ export async function fetchInvoicesList(): Promise<InvoiceListResponse> {
       is_paid?: boolean;
     }>;
   }>("/invoices/list", {
-    headers: { "X-Tenant-Code": "t-demo" }, // dok nema auth sistema
+    params: {
+      unpaid_only: unpaidOnly ? true : undefined,
+    },
   });
 
   const raw = res.data;
@@ -51,7 +65,8 @@ export async function fetchInvoicesList(): Promise<InvoiceListResponse> {
  * Alias ako nam negdje zatreba samo lista bez metapodataka
  * (trenutno ga ne koristi UI, ali ostavljamo za kasnije).
  */
-export async function fetchInvoices(): Promise<InvoiceRowItem[]> {
+export async function fetchInvoices(
+): Promise<InvoiceRowItem[]> {
   const data = await fetchInvoicesList();
   return data.items;
 }
@@ -85,7 +100,15 @@ export async function createInvoice(
     ],
   };
 
-  await apiClient.post("/invoices", body, {
-    headers: { "X-Tenant-Code": "t-demo" }, // static tenant za demo
-  });
+  await apiClient.post("/invoices", body);
+}
+
+/**
+ * POST – označi fakturu kao plaćenu
+ * koristi backend /invoices/{id}/mark-paid
+ */
+export async function markInvoicePaid(
+  invoiceId: number,
+): Promise<void> {
+  await apiClient.post(`/invoices/${invoiceId}/mark-paid`, null);
 }

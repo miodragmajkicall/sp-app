@@ -1,9 +1,16 @@
-import { BrowserRouter, NavLink, Navigate, Route, Routes } from "react-router-dom";
+import {
+  BrowserRouter,
+  NavLink,
+  Navigate,
+  Route,
+  Routes,
+} from "react-router-dom";
 import DashboardPage from "./pages/DashboardPage";
 import InvoicesListPage from "./pages/InvoicesListPage";
 import CashPage from "./pages/CashPage";
 import InputInvoicesPage from "./pages/InputInvoicesPage";
-import InvoiceCreatePage from "./pages/InvoiceCreatePage";  // NOVO
+import InvoiceCreatePage from "./pages/InvoiceCreatePage";
+import InvoiceDetailPage from "./pages/InvoiceDetailPage";
 
 function App() {
   return (
@@ -17,7 +24,6 @@ function App() {
           </div>
 
           <nav className="flex-1 px-3 py-4 space-y-1 text-sm">
-            
             <NavLink
               to="/dashboard"
               className={({ isActive }) =>
@@ -46,7 +52,6 @@ function App() {
               Izlazne fakture
             </NavLink>
 
-            {/* 🔥 NOVA OPCIJA U MENIJU */}
             <NavLink
               to="/invoices/new"
               className={({ isActive }) =>
@@ -106,7 +111,8 @@ function App() {
 
           <div className="px-4 py-3 border-t border-slate-800 text-xs text-slate-500">
             <p>
-              Tenant: <span className="font-mono text-slate-300">t-demo</span>
+              Tenant:{" "}
+              <span className="font-mono text-slate-300">t-demo</span>
             </p>
           </div>
         </aside>
@@ -131,18 +137,31 @@ function App() {
               <Route path="/dashboard" element={<DashboardPage />} />
 
               <Route path="/invoices" element={<InvoicesListPage />} />
-              <Route path="/invoices/new" element={<InvoiceCreatePage />} /> {/* 🔥 NOVA RUTA */}
-              <Route path="/input-invoices" element={<InputInvoicesPage />} />
+              <Route path="/invoices/new" element={<InvoiceCreatePage />} />
+              <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
+
+              <Route
+                path="/input-invoices"
+                element={<InputInvoicesPage />}
+              />
               <Route path="/cash" element={<CashPage />} />
 
               <Route
                 path="/tax"
-                element={<div className="text-slate-600 text-sm">Ekran za poreze i SAM dolazi uskoro.</div>}
+                element={
+                  <div className="text-slate-600 text-sm">
+                    Ekran za poreze i SAM dolazi uskoro.
+                  </div>
+                }
               />
 
               <Route
                 path="*"
-                element={<div className="text-sm text-red-600">404 – Stranica nije pronađena.</div>}
+                element={
+                  <div className="text-sm text-red-600">
+                    404 – Stranica nije pronađena.
+                  </div>
+                }
               />
             </Routes>
           </main>

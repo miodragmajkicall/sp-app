@@ -1,4 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
+import { useNavigate } from "react-router-dom";
 import { apiClient, getApiBaseUrl } from "../services/apiClient";
 
 interface MonthlyCashSummary {
@@ -51,6 +52,7 @@ function toNumber(value: number | string | undefined | null): number {
 
 export default function DashboardPage() {
   const apiUrl = getApiBaseUrl();
+  const navigate = useNavigate();
 
   const { data, isLoading, isError, error } = useQuery<
     DashboardMonthlyResponse,
@@ -59,7 +61,7 @@ export default function DashboardPage() {
     queryKey: ["dashboard", "monthly", "current"],
     queryFn: async () => {
       const res = await apiClient.get<DashboardMonthlyResponse>(
-        "/dashboard/monthly/current"
+        "/dashboard/monthly/current",
       );
       return res.data;
     },
@@ -86,8 +88,20 @@ export default function DashboardPage() {
   const hasTaxResult = data?.tax?.has_result ?? false;
   const isTaxFinal = data?.tax?.is_final ?? false;
 
+  const samTotal = toNumber(data?.sam?.total_due);
+  const hasSamResult = data?.sam?.has_result ?? false;
+  const isSamFinal = data?.sam?.is_final ?? false;
+
+  const netClass =
+    cashNet > 0
+      ? "text-emerald-600"
+      : cashNet < 0
+      ? "text-rose-600"
+      : "text-slate-700";
+
   return (
     <div className="space-y-6">
+      {/* Header */}
       <div>
         <h2 className="text-xl font-semibold text-slate-800">
           Dashboard – mjesečni pregled
@@ -118,17 +132,18 @@ export default function DashboardPage() {
         </p>
       )}
 
+      {/* Glavne kartice */}
       {data && (
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-4">
           {/* Kasa kartica */}
-          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4">
-            <p className="text-xs font-medium text-slate-500 mb-1">
+          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col gap-2">
+            <p className="text-xs font-medium text-slate-500">
               Kasa – {monthLabel || `${data.year}-${data.month}`}
             </p>
-            <p className="text-2xl font-semibold text-slate-900">
+            <p className={`text-2xl font-semibold ${netClass}`}>
               {cashNet.toFixed(2)} KM
             </p>
-            <p className="text-xs text-slate-500 mt-2">
+            <p className="text-xs text-slate-500">
               Prihodi:{" "}
               <span className="font-medium text-emerald-600">
                 {cashIncome.toFixed(2)} KM
@@ -138,36 +153,43 @@ export default function DashboardPage() {
                 {cashExpense.toFixed(2)} KM
               </span>
             </p>
+            <p className="text-[11px] text-slate-400 pt-1">
+              Pozitivan neto iznos znači višak u kasi za ovaj mjesec.
+            </p>
           </div>
 
           {/* Izlazne fakture kartica */}
-          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4">
-            <p className="text-xs font-medium text-slate-500 mb-1">
+          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col gap-2">
+            <p className="text-xs font-medium text-slate-500">
               Izlazne fakture – {monthLabel || `${data.year}-${data.month}`}
             </p>
             <p className="text-2xl font-semibold text-slate-900">
               {invoicesCount}
             </p>
-            <p className="text-xs text-slate-500 mt-2">
+            <p className="text-xs text-slate-500">
               Ukupan iznos:{" "}
               <span className="font-semibold">
                 {invoicesTotal.toFixed(2)} KM
               </span>
             </p>
+            <button
+              type="button"
+              onClick={() => navigate("/invoices")}
+              className="mt-2 inline-flex items-center justify-center rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+            >
+              Otvori izlazne fakture
+            </button>
           </div>
 
-          {/* Porezi / SAM kartica */}
-          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4">
-            <p className="text-xs font-medium text-slate-500 mb-1">
-              Porezi / SAM – {monthLabel || `${data.year}-${data.month}`}
+          {/* Porezi kartica */}
+          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col gap-2">
+            <p className="text-xs font-medium text-slate-500">
+              Porezi – {monthLabel || `${data.year}-${data.month}`}
             </p>
-            <p className="text-sm text-slate-700">
-              Mjesečna obaveza:{" "}
-              <span className="font-semibold">
-                {taxTotal.toFixed(2)} KM
-              </span>
+            <p className="text-lg font-semibold text-slate-900">
+              {taxTotal.toFixed(2)} KM
             </p>
-            <p className="text-xs text-slate-500 mt-2">
+            <p className="text-xs text-slate-500">
               Status obračuna:{" "}
               {hasTaxResult ? (
                 <span
@@ -186,10 +208,50 @@ export default function DashboardPage() {
                 </span>
               )}
             </p>
+            <button
+              type="button"
+              onClick={() => navigate("/tax")}
+              className="mt-2 inline-flex items-center justify-center rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+            >
+              Otvori Porezi / SAM
+            </button>
+          </div>
+
+          {/* SAM kartica */}
+          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col gap-2">
+            <p className="text-xs font-medium text-slate-500">
+              SAM doprinosi – {monthLabel || `${data.year}-${data.month}`}
+            </p>
+            <p className="text-lg font-semibold text-slate-900">
+              {samTotal.toFixed(2)} KM
+            </p>
+            <p className="text-xs text-slate-500">
+              Status:{" "}
+              {hasSamResult ? (
+                <span
+                  className={
+                    "inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold " +
+                    (isSamFinal
+                      ? "bg-emerald-50 text-emerald-700"
+                      : "bg-amber-50 text-amber-700")
+                  }
+                >
+                  {isSamFinal ? "FINALIZOVAN" : "NACRT"}
+                </span>
+              ) : (
+                <span className="inline-flex rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
+                  NEMA OBRAČUNA
+                </span>
+              )}
+            </p>
+            <p className="text-[11px] text-slate-400">
+              Vrijednosti dolaze iz TAX / SAM modula za aktivni mjesec.
+            </p>
           </div>
         </div>
       )}
 
+      {/* Ako nema podataka */}
       {!isLoading && !isError && !data && (
         <p className="text-sm text-slate-500">
           Nema dostupnih podataka za dashboard.
