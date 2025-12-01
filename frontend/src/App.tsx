@@ -11,6 +11,7 @@ import CashPage from "./pages/CashPage";
 import InputInvoicesPage from "./pages/InputInvoicesPage";
 import InvoiceCreatePage from "./pages/InvoiceCreatePage";
 import InvoiceDetailPage from "./pages/InvoiceDetailPage";
+import TaxPage from "./pages/TaxPage";
 
 function App() {
   return (
@@ -146,14 +147,7 @@ function App() {
               />
               <Route path="/cash" element={<CashPage />} />
 
-              <Route
-                path="/tax"
-                element={
-                  <div className="text-slate-600 text-sm">
-                    Ekran za poreze i SAM dolazi uskoro.
-                  </div>
-                }
-              />
+              <Route path="/tax" element={<TaxPage />} />
 
               <Route
                 path="*"
