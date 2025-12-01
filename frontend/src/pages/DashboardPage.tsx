@@ -45,7 +45,7 @@ interface DashboardMonthlyResponse {
 
 function toNumber(value: number | string | undefined | null): number {
   if (value === undefined || value === null) return 0;
-  if (typeof value === "number") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
   const parsed = Number(value);
   return Number.isNaN(parsed) ? 0 : parsed;
 }
@@ -99,6 +99,68 @@ export default function DashboardPage() {
       ? "text-rose-600"
       : "text-slate-700";
 
+  // Brza upozorenja / info badge-ovi
+  const alerts: { type: "warning" | "info"; text: string }[] = [];
+
+  if (hasTaxResult && !isTaxFinal) {
+    alerts.push({
+      type: "warning",
+      text: "Porezi za trenutni mjesec nisu finalizovani – otvori TAX ekran i izvrši finalizaciju.",
+    });
+  } else if (!hasTaxResult) {
+    alerts.push({
+      type: "info",
+      text: "Nema obračuna poreza za trenutni mjesec – pokreni auto obračun u TAX modulu.",
+    });
+  }
+
+  if (hasSamResult && !isSamFinal) {
+    alerts.push({
+      type: "warning",
+      text: "SAM doprinosi za trenutni mjesec nisu finalizovani.",
+    });
+  } else if (!hasSamResult) {
+    alerts.push({
+      type: "info",
+      text: "Nema SAM obračuna za trenutni mjesec – podaci će se pojaviti nakon obračuna u TAX / SAM modulu.",
+    });
+  }
+
+  if (cashNet < 0) {
+    alerts.push({
+      type: "warning",
+      text: "Neto kretanje gotovine za trenutni mjesec je NEGATIVNO – rashodi su veći od prihoda.",
+    });
+  }
+
+  // Podaci za mini graf kase (3 stubića: prihodi, rashodi, neto)
+  const cashChartItems = [
+    {
+      key: "Prihodi",
+      value: cashIncome,
+      colorClass: "bg-emerald-500",
+      hint: "Ukupan priliv gotovine za mjesec",
+    },
+    {
+      key: "Rashodi",
+      value: cashExpense,
+      colorClass: "bg-rose-500",
+      hint: "Ukupan odliv gotovine za mjesec",
+    },
+    {
+      key: "Neto",
+      value: cashNet,
+      colorClass:
+        cashNet >= 0 ? "bg-sky-500" : "bg-slate-700", // neto može biti +/-
+      hint: "Prihodi - rashodi za mjesec",
+    },
+  ];
+
+  const maxCashAbs = Math.max(
+    ...cashChartItems.map((i) => Math.abs(i.value)),
+    0,
+  );
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -130,6 +192,111 @@ export default function DashboardPage() {
         <p className="text-sm text-red-600">
           Greška pri učitavanju dashboarda: {error.message}
         </p>
+      )}
+
+      {/* Upozorenja / brzi info badge-ovi */}
+      {!isLoading && !isError && data && alerts.length > 0 && (
+        <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 space-y-2">
+          <p className="text-[11px] font-semibold text-amber-800 uppercase tracking-wide">
+            Brza upozorenja za trenutni mjesec
+          </p>
+          <ul className="space-y-1">
+            {alerts.map((a, idx) => (
+              <li
+                key={idx}
+                className="text-[11px] flex items-start gap-2 text-slate-800"
+              >
+                <span
+                  className={
+                    "mt-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] " +
+                    (a.type === "warning"
+                      ? "bg-amber-500 text-white"
+                      : "bg-slate-400 text-white")
+                  }
+                >
+                  {a.type === "warning" ? "!" : "i"}
+                </span>
+                <span>{a.text}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-[10px] text-amber-900/80 mt-1">
+            Ova lista se generiše automatski na osnovu stanja kase i TAX / SAM
+            modula za aktivni mjesec.
+          </p>
+        </div>
+      )}
+
+      {/* Mini graf – kretanje kase za trenutni mjesec */}
+      {!isLoading && !isError && data && (
+        <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+                Kretanje gotovine – {monthLabel || `${data.year}-${data.month}`}
+              </p>
+              <p className="text-xs text-slate-600">
+                Poređenje ukupnih{" "}
+                <span className="font-semibold">prihoda, rashoda i neta</span>{" "}
+                za aktivni mjesec.
+              </p>
+            </div>
+          </div>
+
+          <div className="mt-2 h-40 flex items-end justify-around gap-4 border border-slate-100 rounded-lg bg-slate-50 px-4 py-3">
+            {maxCashAbs === 0 ? (
+              <p className="text-[11px] text-slate-500">
+                Nema dovoljno podataka za prikaz grafa – provjeri da li postoje
+                zapisi u kasi za ovaj mjesec.
+              </p>
+            ) : (
+              cashChartItems.map((item) => {
+                const heightPercent =
+                  maxCashAbs > 0
+                    ? Math.max(
+                        5,
+                        (Math.abs(item.value) / maxCashAbs) * 100,
+                      )
+                    : 0;
+
+                return (
+                  <div
+                    key={item.key}
+                    className="flex flex-col items-center justify-end gap-1"
+                    title={`${item.key}: ${item.value.toFixed(
+                      2,
+                    )} KM – ${item.hint}`}
+                  >
+                    <div className="flex flex-col justify-end h-full">
+                      <div
+                        className={
+                          "w-6 rounded-t-md transition-all " +
+                          item.colorClass
+                        }
+                        style={{
+                          height:
+                            maxCashAbs > 0 ? `${heightPercent}%` : "0%",
+                        }}
+                      ></div>
+                    </div>
+                    <span className="text-[11px] font-medium text-slate-700">
+                      {item.key}
+                    </span>
+                    <span className="text-[10px] text-slate-600">
+                      {item.value.toFixed(2)} KM
+                    </span>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <p className="text-[10px] text-slate-500 mt-1">
+            Visina stubića je proporcionalna apsolutnoj vrijednosti (|iznos|).
+            Neto može biti pozitivan ili negativan; boja označava vrstu
+            vrijednosti.
+          </p>
+        </div>
       )}
 
       {/* Glavne kartice */}
