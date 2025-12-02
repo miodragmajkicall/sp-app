@@ -50,6 +50,13 @@ function toNumber(value: number | string | undefined | null): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
+function formatAmount(value: number): string {
+  return value.toLocaleString("sr-Latn-BA", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
 export default function DashboardPage() {
   const apiUrl = getApiBaseUrl();
   const navigate = useNavigate();
@@ -151,7 +158,7 @@ export default function DashboardPage() {
       key: "Neto",
       value: cashNet,
       colorClass:
-        cashNet >= 0 ? "bg-sky-500" : "bg-slate-700", // neto može biti +/-
+        cashNet >= 0 ? "bg-sky-500" : "bg-slate-700", // neto može biti +/-,
       hint: "Prihodi - rashodi za mjesec",
     },
   ];
@@ -164,33 +171,39 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <h2 className="text-xl font-semibold text-slate-800">
-          Dashboard – mjesečni pregled
+      <div className="space-y-2">
+        <h2 className="text-2xl font-semibold text-slate-900 tracking-tight">
+          Kontrolna tabla – mjesečni pregled
         </h2>
-        <p className="text-xs text-slate-500 mt-1">
-          API: <span className="font-mono">{apiUrl}</span>
-        </p>
-        {data && (
-          <p className="text-xs text-slate-500 mt-1">
-            Period:{" "}
-            <span className="font-semibold text-slate-700">
-              {monthLabel} (tenant{" "}
-              <span className="font-mono">{data.tenant_code}</span>)
+
+        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
+          <span>
+            API: <span className="font-mono">{apiUrl}</span>
+          </span>
+
+          {data && (
+            <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1">
+              <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                Period
+              </span>
+              <span className="font-semibold text-slate-700">
+                {monthLabel} • tenant{" "}
+                <span className="font-mono">{data.tenant_code}</span>
+              </span>
             </span>
-          </p>
-        )}
+          )}
+        </div>
       </div>
 
       {isLoading && (
         <p className="text-sm text-slate-600">
-          Učitavam mjesečni dashboard...
+          Učitavam mjesečne podatke za kontrolnu tablu...
         </p>
       )}
 
       {isError && (
         <p className="text-sm text-red-600">
-          Greška pri učitavanju dashboarda: {error.message}
+          Greška pri učitavanju kontrolne table: {error.message}
         </p>
       )}
 
@@ -227,7 +240,7 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Mini graf – kretanje kase za trenutni mjesec */}
+      {/* Mini graf – kretanje gotovine za trenutni mjesec */}
       {!isLoading && !isError && data && (
         <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
           <div className="flex items-center justify-between gap-3">
@@ -243,7 +256,7 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          <div className="mt-2 h-40 flex items-end justify-around gap-4 border border-slate-100 rounded-lg bg-slate-50 px-4 py-3">
+          <div className="mt-2 h-40 flex items-end justify-around gap-6 border border-slate-100 rounded-lg bg-slate-50 px-6 py-4">
             {maxCashAbs === 0 ? (
               <p className="text-[11px] text-slate-500">
                 Nema dovoljno podataka za prikaz grafa – provjeri da li postoje
@@ -254,7 +267,7 @@ export default function DashboardPage() {
                 const heightPercent =
                   maxCashAbs > 0
                     ? Math.max(
-                        5,
+                        8, // minimalna visina da se bolje vidi stubić
                         (Math.abs(item.value) / maxCashAbs) * 100,
                       )
                     : 0;
@@ -262,15 +275,15 @@ export default function DashboardPage() {
                 return (
                   <div
                     key={item.key}
-                    className="flex flex-col items-center justify-end gap-1"
-                    title={`${item.key}: ${item.value.toFixed(
-                      2,
+                    className="flex flex-col items-center justify-end gap-1 h-full"
+                    title={`${item.key}: ${formatAmount(
+                      item.value,
                     )} KM – ${item.hint}`}
                   >
-                    <div className="flex flex-col justify-end h-full">
+                    <div className="flex flex-col justify-end w-full h-full">
                       <div
                         className={
-                          "w-6 rounded-t-md transition-all " +
+                          "w-7 mx-auto rounded-t-md shadow-sm transition-all " +
                           item.colorClass
                         }
                         style={{
@@ -283,7 +296,7 @@ export default function DashboardPage() {
                       {item.key}
                     </span>
                     <span className="text-[10px] text-slate-600">
-                      {item.value.toFixed(2)} KM
+                      {formatAmount(item.value)} KM
                     </span>
                   </div>
                 );
@@ -308,16 +321,16 @@ export default function DashboardPage() {
               Kasa – {monthLabel || `${data.year}-${data.month}`}
             </p>
             <p className={`text-2xl font-semibold ${netClass}`}>
-              {cashNet.toFixed(2)} KM
+              {formatAmount(cashNet)} KM
             </p>
             <p className="text-xs text-slate-500">
               Prihodi:{" "}
               <span className="font-medium text-emerald-600">
-                {cashIncome.toFixed(2)} KM
+                {formatAmount(cashIncome)} KM
               </span>{" "}
               • Rashodi:{" "}
               <span className="font-medium text-rose-600">
-                {cashExpense.toFixed(2)} KM
+                {formatAmount(cashExpense)} KM
               </span>
             </p>
             <p className="text-[11px] text-slate-400 pt-1">
@@ -336,7 +349,7 @@ export default function DashboardPage() {
             <p className="text-xs text-slate-500">
               Ukupan iznos:{" "}
               <span className="font-semibold">
-                {invoicesTotal.toFixed(2)} KM
+                {formatAmount(invoicesTotal)} KM
               </span>
             </p>
             <button
@@ -354,7 +367,7 @@ export default function DashboardPage() {
               Porezi – {monthLabel || `${data.year}-${data.month}`}
             </p>
             <p className="text-lg font-semibold text-slate-900">
-              {taxTotal.toFixed(2)} KM
+              {formatAmount(taxTotal)} KM
             </p>
             <p className="text-xs text-slate-500">
               Status obračuna:{" "}
@@ -390,7 +403,7 @@ export default function DashboardPage() {
               SAM doprinosi – {monthLabel || `${data.year}-${data.month}`}
             </p>
             <p className="text-lg font-semibold text-slate-900">
-              {samTotal.toFixed(2)} KM
+              {formatAmount(samTotal)} KM
             </p>
             <p className="text-xs text-slate-500">
               Status:{" "}
@@ -421,7 +434,7 @@ export default function DashboardPage() {
       {/* Ako nema podataka */}
       {!isLoading && !isError && !data && (
         <p className="text-sm text-slate-500">
-          Nema dostupnih podataka za dashboard.
+          Nema dostupnih podataka za kontrolnu tablu.
         </p>
       )}
     </div>

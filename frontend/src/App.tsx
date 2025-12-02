@@ -14,6 +14,12 @@ import InvoiceDetailPage from "./pages/InvoiceDetailPage";
 import TaxPage from "./pages/TaxPage";
 
 function App() {
+  const linkBaseClasses =
+    "flex items-center rounded-md px-3 py-2 transition-colors";
+  const linkInactiveClasses =
+    "text-slate-300 hover:bg-slate-800 hover:text-slate-50";
+  const linkActiveClasses = "bg-slate-800 text-slate-50";
+
   return (
     <BrowserRouter>
       <div className="min-h-screen bg-slate-100 flex">
@@ -21,93 +27,157 @@ function App() {
         <aside className="w-64 bg-slate-900 text-slate-100 flex flex-col">
           <div className="px-6 py-4 border-b border-slate-800">
             <h1 className="text-lg font-semibold tracking-tight">SP App</h1>
-            <p className="text-xs text-slate-400">Demo frontend V1</p>
+            <p className="text-xs text-slate-400">
+              Kontrolna tabla za SP preduzetnike
+            </p>
           </div>
 
-          <nav className="flex-1 px-3 py-4 space-y-1 text-sm">
+          <nav className="flex-1 px-3 py-4 space-y-4 text-sm">
+            {/* Glavna stavka – Kontrolna tabla */}
             <NavLink
               to="/dashboard"
               className={({ isActive }) =>
                 [
-                  "flex items-center rounded-md px-3 py-2 transition-colors",
-                  isActive
-                    ? "bg-slate-800 text-slate-50"
-                    : "text-slate-300 hover:bg-slate-800 hover:text-slate-50",
+                  linkBaseClasses,
+                  isActive ? linkActiveClasses : linkInactiveClasses,
                 ].join(" ")
               }
             >
-              Dashboard
+              <span className="mr-2" aria-hidden="true">
+                📊
+              </span>
+              <span>Kontrolna tabla</span>
             </NavLink>
 
-            <NavLink
-              to="/invoices"
-              className={({ isActive }) =>
-                [
-                  "flex items-center rounded-md px-3 py-2 transition-colors",
-                  isActive
-                    ? "bg-slate-800 text-slate-50"
-                    : "text-slate-300 hover:bg-slate-800 hover:text-slate-50",
-                ].join(" ")
-              }
-            >
-              Izlazne fakture
-            </NavLink>
+            {/* POSLOVANJE */}
+            <div>
+              <div className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Poslovanje
+              </div>
 
-            <NavLink
-              to="/invoices/new"
-              className={({ isActive }) =>
-                [
-                  "flex items-center rounded-md px-3 py-2 transition-colors",
-                  isActive
-                    ? "bg-emerald-700 text-white"
-                    : "text-slate-300 hover:bg-slate-800 hover:text-slate-50",
-                ].join(" ")
-              }
-            >
-              ➕ Nova faktura
-            </NavLink>
+              <NavLink
+                to="/invoices"
+                className={({ isActive }) =>
+                  [
+                    linkBaseClasses,
+                    isActive ? linkActiveClasses : linkInactiveClasses,
+                  ].join(" ")
+                }
+              >
+                <span className="mr-2" aria-hidden="true">
+                  📄
+                </span>
+                <span>Izlazne fakture</span>
+              </NavLink>
 
-            <NavLink
-              to="/input-invoices"
-              className={({ isActive }) =>
-                [
-                  "flex items-center rounded-md px-3 py-2 transition-colors",
-                  isActive
-                    ? "bg-slate-800 text-slate-50"
-                    : "text-slate-300 hover:bg-slate-800 hover:text-slate-50",
-                ].join(" ")
-              }
-            >
-              Ulazne fakture
-            </NavLink>
+              <NavLink
+                to="/input-invoices"
+                className={({ isActive }) =>
+                  [
+                    linkBaseClasses,
+                    isActive ? linkActiveClasses : linkInactiveClasses,
+                  ].join(" ")
+                }
+              >
+                <span className="mr-2" aria-hidden="true">
+                  📥
+                </span>
+                <span>Ulazne fakture</span>
+              </NavLink>
 
-            <NavLink
-              to="/cash"
-              className={({ isActive }) =>
-                [
-                  "flex items-center rounded-md px-3 py-2 transition-colors",
-                  isActive
-                    ? "bg-slate-800 text-slate-50"
-                    : "text-slate-300 hover:bg-slate-800 hover:text-slate-50",
-                ].join(" ")
-              }
-            >
-              Kasa
-            </NavLink>
+              <NavLink
+                to="/cash"
+                className={({ isActive }) =>
+                  [
+                    linkBaseClasses,
+                    isActive ? linkActiveClasses : linkInactiveClasses,
+                  ].join(" ")
+                }
+              >
+                <span className="mr-2" aria-hidden="true">
+                  💰
+                </span>
+                <span>Novac</span>
+              </NavLink>
+            </div>
 
-            <NavLink
-              to="/tax"
-              className={({ isActive }) =>
-                [
-                  "flex items-center rounded-md px-3 py-2 transition-colors",
-                  isActive
-                    ? "bg-slate-800 text-slate-50"
-                    : "text-slate-300 hover:bg-slate-800 hover:text-slate-50",
-                ].join(" ")
-              }
-            >
-              Porezi / SAM
-            </NavLink>
+            {/* KNJIGOVODSTVO – funkcionalnost širimo u sljedećim sesijama */}
+            <div>
+              <div className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Knjigovodstvo
+              </div>
+
+              <div className="flex items-center rounded-md px-3 py-2 text-slate-500 cursor-default">
+                <span className="mr-2" aria-hidden="true">
+                  📘
+                </span>
+                <span>KPR (uskoro)</span>
+              </div>
+
+              <NavLink
+                to="/tax"
+                className={({ isActive }) =>
+                  [
+                    linkBaseClasses,
+                    isActive ? linkActiveClasses : linkInactiveClasses,
+                  ].join(" ")
+                }
+              >
+                <span className="mr-2" aria-hidden="true">
+                  📑
+                </span>
+                <span>Porezi i doprinosi</span>
+              </NavLink>
+
+              <div className="flex items-center rounded-md px-3 py-2 text-slate-500 cursor-default">
+                <span className="mr-2" aria-hidden="true">
+                  📈
+                </span>
+                <span>Izvještaji (uskoro)</span>
+              </div>
+            </div>
+
+            {/* DODATNE EVIDENCIJE */}
+            <div>
+              <div className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Dodatne evidencije
+              </div>
+
+              <div className="flex items-center rounded-md px-3 py-2 text-slate-500 cursor-default">
+                <span className="mr-2" aria-hidden="true">
+                  🧱
+                </span>
+                <span>Osnovna sredstva (uskoro)</span>
+              </div>
+
+              <div className="flex items-center rounded-md px-3 py-2 text-slate-500 cursor-default">
+                <span className="mr-2" aria-hidden="true">
+                  📁
+                </span>
+                <span>Dokumenti (uskoro)</span>
+              </div>
+            </div>
+
+            {/* SISTEM */}
+            <div>
+              <div className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Sistem
+              </div>
+
+              <div className="flex items-center rounded-md px-3 py-2 text-slate-500 cursor-default">
+                <span className="mr-2" aria-hidden="true">
+                  ⚙️
+                </span>
+                <span>Postavke (uskoro)</span>
+              </div>
+
+              <div className="flex items-center rounded-md px-3 py-2 text-slate-500 cursor-default">
+                <span className="mr-2" aria-hidden="true">
+                  ❓
+                </span>
+                <span>Pomoć (uskoro)</span>
+              </div>
+            </div>
           </nav>
 
           <div className="px-4 py-3 border-t border-slate-800 text-xs text-slate-500">
@@ -123,7 +193,7 @@ function App() {
           <header className="h-14 border-b border-slate-200 bg-white flex items-center justify-between px-6">
             <div>
               <p className="text-sm font-medium text-slate-800">
-                SP App – web frontend
+                SP App – kontrolna tabla
               </p>
               <p className="text-xs text-slate-500">
                 Backend V1 (bez auth) • demo tenant{" "}
