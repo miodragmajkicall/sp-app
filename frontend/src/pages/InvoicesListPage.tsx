@@ -66,9 +66,18 @@ export default function InvoicesListPage() {
       await markInvoicePaid(inv.id);
       await refetch();
     } catch (err) {
-      console.error(err);
+      console.error("Greška pri markInvoicePaid:", err);
+      const anyErr = err as any;
+      const backendDetail =
+        anyErr?.response?.data?.detail ||
+        anyErr?.response?.data?.message ||
+        anyErr?.message ||
+        "Nepoznata greška";
+
       setActionError(
-        "Greška pri označavanju fakture kao plaćene. Pokušaj ponovo.",
+        `Greška pri označavanju fakture ${
+          inv.number ?? `#${inv.id}`
+        } kao plaćene: ${backendDetail}`,
       );
     } finally {
       setMarkingId(null);
@@ -168,93 +177,121 @@ export default function InvoicesListPage() {
       )}
 
       {!!data && visibleItems.length > 0 && (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white shadow-sm">
-          <table className="min-w-full text-sm">
-            <thead className="bg-slate-50 text-slate-500">
-              <tr>
-                <th className="px-3 py-2 text-left font-medium">Broj</th>
-                <th className="px-3 py-2 text-left font-medium">Kupac</th>
-                <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
-                  Datum izdavanja
-                </th>
-                <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
-                  Rok plaćanja
-                </th>
-                <th className="px-3 py-2 text-right font-medium">Iznos</th>
-                <th className="px-3 py-2 text-center font-medium">
-                  Plaćena
-                </th>
-                <th className="px-3 py-2 text-center font-medium">
-                  Akcije
-                </th>
-              </tr>
-            </thead>
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+          {/* Info traka iznad tabele */}
+          <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 text-[11px] text-slate-500">
+            <span>
+              Ukupno faktura:{" "}
+              <span className="font-mono font-semibold text-slate-700">
+                {data.total}
+              </span>
+              {statusFilter !== "ALL" && (
+                <>
+                  {" "}
+                  • prikazano:{" "}
+                  <span className="font-mono text-slate-700">
+                    {visibleItems.length}
+                  </span>
+                </>
+              )}
+            </span>
+            <span className="hidden sm:inline">
+              Lista je ograničene visine – koristi vertikalni skrol unutar
+              tabele ako imaš puno faktura.
+            </span>
+          </div>
 
-            <tbody className="divide-y divide-slate-100 text-slate-700">
-              {visibleItems.map((inv: InvoiceRowItem) => (
-                <tr key={inv.id}>
-                  <td className="px-3 py-2 font-mono text-xs">
-                    <Link
-                      to={`/invoices/${inv.id}`}
-                      state={{ invoice: inv }}
-                      className="text-slate-800 hover:text-slate-900 hover:underline underline-offset-2"
-                    >
-                      {inv.number ?? "-"}
-                    </Link>
-                  </td>
-                  <td className="px-3 py-2">
-                    {inv.buyer_name ?? (
-                      <span className="text-slate-400">-</span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-xs">
-                    {formatDate(inv.issue_date)}
-                  </td>
-                  <td className="px-3 py-2 text-xs">
-                    {formatDate(inv.due_date)}
-                  </td>
-                  <td className="px-3 py-2 text-right font-medium">
-                    {formatAmount(inv.total_amount)}
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    {inv.is_paid ? (
-                      <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
-                        DA
-                      </span>
-                    ) : (
-                      <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
-                        NE
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-3 py-2 text-center">
-                    <div className="flex items-center justify-center gap-2">
+          {/* Scroll kontejner za tabelu */}
+          <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-50 text-slate-500 sticky top-0 z-10">
+                <tr>
+                  <th className="px-3 py-2 text-left font-medium">Broj</th>
+                  <th className="px-3 py-2 text-left font-medium">Kupac</th>
+                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
+                    Datum izdavanja
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
+                    Rok plaćanja
+                  </th>
+                  <th className="px-3 py-2 text-right font-medium">
+                    Iznos
+                  </th>
+                  <th className="px-3 py-2 text-center font-medium">
+                    Plaćena
+                  </th>
+                  <th className="px-3 py-2 text-center font-medium">
+                    Akcije
+                  </th>
+                </tr>
+              </thead>
+
+              <tbody className="divide-y divide-slate-100 text-slate-700">
+                {visibleItems.map((inv: InvoiceRowItem) => (
+                  <tr key={inv.id}>
+                    <td className="px-3 py-2 font-mono text-xs">
                       <Link
                         to={`/invoices/${inv.id}`}
                         state={{ invoice: inv }}
-                        className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                        className="text-slate-800 hover:text-slate-900 hover:underline underline-offset-2"
                       >
-                        Detalji
+                        {inv.number ?? "-"}
                       </Link>
-
-                      {!inv.is_paid && (
-                        <button
-                          type="button"
-                          onClick={() => handleMarkPaid(inv)}
-                          disabled={markingId === inv.id}
-                          className="inline-flex items-center rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
-                        >
-                          {markingId === inv.id
-                            ? "Označavam..."
-                            : "Označi kao plaćenu"}
-                        </button>
+                    </td>
+                    <td className="px-3 py-2">
+                      {inv.buyer_name ?? (
+                        <span className="text-slate-400">-</span>
                       )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                    </td>
+                    <td className="px-3 py-2 text-xs">
+                      {formatDate(inv.issue_date)}
+                    </td>
+                    <td className="px-3 py-2 text-xs">
+                      {formatDate(inv.due_date)}
+                    </td>
+                    <td className="px-3 py-2 text-right font-medium">
+                      {formatAmount(inv.total_amount)}
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      {inv.is_paid ? (
+                        <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                          DA
+                        </span>
+                      ) : (
+                        <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
+                          NE
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-center">
+                      <div className="flex items-center justify-center gap-2">
+                        <Link
+                          to={`/invoices/${inv.id}`}
+                          state={{ invoice: inv }}
+                          className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                        >
+                          Detalji
+                        </Link>
+
+                        {!inv.is_paid && (
+                          <button
+                            type="button"
+                            onClick={() => handleMarkPaid(inv)}
+                            disabled={markingId === inv.id}
+                            className="inline-flex items-center rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+                          >
+                            {markingId === inv.id
+                              ? "Označavam..."
+                              : "Označi kao plaćenu"}
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
     </div>

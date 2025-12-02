@@ -17,6 +17,10 @@ export interface FetchInvoicesListOptions {
  *
  * Opcioni filter:
  * - unpaidOnly: ako je true, šaljemo ?unpaid_only=true (samo neplaćene)
+ *
+ * Napomena: backend ima paginaciju, pa ovdje tražimo prvu stranicu
+ * sa većim page_size (npr. 200) kako bismo u UI-u vidjeli sve fakture
+ * dok ne uvedemo pravu paginaciju.
  */
 export async function fetchInvoicesList(
   options?: FetchInvoicesListOptions,
@@ -37,6 +41,8 @@ export async function fetchInvoicesList(
   }>("/invoices/list", {
     params: {
       unpaid_only: unpaidOnly ? true : undefined,
+      page: 1,
+      page_size: 200,
     },
   });
 
@@ -65,8 +71,7 @@ export async function fetchInvoicesList(
  * Alias ako nam negdje zatreba samo lista bez metapodataka
  * (trenutno ga ne koristi UI, ali ostavljamo za kasnije).
  */
-export async function fetchInvoices(
-): Promise<InvoiceRowItem[]> {
+export async function fetchInvoices(): Promise<InvoiceRowItem[]> {
   const data = await fetchInvoicesList();
   return data.items;
 }
@@ -107,8 +112,6 @@ export async function createInvoice(
  * POST – označi fakturu kao plaćenu
  * koristi backend /invoices/{id}/mark-paid
  */
-export async function markInvoicePaid(
-  invoiceId: number,
-): Promise<void> {
+export async function markInvoicePaid(invoiceId: number): Promise<void> {
   await apiClient.post(`/invoices/${invoiceId}/mark-paid`, null);
 }
