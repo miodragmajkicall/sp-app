@@ -70,6 +70,23 @@ function App() {
                 <span>Izlazne fakture</span>
               </NavLink>
 
+              {/* nova stavka – direktno kreiranje izlazne fakture */}
+              <NavLink
+                to="/invoices/new"
+                className={({ isActive }) =>
+                  [
+                    "ml-6 mt-1", // malo uvučeno ispod Izlazne fakture
+                    linkBaseClasses,
+                    isActive ? linkActiveClasses : linkInactiveClasses,
+                  ].join(" ")
+                }
+              >
+                <span className="mr-2" aria-hidden="true">
+                  ➕
+                </span>
+                <span>Nova izlazna faktura</span>
+              </NavLink>
+
               <NavLink
                 to="/input-invoices"
                 className={({ isActive }) =>

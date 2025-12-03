@@ -1,8 +1,10 @@
-// frontend/src/pages/InvoiceDetailPage.tsx
-import { useState } from "react";
+// /home/miso/dev/sp-app/sp-app/frontend/src/pages/InvoiceDetailPage.tsx
+import React, { useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import type { InvoiceRowItem } from "../types/invoice";
+import { useQuery } from "@tanstack/react-query";
+import type { InvoiceRowItem, InvoiceDetail } from "../types/invoice";
 import { apiClient } from "../services/apiClient";
+import { fetchInvoiceById } from "../services/invoicesApi";
 
 function formatDate(value?: string | null): string {
   if (!value) return "-";
@@ -25,10 +27,22 @@ export default function InvoiceDetailPage() {
   const navigate = useNavigate();
   const location = useLocation();
 
-  const invoice =
+  const numericId = id ? Number(id) : null;
+
+  // Ako dolazimo iz liste, u state-u imamo osnovne podatke o fakturi
+  const listInvoice =
     (location.state as { invoice?: InvoiceRowItem } | null)?.invoice ?? null;
 
-  const numericId = id ? Number(id) : null;
+  const {
+    data: invoice,
+    isLoading,
+    isError,
+    error,
+  } = useQuery<InvoiceDetail>({
+    queryKey: ["invoice-detail", numericId],
+    enabled: numericId != null && Number.isFinite(numericId),
+    queryFn: () => fetchInvoiceById(numericId as number),
+  });
 
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfError, setPdfError] = useState("");
@@ -56,82 +70,50 @@ export default function InvoiceDetailPage() {
     }
   };
 
-  // Ako je ekran otvoren direktno (bez state-a iz liste) nemamo pune podatke.
-  if (!invoice) {
+  if (numericId == null || !Number.isFinite(numericId)) {
     return (
       <div className="space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-xl font-semibold text-slate-800">
-              Detalj fakture
-            </h2>
-            <p className="text-xs text-slate-500 mt-1">
-              ID fakture: <span className="font-mono">{id ?? "?"}</span>
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={() => navigate("/invoices")}
-            className="text-xs px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50"
-          >
-            ← Nazad na listu
-          </button>
-        </div>
-
-        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-lg p-4">
-          <p className="font-semibold mb-1">Nedostupni detalji fakture</p>
-          <p>
-            Ovaj ekran je otvoren direktno bez podataka iz liste. U sljedećoj
-            iteraciji možemo dodati poseban API za{" "}
-            <code className="font-mono">GET /invoices/{":id"}</code> i ovdje
-            fetchati podatke.
-          </p>
-        </div>
-
-        {numericId != null && Number.isFinite(numericId) && (
-          <div className="space-y-2">
-            <button
-              type="button"
-              onClick={handleOpenPdf}
-              disabled={pdfLoading}
-              className="btn-primary text-xs disabled:opacity-60"
-            >
-              {pdfLoading ? "Pripremam PDF..." : "Preuzmi PDF fakture"}
-            </button>
-            {pdfError && (
-              <p className="text-xs text-red-600 mt-1">{pdfError}</p>
-            )}
-          </div>
-        )}
+        <p className="text-sm text-red-600">
+          Nevalidan ID fakture u URL-u.
+        </p>
+        <button
+          type="button"
+          onClick={() => navigate("/invoices")}
+          className="text-xs px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50"
+        >
+          ← Nazad na listu
+        </button>
       </div>
     );
   }
 
   return (
     <div className="space-y-5">
-      {/* Header + back link */}
+      {/* Header */}
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-slate-800">
-            Faktura {invoice.number ?? `#${invoice.id}`}
+            {invoice
+              ? `Faktura ${invoice.invoice_number}`
+              : listInvoice
+              ? `Faktura ${listInvoice.number ?? `#${listInvoice.id}`}`
+              : "Detalj fakture"}
           </h2>
-        <p className="text-xs text-slate-500 mt-1">
+          <p className="text-xs text-slate-500 mt-1">
             Detalji izlazne fakture za tenant{" "}
             <span className="font-mono">t-demo</span>.
           </p>
         </div>
 
         <div className="flex items-center gap-2">
-          {numericId != null && Number.isFinite(numericId) && (
-            <button
-              type="button"
-              onClick={handleOpenPdf}
-              disabled={pdfLoading}
-              className="inline-flex items-center rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-60"
-            >
-              {pdfLoading ? "Pripremam PDF..." : "PDF fakture"}
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={handleOpenPdf}
+            disabled={pdfLoading}
+            className="inline-flex items-center rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-60"
+          >
+            {pdfLoading ? "Pripremam PDF..." : "PDF fakture"}
+          </button>
 
           <button
             type="button"
@@ -143,90 +125,203 @@ export default function InvoiceDetailPage() {
         </div>
       </div>
 
-      {/* Info kartica */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-white border rounded-lg p-4 text-sm text-slate-700">
-        <div className="space-y-2">
-          <div>
-            <p className="text-[11px] uppercase tracking-wide text-slate-400">
-              Broj fakture
-            </p>
-            <p className="font-medium">
-              {invoice.number ?? <span className="text-slate-400">N/A</span>}
-            </p>
+      {/* Loading / error */}
+      {isLoading && (
+        <p className="text-sm text-slate-600">Učitavam detalje fakture...</p>
+      )}
+
+      {isError && (
+        <p className="text-sm text-red-600">
+          Greška pri učitavanju fakture:{" "}
+          {error instanceof Error ? error.message : "Nepoznata greška"}
+        </p>
+      )}
+
+      {invoice && (
+        <>
+          {/* Info kartica */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 bg-white border rounded-lg p-4 text-sm text-slate-700">
+            <div className="space-y-2">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Broj fakture
+                </p>
+                <p className="font-medium">{invoice.invoice_number}</p>
+              </div>
+
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Kupac
+                </p>
+                <p className="font-medium">
+                  {invoice.buyer_name || (
+                    <span className="text-slate-400">Nepoznat kupac</span>
+                  )}
+                </p>
+                {invoice.buyer_address && (
+                  <p className="text-xs text-slate-500">
+                    {invoice.buyer_address}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Datum izdavanja
+                </p>
+                <p>{formatDate(invoice.issue_date)}</p>
+              </div>
+
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Rok plaćanja
+                </p>
+                <p>{formatDate(invoice.due_date)}</p>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Neto osnovica
+                </p>
+                <p className="font-mono">
+                  {formatAmount(invoice.total_base)}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  PDV
+                </p>
+                <p className="font-mono">
+                  {formatAmount(invoice.total_vat)}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Ukupni iznos (sa PDV-om)
+                </p>
+                <p className="text-lg font-semibold">
+                  {formatAmount(invoice.total_amount)}
+                </p>
+              </div>
+
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Status plaćanja
+                </p>
+                {invoice.is_paid ? (
+                  <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                    PLAĆENA
+                  </span>
+                ) : (
+                  <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
+                    NIJE PLAĆENA
+                  </span>
+                )}
+              </div>
+
+              <div className="text-xs text-slate-400 pt-2">
+                <p>
+                  ID fakture:{" "}
+                  <span className="font-mono text-slate-500">
+                    {invoice.id}
+                  </span>
+                </p>
+                <p>
+                  Ruta:{" "}
+                  <span className="font-mono text-slate-500">
+                    /invoices/{invoice.id}
+                  </span>
+                </p>
+                <p>
+                  Tenant:{" "}
+                  <span className="font-mono text-slate-500">
+                    {invoice.tenant_code}
+                  </span>
+                </p>
+              </div>
+            </div>
           </div>
 
-          <div>
-            <p className="text-[11px] uppercase tracking-wide text-slate-400">
-              Kupac
-            </p>
-            <p className="font-medium">
-              {invoice.buyer_name ?? (
-                <span className="text-slate-400">Nepoznat kupac</span>
-              )}
-            </p>
-          </div>
+          {/* Stavke fakture */}
+          <div className="bg-white border rounded-lg p-4">
+            <h3 className="text-sm font-semibold text-slate-700 mb-3">
+              Stavke fakture
+            </h3>
 
-          <div>
-            <p className="text-[11px] uppercase tracking-wide text-slate-400">
-              Datum izdavanja
-            </p>
-            <p>{formatDate(invoice.issue_date)}</p>
-          </div>
-
-          <div>
-            <p className="text-[11px] uppercase tracking-wide text-slate-400">
-              Rok plaćanja
-            </p>
-            <p>{formatDate(invoice.due_date)}</p>
-          </div>
-        </div>
-
-        <div className="space-y-2">
-          <div>
-            <p className="text-[11px] uppercase tracking-wide text-slate-400">
-              Ukupni iznos
-            </p>
-            <p className="text-lg font-semibold">
-              {formatAmount(invoice.total_amount)}
-            </p>
-          </div>
-
-          <div>
-            <p className="text-[11px] uppercase tracking-wide text-slate-400">
-              Status plaćanja
-            </p>
-            {invoice.is_paid ? (
-              <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
-                PLAĆENA
-              </span>
+            {invoice.items.length === 0 ? (
+              <p className="text-xs text-slate-500">
+                Nema stavki evidentiranih za ovu fakturu.
+              </p>
             ) : (
-              <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
-                NIJE PLAĆENA
-              </span>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-slate-50 text-slate-500">
+                    <tr>
+                      <th className="px-3 py-2 text-left font-medium">
+                        Opis stavke
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        Količina
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        Jed. cijena (bez PDV)
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        PDV %
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        Osnovica
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        PDV
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
+                        Ukupno (sa PDV)
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 text-slate-700">
+                    {invoice.items.map((item) => (
+                      <tr key={item.id}>
+                        <td className="px-3 py-2">
+                          {item.description}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono">
+                          {item.quantity.toFixed(2)}
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono">
+                          {item.unit_price.toFixed(2)} KM
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono">
+                          {(item.vat_rate * 100).toFixed(0)}%
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono">
+                          {item.base_amount.toFixed(2)} KM
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono">
+                          {item.vat_amount.toFixed(2)} KM
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono">
+                          {item.total_amount.toFixed(2)} KM
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
             )}
           </div>
+        </>
+      )}
 
-          <div className="text-xs text-slate-400 pt-2">
-            <p>
-              ID fakture:{" "}
-              <span className="font-mono text-slate-500">{invoice.id}</span>
-            </p>
-            <p>
-              Ruta:{" "}
-              <span className="font-mono text-slate-500">
-                /invoices/{invoice.id}
-              </span>
-            </p>
-          </div>
-        </div>
-      </div>
-
-      {/* PDF error ako postoji */}
       {pdfError && (
         <p className="text-xs text-red-600 mt-1">{pdfError}</p>
       )}
 
-      {/* Brza navigacija */}
       <div className="text-xs text-slate-500">
         <Link
           to="/invoices"

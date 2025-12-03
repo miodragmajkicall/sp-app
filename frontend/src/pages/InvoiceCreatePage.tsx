@@ -1,17 +1,15 @@
-// frontend/src/pages/InvoiceCreatePage.tsx
+// /home/miso/dev/sp-app/sp-app/frontend/src/pages/InvoiceCreatePage.tsx
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { createInvoice, fetchInvoicesList } from "../services/invoicesApi";
-import type { InvoiceListResponse } from "../types/invoice";
+import type { InvoiceListResponse, InvoiceCreatePayload } from "../types/invoice";
 
 type InvoiceItem = {
   description: string;
-  // čuvamo kao string radi kontrolisanog input stanja
-  quantity: string;
-  // cijena BEZ PDV-a po jedinici (BAM)
-  unitPrice: string;
+  quantity: string;   // string radi kontrolisanog inputa
+  unitPrice: string;  // cijena BEZ PDV-a
 };
 
 const VAT_RATE = 0.17; // 17%
@@ -22,14 +20,14 @@ export default function InvoiceCreatePage() {
   // Osnovni podaci o fakturi
   const [number, setNumber] = useState("");
   const [issueDate, setIssueDate] = useState<string>(() =>
-    new Date().toISOString().slice(0, 10)
+    new Date().toISOString().slice(0, 10),
   );
   const [dueDate, setDueDate] = useState("");
 
   // Podaci o kupcu
   const [buyerName, setBuyerName] = useState("");
   const [buyerAddress, setBuyerAddress] = useState("");
-  const [buyerIdNumber, setBuyerIdNumber] = useState(""); // JIB/PIB
+  const [buyerIdNumber, setBuyerIdNumber] = useState(""); // informativno
 
   // Stavke
   const [items, setItems] = useState<InvoiceItem[]>([
@@ -43,13 +41,13 @@ export default function InvoiceCreatePage() {
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  // Učitamo listu faktura da bi mogli predložiti prvi slobodan broj fakture za tekući mjesec
+  // Lista faktura radi prijedloga broja
   const { data: invoicesListData } = useQuery<InvoiceListResponse>({
     queryKey: ["invoices", "list-for-number-suggestion"],
     queryFn: () => fetchInvoicesList(),
   });
 
-  // Automatski prijedlog broja fakture formata GODINA/MJESEC/XXXX
+  // Automatski prijedlog broja fakture GODINA/MJESEC/XXXX
   useEffect(() => {
     if (!invoicesListData) return;
     if (number.trim() !== "") return;
@@ -100,19 +98,17 @@ export default function InvoiceCreatePage() {
 
   function removeItemRow(index: number) {
     setItems((prev) => {
-      if (prev.length === 1) return prev; // barem jedna stavka uvijek
+      if (prev.length === 1) return prev;
       return prev.filter((_, i) => i !== index);
     });
   }
 
-  // Izračunavanje NETO, PDV i UKUPNO
+  // Izračun NETO, PDV, UKUPNO za prikaz
   const netTotal = items.reduce((sum, item) => {
     const qty = parseFloat(item.quantity || "0");
     const priceNet = parseFloat(item.unitPrice || "0");
-
     if (!Number.isFinite(qty) || !Number.isFinite(priceNet)) return sum;
     if (qty <= 0 || priceNet < 0) return sum;
-
     return sum + qty * priceNet;
   }, 0);
 
@@ -124,37 +120,50 @@ export default function InvoiceCreatePage() {
     setSaving(true);
     setErrorMsg("");
 
-    const hasValidItem = items.some((item) => {
-      const qty = parseFloat(item.quantity || "0");
-      const priceNet = parseFloat(item.unitPrice || "0");
+    // Pripremi stavke za backend – samo validne
+    const preparedItems = items
+      .map((item) => {
+        const qty = parseFloat(item.quantity || "0");
+        const priceNet = parseFloat(item.unitPrice || "0");
 
-      return (
-        item.description.trim().length > 0 &&
-        Number.isFinite(qty) &&
-        Number.isFinite(priceNet) &&
-        qty > 0 &&
-        priceNet >= 0
-      );
-    });
+        if (
+          item.description.trim().length === 0 ||
+          !Number.isFinite(qty) ||
+          !Number.isFinite(priceNet) ||
+          qty <= 0 ||
+          priceNet < 0
+        ) {
+          return null;
+        }
 
-    if (!hasValidItem || grossTotal <= 0) {
+        return {
+          description: item.description.trim(),
+          quantity: qty,
+          unit_price: priceNet,
+          vat_rate: VAT_RATE,
+        };
+      })
+      .filter((x): x is { description: string; quantity: number; unit_price: number; vat_rate: number } => x !== null);
+
+    if (!preparedItems.length || grossTotal <= 0) {
       setSaving(false);
       setErrorMsg(
-        "Dodaj barem jednu stavku sa opisom, količinom > 0 i cijenom ≥ 0."
+        "Dodaj barem jednu validnu stavku (opis, količina > 0, cijena ≥ 0).",
       );
       return;
     }
 
     try {
-      await createInvoice({
+      const payload: InvoiceCreatePayload = {
         number,
         buyer_name: buyerName,
+        buyer_address: buyerAddress || null,
         issue_date: issueDate,
         due_date: dueDate || null,
-        // backend prima total_amount = ukupno sa PDV-om
-        total_amount: parseFloat(grossTotal.toFixed(2)),
-      });
+        items: preparedItems,
+      };
 
+      await createInvoice(payload);
       navigate("/invoices");
     } catch (err: any) {
       setErrorMsg(err?.message ?? "Greška pri snimanju fakture");
@@ -190,13 +199,10 @@ export default function InvoiceCreatePage() {
         </div>
       </div>
 
-      <form
-        onSubmit={handleSubmit}
-        className="space-y-5"
-      >
+      <form onSubmit={handleSubmit} className="space-y-5">
         {/* Gornji blok: faktura + kupac */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          {/* Kartica: Podaci o fakturi */}
+          {/* Podaci o fakturi */}
           <section className="bg-white rounded-lg border border-slate-200 shadow-sm p-4 space-y-3">
             <h3 className="text-sm font-semibold text-slate-700 border-b border-slate-100 pb-2">
               Podaci o fakturi
@@ -235,7 +241,7 @@ export default function InvoiceCreatePage() {
 
                 <div className="space-y-1">
                   <label className="text-xs font-medium text-slate-700">
-                    Rok plaćanja (opcionalno)
+                    Rok plaćanja (default +7 dana)
                   </label>
                   <input
                     type="date"
@@ -243,12 +249,16 @@ export default function InvoiceCreatePage() {
                     onChange={(e) => setDueDate(e.target.value)}
                     className="input"
                   />
+                  <p className="text-[11px] text-slate-400">
+                    Po difoltu je postavljeno 7 dana nakon datuma izdavanja,
+                    ali možeš ručno promijeniti.
+                  </p>
                 </div>
               </div>
             </div>
           </section>
 
-          {/* Kartica: Podaci o kupcu */}
+          {/* Podaci o kupcu */}
           <section className="bg-white rounded-lg border border-slate-200 shadow-sm p-4 space-y-3">
             <h3 className="text-sm font-semibold text-slate-700 border-b border-slate-100 pb-2">
               Podaci o kupcu
@@ -295,14 +305,14 @@ export default function InvoiceCreatePage() {
               </div>
 
               <p className="text-[11px] text-slate-400">
-                U ovoj V1 verziji adresa i JIB/PIB se još ne čuvaju u backendu –
-                koriste se kao informativna polja pri kreiranju fakture.
+                U ovoj V1 verziji JIB/PIB se još ne čuva u backendu – polje je
+                informativno pri kreiranju fakture.
               </p>
             </div>
           </section>
         </div>
 
-        {/* Kartica: Stavke fakture */}
+        {/* Stavke fakture */}
         <section className="bg-white rounded-lg border border-slate-200 shadow-sm p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-semibold text-slate-700">
@@ -442,8 +452,7 @@ export default function InvoiceCreatePage() {
               <p className="text-[11px] text-slate-400">
                 Nakon snimanja, faktura će se pojaviti u listi{" "}
                 <span className="font-semibold">Izlazne fakture</span>. Detaljni
-                prikaz (V1) trenutno koristi samo osnovne podatke i ukupni iznos
-                sa PDV-om.
+                prikaz sada koristi sve stavke i ukupne iznose sa PDV-om.
               </p>
             </div>
           </div>

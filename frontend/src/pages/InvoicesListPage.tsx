@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
@@ -30,6 +30,15 @@ export default function InvoicesListPage() {
   const [actionError, setActionError] = useState("");
   const [markingId, setMarkingId] = useState<number | null>(null);
 
+  // paginacija: 50 faktura po stranici
+  const PAGE_SIZE = 50;
+  const [page, setPage] = useState(1);
+
+  // kad promijenimo filter – vraćamo se na prvu stranicu
+  useEffect(() => {
+    setPage(1);
+  }, [statusFilter]);
+
   const {
     data,
     isLoading,
@@ -38,11 +47,14 @@ export default function InvoicesListPage() {
     refetch,
     isRefetching,
   } = useQuery({
-    queryKey: ["invoices-list", { statusFilter }],
+    queryKey: ["invoices-list", { statusFilter, page }],
     queryFn: () =>
       fetchInvoicesList({
         unpaidOnly: statusFilter === "UNPAID",
+        page,
+        pageSize: PAGE_SIZE,
       }),
+    keepPreviousData: true,
   });
 
   const visibleItems: InvoiceRowItem[] = useMemo(() => {
@@ -55,6 +67,86 @@ export default function InvoicesListPage() {
     // PAID – filtriramo samo u UI-u
     return data.items.filter((i) => i.is_paid);
   }, [data, statusFilter]);
+
+  const total = data?.total ?? 0;
+  const totalPages = total > 0 ? Math.max(1, Math.ceil(total / PAGE_SIZE)) : 1;
+
+  const fromIndex =
+    total === 0 ? 0 : (page - 1) * PAGE_SIZE + (visibleItems.length > 0 ? 1 : 0);
+  const toIndex =
+    total === 0
+      ? 0
+      : (page - 1) * PAGE_SIZE + (visibleItems.length || 0);
+
+  function goToPage(p: number) {
+    if (p < 1 || (data && p > totalPages)) return;
+    setPage(p);
+  }
+
+  function renderPageNumbers() {
+    if (!data || totalPages <= 1) return null;
+
+    const items: JSX.Element[] = [];
+
+    const pushPage = (p: number) => {
+      items.push(
+        <button
+          key={p}
+          type="button"
+          onClick={() => goToPage(p)}
+          className={[
+            "min-w-[32px] px-2 py-1 rounded-md border text-xs font-medium",
+            p === page
+              ? "bg-slate-900 text-white border-slate-900"
+              : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50",
+          ].join(" ")}
+        >
+          {p}
+        </button>,
+      );
+    };
+
+    if (totalPages <= 7) {
+      for (let p = 1; p <= totalPages; p += 1) {
+        pushPage(p);
+      }
+    } else {
+      pushPage(1);
+
+      const start = Math.max(2, page - 1);
+      const end = Math.min(totalPages - 1, page + 1);
+
+      if (start > 2) {
+        items.push(
+          <span
+            key="start-ellipsis"
+            className="px-1 text-xs text-slate-500"
+          >
+            …
+          </span>,
+        );
+      }
+
+      for (let p = start; p <= end; p += 1) {
+        pushPage(p);
+      }
+
+      if (end < totalPages - 1) {
+        items.push(
+          <span
+            key="end-ellipsis"
+            className="px-1 text-xs text-slate-500"
+          >
+            …
+          </span>,
+        );
+      }
+
+      pushPage(totalPages);
+    }
+
+    return items;
+  }
 
   async function handleMarkPaid(inv: InvoiceRowItem) {
     if (inv.is_paid) return;
@@ -86,7 +178,7 @@ export default function InvoicesListPage() {
 
   return (
     <div className="space-y-4">
-      {/* Header + refresh */}
+      {/* Header + dugmad */}
       <div className="flex items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-slate-800">
@@ -98,14 +190,23 @@ export default function InvoicesListPage() {
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={() => refetch()}
-          className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-60"
-          disabled={isLoading || isRefetching}
-        >
-          {isRefetching || isLoading ? "Osvježavam..." : "Osvježi listu"}
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            to="/invoices/new"
+            className="inline-flex items-center rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700"
+          >
+            + Nova izlazna faktura
+          </Link>
+
+          <button
+            type="button"
+            onClick={() => refetch()}
+            className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-60"
+            disabled={isLoading || isRefetching}
+          >
+            {isRefetching || isLoading ? "Osvježavam..." : "Osvježi listu"}
+          </button>
+        </div>
       </div>
 
       {/* Filter statusa */}
@@ -164,31 +265,31 @@ export default function InvoicesListPage() {
         <p className="text-xs text-red-600">{actionError}</p>
       )}
 
-      {!!data && data.total === 0 && (
+      {!!data && total === 0 && (
         <p className="text-sm text-slate-500">
           Trenutno nema nijedne izlazne fakture.
         </p>
       )}
 
-      {!!data && data.total > 0 && visibleItems.length === 0 && (
+      {!!data && total > 0 && visibleItems.length === 0 && (
         <p className="text-sm text-slate-500">
           Nema faktura za odabrani filter.
         </p>
       )}
 
       {!!data && visibleItems.length > 0 && (
-        <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
+        <div className="rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col">
           {/* Info traka iznad tabele */}
           <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 text-[11px] text-slate-500">
             <span>
               Ukupno faktura:{" "}
               <span className="font-mono font-semibold text-slate-700">
-                {data.total}
+                {total}
               </span>
               {statusFilter !== "ALL" && (
                 <>
                   {" "}
-                  • prikazano:{" "}
+                  • prikazano na ovoj stranici:{" "}
                   <span className="font-mono text-slate-700">
                     {visibleItems.length}
                   </span>
@@ -196,8 +297,9 @@ export default function InvoicesListPage() {
               )}
             </span>
             <span className="hidden sm:inline">
-              Lista je ograničene visine – koristi vertikalni skrol unutar
-              tabele ako imaš puno faktura.
+              Na svakoj stranici se prikazuje do{" "}
+              <span className="font-mono">{PAGE_SIZE}</span> faktura. Koristi
+              skrol unutar liste za pregled.
             </span>
           </div>
 
@@ -292,6 +394,51 @@ export default function InvoicesListPage() {
               </tbody>
             </table>
           </div>
+
+          {/* Paginacija dole */}
+          {data && total > 0 && (
+            <div className="flex items-center justify-between px-3 py-2 border-t border-slate-100 text-[11px] text-slate-600">
+              <div>
+                {fromIndex > 0 && toIndex > 0 ? (
+                  <>
+                    Prikaz{" "}
+                    <span className="font-mono">
+                      {fromIndex}–{toIndex}
+                    </span>{" "}
+                    od{" "}
+                    <span className="font-mono">
+                      {total}
+                    </span>{" "}
+                    faktura.
+                  </>
+                ) : (
+                  <>Nema faktura za prikaz.</>
+                )}
+              </div>
+
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => goToPage(page - 1)}
+                  disabled={page <= 1}
+                  className="px-2 py-1 rounded-md border border-slate-300 bg-white text-xs text-slate-700 disabled:opacity-50 hover:bg-slate-50"
+                >
+                  ◀
+                </button>
+
+                {renderPageNumbers()}
+
+                <button
+                  type="button"
+                  onClick={() => goToPage(page + 1)}
+                  disabled={page >= totalPages}
+                  className="px-2 py-1 rounded-md border border-slate-300 bg-white text-xs text-slate-700 disabled:opacity-50 hover:bg-slate-50"
+                >
+                  ▶
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
