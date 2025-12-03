@@ -14,15 +14,31 @@ type InvoiceItem = {
 
 const VAT_RATE = 0.17; // 17%
 
+function getTodayAsDateString(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function addDays(dateStr: string, days: number): string {
+  if (!dateStr) return "";
+  const parts = dateStr.split("-").map((part) => parseInt(part, 10));
+  if (parts.length !== 3) return "";
+  const [year, month, day] = parts;
+  if (!year || !month || !day) return "";
+
+  const d = new Date(year, month - 1, day);
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
 export default function InvoiceCreatePage() {
   const navigate = useNavigate();
 
   // Osnovni podaci o fakturi
-  const [number, setNumber] = useState("");
-  const [issueDate, setIssueDate] = useState<string>(() =>
-    new Date().toISOString().slice(0, 10),
+  const [issueDate, setIssueDate] = useState<string>(() => getTodayAsDateString());
+  const [dueDate, setDueDate] = useState<string>(() =>
+    addDays(getTodayAsDateString(), 7),
   );
-  const [dueDate, setDueDate] = useState("");
+  const [number, setNumber] = useState("");
 
   // Podaci o kupcu
   const [buyerName, setBuyerName] = useState("");
@@ -76,6 +92,15 @@ export default function InvoiceCreatePage() {
 
     setNumber(`${prefix}${formattedSuffix}`);
   }, [invoicesListData, issueDate, number]);
+
+  function handleIssueDateChange(value: string) {
+    setIssueDate(value);
+    if (value) {
+      setDueDate(addDays(value, 7));
+    } else {
+      setDueDate("");
+    }
+  }
 
   function updateItem(index: number, field: keyof InvoiceItem, value: string) {
     setItems((prev) => {
@@ -143,7 +168,16 @@ export default function InvoiceCreatePage() {
           vat_rate: VAT_RATE,
         };
       })
-      .filter((x): x is { description: string; quantity: number; unit_price: number; vat_rate: number } => x !== null);
+      .filter(
+        (
+          x,
+        ): x is {
+          description: string;
+          quantity: number;
+          unit_price: number;
+          vat_rate: number;
+        } => x !== null,
+      );
 
     if (!preparedItems.length || grossTotal <= 0) {
       setSaving(false);
@@ -234,7 +268,7 @@ export default function InvoiceCreatePage() {
                     type="date"
                     required
                     value={issueDate}
-                    onChange={(e) => setIssueDate(e.target.value)}
+                    onChange={(e) => handleIssueDateChange(e.target.value)}
                     className="input"
                   />
                 </div>

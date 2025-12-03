@@ -44,71 +44,117 @@ def _escape_pdf_text(text: str) -> str:
 
 def render_invoice_pdf(invoice: "Invoice") -> bytes:
     """
-    Generiše jednostavan PDF bez eksternih biblioteka.
+    Generiše PDF bez eksternih biblioteka.
 
-    PDF sadrži:
-    - naslov i broj fakture ("Faktura br: ...")
-    - TENANT kod (npr. pdf-tenant-a)
-    - osnovne datume i podatke o kupcu
-    - listu stavki (jedna linija po stavci – opis + ukupno)
+    Struktura (A4, portret):
+    - gornji blok: logo (placeholder) + izdavalac (korisnik aplikacije) + tenant
+    - meta podaci fakture (broj, datum, rok placanja)
+    - blok kupca (povučeno sa fakture)
+    - tabela stavki (naziv, kolicina, cijena, ukupno)
     - rezime (osnovica, PDV, ukupno)
+    - instrukcije za uplatu (banka, IBAN, SWIFT/BIC)
+    - mjesto i datum, potpis i pecat
 
-    I dalje počinje sa tekstom "Faktura br:" da zadovolji postojeće testove.
+    Vazno: stringovi koje testovi traze ostaju isti:
+    - "Faktura br:"
+    - "Osnovica: ..."
+    - "Ukupna osnovica: ..."
+    - "Ukupan PDV: ..."
+    - "Ukupno: ..."
+    - "Ukupno za naplatu: ..."
     """
 
-    # -------------------------------
-    # 1) Priprema teksta za sadržaj
-    # -------------------------------
     lines: list[str] = []
 
-    # Header
-    lines.append(f"Faktura br: {invoice.invoice_number}")
+    # ---------------------------------
+    # 1) Header: logo + izdavalac
+    # ---------------------------------
+    lines.append("SP APP - DEMO LOGO (ovdje ide logo korisnika)")
+    lines.append("IZDAVALAC (korisnik aplikacije):")
+    lines.append("  SP Primjer - demo korisnik")
+    lines.append("  Adresa: Ulica i broj 123, 78000 Grad")
+    lines.append("  JIB: 0000000000000")
+    lines.append("  Telefon: +387 xx xxx xxx")
+
     tenant_code = getattr(invoice, "tenant_code", "") or ""
     lines.append(f"Tenant: {tenant_code}")
-    lines.append(f"Datum izdavanja: {invoice.issue_date}")
+    lines.append("")
+
+    # ---------------------------------
+    # 2) Meta podaci fakture
+    # ---------------------------------
+    lines.append(f"Faktura br: {invoice.invoice_number}")
+    lines.append(f"Datum fakture: {invoice.issue_date}")
     if invoice.due_date:
         lines.append(f"Rok placanja: {invoice.due_date}")
     lines.append("")
 
-    # Kupac
-    lines.append(f"Kupac: {invoice.buyer_name or ''}")
+    # ---------------------------------
+    # 3) Kupac
+    # ---------------------------------
+    lines.append("Kupac:")
+    lines.append(f"  {invoice.buyer_name or ''}")
     if invoice.buyer_address:
-        lines.append(f"Adresa: {invoice.buyer_address}")
+        lines.append(f"  Adresa: {invoice.buyer_address}")
     lines.append("")
 
-    # Stavke
+    # ---------------------------------
+    # 4) Tabela stavki
+    # ---------------------------------
+    lines.append("------------------------------------------------------------")
+    lines.append("Naziv stavke              Kolicina   Cijena (bez PDV)   Ukupno")
+    lines.append("------------------------------------------------------------")
+
     if invoice.items:
-        lines.append("Stavke:")
         for item in invoice.items:
             desc = (item.description or "").strip()
             qty = _as_float(getattr(item, "quantity", 0))
+            unit_price = _as_float(getattr(item, "unit_price", 0))
             total = _as_float(getattr(item, "total_amount", 0))
-            lines.append(
-                f"- {desc} (kolicina: {qty:.2f}, ukupno: {total:.2f} KM)"
-            )
-        lines.append("")
-    else:
-        lines.append("Nema evidentiranih stavki.")
-        lines.append("")
 
-    # Rezime
+            # ograničimo opis na 25 znakova da ne rastegne red
+            short_desc = desc[:25]
+            line = f"{short_desc:25} {qty:8.2f} {unit_price:16.2f} {total:10.2f}"
+            lines.append(line)
+    else:
+        lines.append("(Nema evidentiranih stavki)")
+
+    lines.append("------------------------------------------------------------")
+    lines.append("")
+
+    # ---------------------------------
+    # 5) Rezime (ukupni iznosi)
+    # ---------------------------------
     total_base = _as_float(getattr(invoice, "total_base", 0))
     total_vat = _as_float(getattr(invoice, "total_vat", 0))
     total_amount = _as_float(getattr(invoice, "total_amount", 0))
 
-    # ✔ Test traži ove stringove:
+    # ✔ Testovi traže ove stringove (ne mijenjati format)
     lines.append(f"Osnovica: {total_base:.2f} KM")
     lines.append(f"Ukupna osnovica: {total_base:.2f} KM")
     lines.append(f"Ukupan PDV:      {total_vat:.2f} KM")
-    lines.append(f"Ukupno: {total_amount:.2f} KM")            # ← OVO JE NOVO
+    lines.append(f"Ukupno: {total_amount:.2f} KM")
     lines.append(f"Ukupno za naplatu: {total_amount:.2f} KM")
     lines.append("")
+
+    # ---------------------------------
+    # 6) Instrukcije za uplatu (placeholder)
+    # ---------------------------------
+    lines.append("Instrukcije za uplatu:")
+    lines.append("  Naziv banke: Demo Banka d.d.")
+    lines.append("  IBAN: BA39 0000 0000 0000 000")
+    lines.append("  SWIFT/BIC: DEMOBA22")
+    lines.append("")
+
+    # ---------------------------------
+    # 7) Potpis / mjesto i datum
+    # ---------------------------------
     lines.append("Mjesto i datum: ______________________________")
     lines.append("Potpis i pecat: ______________________________")
 
-    # -------------------------------
-    # 2) PDF stream (tekstualni sadržaj)
-    # -------------------------------
+    # ---------------------------------
+    # 8) PDF stream (tekstualni sadržaj)
+    # ---------------------------------
     stream_lines: list[str] = []
     stream_lines.append("BT")
     stream_lines.append("/F1 11 Tf")
@@ -128,9 +174,9 @@ def render_invoice_pdf(invoice: "Invoice") -> bytes:
     stream_data = stream_data_str.encode("latin-1")
     stream_len = len(stream_data)
 
-    # -------------------------------
-    # 3) Gradimo PDF objekte
-    # -------------------------------
+    # ---------------------------------
+    # 9) Gradimo PDF objekte
+    # ---------------------------------
     objs: list[bytes] = []
 
     def add_obj(body: str) -> int:
@@ -164,9 +210,9 @@ def render_invoice_pdf(invoice: "Invoice") -> bytes:
     # 5 – Font
     add_obj("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
 
-    # -------------------------------
-    # 4) Sastavljamo finalni PDF sa xref
-    # -------------------------------
+    # ---------------------------------
+    # 10) Sastavljamo finalni PDF sa xref
+    # ---------------------------------
     buffer = BytesIO()
 
     header = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n"
