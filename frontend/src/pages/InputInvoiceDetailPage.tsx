@@ -1,24 +1,15 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/InputInvoiceDetailPage.tsx
-import {
-  useEffect,
-  useState,
-  type FormEvent,
-} from "react";
-import { useNavigate, useParams } from "react-router-dom";
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
-import {
-  getInputInvoice,
-  updateInputInvoice,
-  fetchInvoiceAttachments,
-  downloadInvoiceAttachment,
-  linkAttachmentToInputInvoice,
-  type InvoiceAttachmentItem,
-} from "../services/inputInvoicesApi";
+import React from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
+
 import type { InputInvoiceDetail } from "../types/inputInvoice";
+import {
+  fetchInvoiceAttachments,
+  type InvoiceAttachmentItem,
+  downloadInvoiceAttachment,
+} from "../services/inputInvoicesApi";
+import { getInputInvoice } from "../services/inputInvoicesApi";
 
 function formatDate(value?: string | null): string {
   if (!value) return "-";
@@ -26,6 +17,17 @@ function formatDate(value?: string | null): string {
     const d = new Date(value);
     if (Number.isNaN(d.getTime())) return value;
     return d.toLocaleDateString("sr-Latn-BA");
+  } catch {
+    return value ?? "-";
+  }
+}
+
+function formatDateTime(value?: string | null): string {
+  if (!value) return "-";
+  try {
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return value;
+    return d.toLocaleString("sr-Latn-BA");
   } catch {
     return value ?? "-";
   }
@@ -48,177 +50,40 @@ function formatBytes(size?: number | null): string {
 export default function InputInvoiceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
 
-  const numericId = id ? Number(id) : NaN;
+  const numericId = id ? Number(id) : null;
 
-  // ==========================
-  //  QUERY: detalj ulazne fakture
-  // ==========================
   const {
     data: invoice,
     isLoading,
     isError,
     error,
-  } = useQuery<InputInvoiceDetail, Error>({
-    queryKey: ["input-invoice", numericId],
-    enabled: Number.isFinite(numericId),
-    queryFn: () => getInputInvoice(numericId),
+  } = useQuery<InputInvoiceDetail>({
+    queryKey: ["input-invoice-detail", numericId],
+    enabled: numericId != null && Number.isFinite(numericId),
+    queryFn: () => getInputInvoice(numericId as number),
   });
 
-  // ==========================
-  //  QUERY: attachment-i (tenant-wide)
-  // ==========================
   const {
     data: attachments,
-    isLoading: attachmentsLoading,
-    isError: attachmentsError,
-    error: attachmentsErrorObj,
+    isLoading: isAttachmentsLoading,
+    isError: isAttachmentsError,
+    error: attachmentsError,
   } = useQuery<InvoiceAttachmentItem[], Error>({
     queryKey: ["invoice-attachments"],
     queryFn: fetchInvoiceAttachments,
   });
 
-  // ==========================
-  //  LOCAL STATE za edit formu
-  // ==========================
-  const [supplierName, setSupplierName] = useState("");
-  const [supplierTaxId, setSupplierTaxId] = useState("");
-  const [supplierAddress, setSupplierAddress] = useState("");
-  const [invoiceNumber, setInvoiceNumber] = useState("");
-  const [issueDate, setIssueDate] = useState("");
-  const [dueDate, setDueDate] = useState("");
-  const [totalBase, setTotalBase] = useState("");
-  const [totalVat, setTotalVat] = useState("");
-  const [currency, setCurrency] = useState("BAM");
-  const [note, setNote] = useState("");
-
-  const [errorMsg, setErrorMsg] = useState("");
-
-  useEffect(() => {
-    if (!invoice) return;
-
-    setSupplierName(invoice.supplier_name ?? "");
-    setSupplierTaxId(invoice.supplier_tax_id ?? "");
-    setSupplierAddress(invoice.supplier_address ?? "");
-    setInvoiceNumber(invoice.invoice_number ?? "");
-    setIssueDate(invoice.issue_date ?? "");
-    setDueDate(invoice.due_date ?? "");
-    setTotalBase(
-      invoice.total_base != null ? invoice.total_base.toString() : "",
-    );
-    setTotalVat(
-      invoice.total_vat != null ? invoice.total_vat.toString() : "",
-    );
-    setCurrency(invoice.currency ?? "BAM");
-    setNote(invoice.note ?? "");
-  }, [invoice]);
-
-  const parsedBase = parseFloat(totalBase || "0");
-  const parsedVat = parseFloat(totalVat || "0");
-  const totalAmount =
-    Number.isFinite(parsedBase) && Number.isFinite(parsedVat)
-      ? parsedBase + parsedVat
-      : 0;
-
-  // ==========================
-  //  MUTATION: update fakture
-  // ==========================
-  const updateMutation = useMutation({
-    mutationFn: async () => {
-      if (!invoice) return;
-
-      const base = parseFloat(totalBase || "0");
-      const vat = parseFloat(totalVat || "0");
-
-      if (
-        !supplierName.trim() ||
-        !invoiceNumber.trim() ||
-        !issueDate ||
-        !Number.isFinite(base) ||
-        !Number.isFinite(vat) ||
-        base < 0 ||
-        vat < 0 ||
-        base + vat <= 0
-      ) {
-        throw new Error(
-          "Obavezna polja: dobavljač, broj fakture, datum izdavanja i iznosi (osnovica i PDV ≥ 0, ukupan iznos > 0).",
-        );
-      }
-
-      await updateInputInvoice(invoice.id, {
-        supplier_name: supplierName.trim(),
-        supplier_tax_id: supplierTaxId.trim() || null,
-        supplier_address: supplierAddress.trim() || null,
-        invoice_number: invoiceNumber.trim(),
-        issue_date: issueDate,
-        due_date: dueDate || null,
-        total_base: parseFloat(base.toFixed(2)),
-        total_vat: parseFloat(vat.toFixed(2)),
-        total_amount: parseFloat((base + vat).toFixed(2)),
-        currency: currency.trim() || "BAM",
-        note: note.trim() || null,
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["input-invoices"] });
-      queryClient.invalidateQueries({
-        queryKey: ["input-invoice", numericId],
-      });
-    },
-  });
-
-  const isSaving = updateMutation.isPending;
-
-  useEffect(() => {
-    if (updateMutation.error) {
-      const err = updateMutation.error as Error;
-      setErrorMsg(
-        err.message ||
-          "Greška pri snimanju ulazne fakture (moguće je da je mjesec finalizovan ili postoji dupli broj).",
-      );
-    } else {
-      setErrorMsg("");
-    }
-  }, [updateMutation.error]);
-
-  const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    setErrorMsg("");
-    updateMutation.mutate();
-  };
-
-  const handleDownloadAttachment = (id: number) => {
-    void downloadInvoiceAttachment(id);
-  };
-
-  // ==========================
-  //  MUTATION: link attachment → input invoice
-  // ==========================
-  const linkMutation = useMutation({
-    mutationFn: async (attachmentId: number) => {
-      if (!invoice) {
-        throw new Error("Faktura nije učitana.");
-      }
-      return linkAttachmentToInputInvoice(attachmentId, invoice.id);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["invoice-attachments"] });
-    },
-  });
-
-  const isLinking = linkMutation.isPending;
-
-  if (!Number.isFinite(numericId)) {
+  if (numericId == null || !Number.isFinite(numericId)) {
     return (
-      <div className="space-y-3">
+      <div className="space-y-4">
         <p className="text-sm text-red-600">
-          Neispravan ID ulazne fakture.
+          Nevalidan ID ulazne fakture u URL-u.
         </p>
         <button
           type="button"
           onClick={() => navigate("/input-invoices")}
-          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
+          className="text-xs px-3 py-1.5 rounded-md border border-slate-300 bg-white hover:bg-slate-50"
         >
           ← Nazad na listu ulaznih faktura
         </button>
@@ -226,405 +91,238 @@ export default function InputInvoiceDetailPage() {
     );
   }
 
-  if (isLoading) {
-    return (
-      <div className="space-y-3">
-        <p className="text-sm text-slate-600">
-          Učitavam ulaznu fakturu...
-        </p>
-      </div>
-    );
-  }
-
-  if (isError || !invoice) {
-    return (
-      <div className="space-y-3">
-        <p className="text-sm text-red-600">
-          Greška pri učitavanju ulazne fakture: {error?.message ?? "Nije pronađena."}
-        </p>
-        <button
-          type="button"
-          onClick={() => navigate("/input-invoices")}
-          className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
-        >
-          ← Nazad na listu ulaznih faktura
-        </button>
-      </div>
-    );
-  }
-
-  // filtriramo attachment-e
-  const linkedAttachments: InvoiceAttachmentItem[] =
-    attachments?.filter((att) => att.input_invoice_id === invoice.id) ?? [];
-
-  const availableAttachments: InvoiceAttachmentItem[] =
-    attachments?.filter((att) => att.input_invoice_id == null) ?? [];
+  const linkedAttachments =
+    attachments?.filter((att) => att.input_invoice_id === numericId) ?? [];
 
   return (
-    <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-      {/* FORM / DETALJ FAKTURE */}
-      <div className="space-y-5">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <h2 className="text-xl font-semibold text-slate-800">
-              Ulazna faktura {invoice.invoice_number}
-            </h2>
-            <p className="mt-1 text-xs text-slate-500">
-              Dobavljač:{" "}
-              <span className="font-semibold">
-                {invoice.supplier_name}
-              </span>
-              {" · "}Tenant:{" "}
-              <span className="font-mono text-slate-600">
-                {invoice.tenant_code}
-              </span>
-            </p>
-            <p className="mt-0.5 text-[11px] text-slate-400">
-              Kreirana: {formatDate(invoice.created_at)} · ID:{" "}
-              <span className="font-mono">{invoice.id}</span>
-            </p>
-          </div>
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <h2 className="text-xl font-semibold text-slate-800">
+            {invoice
+              ? `Ulazna faktura ${invoice.invoice_number}`
+              : "Detalj ulazne fakture"}
+          </h2>
+          <p className="mt-1 text-xs text-slate-500">
+            Detalji ulazne fakture (troškovi dobavljača) za tenant{" "}
+            <span className="font-mono">t-demo</span>.
+          </p>
+        </div>
 
+        <div className="flex items-center gap-2">
           <button
             type="button"
             onClick={() => navigate("/input-invoices")}
-            className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+            className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50"
           >
             ← Nazad na listu
           </button>
         </div>
-
-        <form
-          onSubmit={handleSubmit}
-          className="space-y-6 rounded-lg border bg-white p-5"
-        >
-          {/* DOBAVLJAČ */}
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <div className="space-y-1">
-              <label className="text-xs font-medium">
-                Dobavljač *
-              </label>
-              <input
-                type="text"
-                required
-                value={supplierName}
-                onChange={(e) => setSupplierName(e.target.value)}
-                className="input"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-medium">
-                PIB / JIB dobavljača
-              </label>
-              <input
-                type="text"
-                value={supplierTaxId}
-                onChange={(e) => setSupplierTaxId(e.target.value)}
-                className="input"
-              />
-            </div>
-
-            <div className="space-y-1 md:col-span-2">
-              <label className="text-xs font-medium">
-                Adresa dobavljača
-              </label>
-              <input
-                type="text"
-                value={supplierAddress}
-                onChange={(e) => setSupplierAddress(e.target.value)}
-                className="input"
-              />
-            </div>
-          </div>
-
-          {/* OSNOVNI PODACI */}
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <div className="space-y-1">
-              <label className="text-xs font-medium">
-                Broj fakture *
-              </label>
-              <input
-                type="text"
-                required
-                value={invoiceNumber}
-                onChange={(e) => setInvoiceNumber(e.target.value)}
-                className="input"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-medium">Valuta</label>
-              <input
-                type="text"
-                value={currency}
-                onChange={(e) => setCurrency(e.target.value)}
-                className="input"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-medium">
-                Datum izdavanja *
-              </label>
-              <input
-                type="date"
-                required
-                value={issueDate}
-                onChange={(e) => setIssueDate(e.target.value)}
-                className="input"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-medium">
-                Rok dospijeća
-              </label>
-              <input
-                type="date"
-                value={dueDate}
-                onChange={(e) => setDueDate(e.target.value)}
-                className="input"
-              />
-            </div>
-          </div>
-
-          {/* IZNOSI */}
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
-            <div className="space-y-1">
-              <label className="text-xs font-medium">
-                Osnovica bez PDV-a *
-              </label>
-              <input
-                type="number"
-                min={0}
-                step="0.01"
-                value={totalBase}
-                onChange={(e) => setTotalBase(e.target.value)}
-                className="input"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-medium">PDV *</label>
-              <input
-                type="number"
-                min={0}
-                step="0.01"
-                value={totalVat}
-                onChange={(e) => setTotalVat(e.target.value)}
-                className="input"
-              />
-            </div>
-
-            <div className="space-y-1">
-              <label className="text-xs font-medium">
-                Ukupno (osn. + PDV)
-              </label>
-              <div className="input flex items-center justify-end bg-slate-50 text-right">
-                <span className="text-xs text-slate-700">
-                  {totalAmount > 0 ? totalAmount.toFixed(2) : "0.00"}{" "}
-                  {currency || "BAM"}
-                </span>
-              </div>
-            </div>
-          </div>
-
-          {/* NAPOMENA */}
-          <div className="space-y-1">
-            <label className="text-xs font-medium">
-              Interna napomena
-            </label>
-            <textarea
-              value={note}
-              onChange={(e) => setNote(e.target.value)}
-              className="input min-h-[80px]"
-            />
-          </div>
-
-          {/* ERROR + SUBMIT */}
-          <div className="flex flex-col gap-3 border-t pt-3 md:flex-row md:items-center md:justify-between">
-            <div>
-              {errorMsg && (
-                <p className="mt-1 text-sm text-red-600">{errorMsg}</p>
-              )}
-            </div>
-
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => navigate("/input-invoices")}
-                className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50"
-              >
-                Otkaži
-              </button>
-              <button
-                type="submit"
-                disabled={isSaving}
-                className="btn-primary w-full text-xs md:w-auto"
-              >
-                {isSaving ? "Spremam..." : "Snimi izmjene"}
-              </button>
-            </div>
-          </div>
-        </form>
       </div>
 
-      {/* ATTACHMENTS ZA OVU FAKTURU + LINKOVANJE */}
-      <div className="space-y-3">
-        <div className="rounded-lg border bg-white p-4">
-          <h3 className="text-sm font-semibold text-slate-800">
-            Attachment-i ove ulazne fakture
-          </h3>
-          <p className="mt-1 text-[11px] text-slate-500">
-            Fajlovi koji su već povezani sa ovom ulaznom fakturom.
-          </p>
+      {/* Loading / error */}
+      {isLoading && (
+        <p className="text-sm text-slate-600">
+          Učitavam detalje ulazne fakture...
+        </p>
+      )}
 
-          <div className="mt-3 max-h-64 space-y-1 overflow-y-auto rounded-md border border-slate-100 bg-slate-50 p-2">
-            {attachmentsLoading && (
+      {isError && (
+        <p className="text-sm text-red-600">
+          Greška pri učitavanju ulazne fakture:{" "}
+          {error instanceof Error ? error.message : "Nepoznata greška"}
+        </p>
+      )}
+
+      {invoice && (
+        <>
+          {/* Osnovne informacije */}
+          <div className="grid grid-cols-1 gap-4 rounded-lg border bg-white p-4 text-sm text-slate-700 md:grid-cols-2">
+            <div className="space-y-2">
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Dobavljač
+                </p>
+                <p className="font-medium">{invoice.supplier_name}</p>
+                {invoice.supplier_address && (
+                  <p className="text-xs text-slate-500">
+                    {invoice.supplier_address}
+                  </p>
+                )}
+                {invoice.supplier_tax_id && (
+                  <p className="text-xs text-slate-500">
+                    PIB/JIB: {invoice.supplier_tax_id}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Broj fakture
+                </p>
+                <p className="font-mono text-sm">
+                  {invoice.invoice_number}
+                </p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                    Datum izdavanja
+                  </p>
+                  <p>{formatDate(invoice.issue_date)}</p>
+                </div>
+                <div>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                    Rok dospijeća
+                  </p>
+                  <p>{formatDate(invoice.due_date)}</p>
+                </div>
+              </div>
+
+              {invoice.note && (
+                <div>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                    Interna napomena
+                  </p>
+                  <p className="text-xs text-slate-600 whitespace-pre-line">
+                    {invoice.note}
+                  </p>
+                </div>
+              )}
+            </div>
+
+            {/* Iznosi + tehnički info */}
+            <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                    Osnovica bez PDV-a
+                  </p>
+                  <p className="font-mono">
+                    {formatAmount(invoice.total_base)}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                    PDV iznos
+                  </p>
+                  <p className="font-mono">
+                    {formatAmount(invoice.total_vat)}
+                  </p>
+                </div>
+              </div>
+
+              <div>
+                <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                  Ukupno (osnovica + PDV)
+                </p>
+                <p className="text-lg font-semibold">
+                  {formatAmount(invoice.total_amount)}{" "}
+                  <span className="text-xs font-normal text-slate-400">
+                    {invoice.currency}
+                  </span>
+                </p>
+              </div>
+
+              <div className="pt-2 text-xs text-slate-400 space-y-1">
+                <p>
+                  ID ulazne fakture:{" "}
+                  <span className="font-mono text-slate-500">
+                    {invoice.id}
+                  </span>
+                </p>
+                <p>
+                  Tenant:{" "}
+                  <span className="font-mono text-slate-500">
+                    {invoice.tenant_code}
+                  </span>
+                </p>
+                <p>
+                  Kreirano:{" "}
+                  <span className="font-mono text-slate-500">
+                    {formatDateTime(invoice.created_at)}
+                  </span>
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {/* Povezani dokumenti (attachments) */}
+          <div className="rounded-lg border bg-white p-4">
+            <h3 className="mb-2 text-sm font-semibold text-slate-700">
+              Priloženi dokumenti (računi / slike)
+            </h3>
+
+            {isAttachmentsLoading && (
               <p className="text-xs text-slate-600">
-                Učitavam attachment-e...
+                Učitavam priložene dokumente...
               </p>
             )}
 
-            {attachmentsError && (
+            {isAttachmentsError && (
               <p className="text-xs text-red-600">
-                Greška pri učitavanju attachment-a:{" "}
-                {attachmentsErrorObj?.message}
+                Greška pri učitavanju priloženih dokumenata:{" "}
+                {attachmentsError?.message}
               </p>
             )}
 
-            {!attachmentsLoading &&
-              !attachmentsError &&
+            {!isAttachmentsLoading &&
+              !isAttachmentsError &&
               linkedAttachments.length === 0 && (
                 <p className="text-xs text-slate-500">
-                  Trenutno nema attachment-a povezanih sa ovom ulaznom
-                  fakturom.
+                  Nema dokumenata povezanih sa ovom ulaznom fakturom.
+                  Dokument možeš prvo uploadovati kroz modul{" "}
+                  <span className="font-semibold">
+                    Uploadovani računi (attachments)
+                  </span>{" "}
+                  i zatim ga povezati sa konkretnom ulaznom fakturom.
                 </p>
               )}
 
-            {linkedAttachments.map((att) => (
-              <div
-                key={att.id}
-                className="flex items-start justify-between gap-2 rounded-md bg-white px-2 py-1.5 text-xs text-slate-700 shadow-sm"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">
-                    {att.filename ?? `attachment-${att.id}`}
-                  </p>
-                  <p className="mt-0.5 text-[11px] text-slate-400">
-                    {formatBytes(att.size_bytes)} · status:{" "}
-                    <span className="font-semibold">
-                      {att.status ?? "unknown"}
-                    </span>
-                  </p>
-                </div>
-                <div className="flex flex-shrink-0 items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => handleDownloadAttachment(att.id)}
-                    className="rounded-md border border-slate-200 px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50"
+            {linkedAttachments.length > 0 && (
+              <div className="mt-2 space-y-1">
+                {linkedAttachments.map((att) => (
+                  <div
+                    key={att.id}
+                    className="flex items-start justify-between gap-2 rounded-md border border-slate-100 bg-slate-50 px-3 py-2 text-xs text-slate-700"
                   >
-                    Preuzmi
-                  </button>
-                </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-medium">
+                        {att.filename ?? `attachment-${att.id}`}
+                      </p>
+                      <p className="mt-0.5 text-[11px] text-slate-500">
+                        {formatBytes(att.size_bytes)} · status:{" "}
+                        <span className="font-semibold">
+                          {att.status ?? "unknown"}
+                        </span>
+                      </p>
+                    </div>
+                    <div className="flex flex-shrink-0 items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => downloadInvoiceAttachment(att.id)}
+                        className="rounded-md border border-slate-200 px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-100"
+                      >
+                        Otvori / preuzmi
+                      </button>
+                    </div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
-        </div>
-
-        {/* SEKCIJA: dostupni attachment-i koji još nisu povezani */}
-        <div className="rounded-lg border bg-white p-4">
-          <h3 className="text-sm font-semibold text-slate-800">
-            Dostupni attachment-i (nepovezani)
-          </h3>
-          <p className="mt-1 text-[11px] text-slate-500">
-            Attachment-i koji su uploadovani za tenant{" "}
-            <span className="font-mono">t-demo</span>, ali još nisu
-            povezani ni sa jednom ulaznom fakturom. Ovdje ih možeš
-            direktno povezati sa ovom fakturom.
-          </p>
-
-          <div className="mt-3 max-h-64 space-y-1 overflow-y-auto rounded-md border border-slate-100 bg-slate-50 p-2">
-            {attachmentsLoading && (
-              <p className="text-xs text-slate-600">
-                Učitavam attachment-e...
-              </p>
             )}
-
-            {attachmentsError && (
-              <p className="text-xs text-red-600">
-                Greška pri učitavanju attachment-a:{" "}
-                {attachmentsErrorObj?.message}
-              </p>
-            )}
-
-            {!attachmentsLoading &&
-              !attachmentsError &&
-              availableAttachments.length === 0 && (
-                <p className="text-xs text-slate-500">
-                  Trenutno nema nepovezanih attachment-a.
-                </p>
-              )}
-
-            {availableAttachments.map((att) => (
-              <div
-                key={att.id}
-                className="flex items-start justify-between gap-2 rounded-md bg-white px-2 py-1.5 text-xs text-slate-700 shadow-sm"
-              >
-                <div className="min-w-0 flex-1">
-                  <p className="truncate font-medium">
-                    {att.filename ?? `attachment-${att.id}`}
-                  </p>
-                  <p className="mt-0.5 text-[11px] text-slate-400">
-                    {formatBytes(att.size_bytes)} · status:{" "}
-                    <span className="font-semibold">
-                      {att.status ?? "unknown"}
-                    </span>
-                  </p>
-                </div>
-                <div className="flex flex-shrink-0 items-center gap-1">
-                  <button
-                    type="button"
-                    onClick={() => handleDownloadAttachment(att.id)}
-                    className="rounded-md border border-slate-200 px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50"
-                  >
-                    Pregled
-                  </button>
-                  <button
-                    type="button"
-                    disabled={isLinking}
-                    onClick={() => linkMutation.mutate(att.id)}
-                    className="rounded-md border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-60"
-                  >
-                    {isLinking ? "Povezujem..." : "Poveži sa ovom fakturom"}
-                  </button>
-                </div>
-              </div>
-            ))}
           </div>
+        </>
+      )}
 
-          {linkMutation.error && (
-            <p className="mt-2 text-[11px] text-red-600">
-              Greška pri povezivanju attachment-a:{" "}
-              {(linkMutation.error as Error).message}
-            </p>
-          )}
-        </div>
-
-        <div className="rounded-lg border border-dashed border-amber-200 bg-amber-50 p-3 text-[11px] text-amber-800">
-          <p className="font-semibold">Napomena</p>
-          <p className="mt-1">
-            Upload attachment-a radiš i dalje u ekranu{" "}
-            <strong>Ulazne fakture</strong> (desni panel). Ovdje na
-            detalju fakture sada možeš nepovezane fajlove direktno
-            vezati za ovu ulaznu fakturu, koristeći backend endpoint{" "}
-            <span className="font-mono">
-              POST /invoice-attachments/{"{id}"}/link-to-input-invoice
-            </span>
-            .
-          </p>
-        </div>
+      <div className="text-xs text-slate-500">
+        <Link
+          to="/input-invoices"
+          className="underline underline-offset-2 hover:text-slate-700"
+        >
+          ← Nazad na listu ulaznih faktura
+        </Link>
       </div>
     </div>
   );

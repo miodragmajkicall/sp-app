@@ -74,6 +74,31 @@ function mapInputInvoiceListItem(raw: any): InputInvoiceListItem {
 }
 
 /**
+ * Helper: mapiranje raw objekta u detaljnu ulaznu fakturu.
+ */
+function mapInputInvoiceDetail(r: any): InputInvoiceDetail {
+  return {
+    id: r.id,
+    tenant_code: r.tenant_code,
+    supplier_name: r.supplier_name,
+    supplier_tax_id: r.supplier_tax_id ?? null,
+    supplier_address: r.supplier_address ?? null,
+    invoice_number: r.invoice_number,
+    issue_date: r.issue_date,
+    due_date: r.due_date ?? null,
+    total_base:
+      r.total_base != null ? Number(r.total_base) : 0,
+    total_vat:
+      r.total_vat != null ? Number(r.total_vat) : 0,
+    total_amount:
+      r.total_amount != null ? Number(r.total_amount) : 0,
+    currency: r.currency,
+    note: r.note ?? null,
+    created_at: r.created_at,
+  };
+}
+
+/**
  * UI lista ulaznih faktura – koristi /input-invoices/list
  * i mapira odgovor u InputInvoiceListResponse za frontend tabelu.
  */
@@ -116,10 +141,11 @@ export async function fetchInputInvoices(
 /**
  * Kreiranje nove ulazne fakture.
  * Backend endpoint: POST /input-invoices
+ * Vraća kreiranu fakturu (InputInvoiceDetail) radi daljeg linkovanja attachment-a.
  */
 export async function createInputInvoice(
   payload: InputInvoiceCreatePayload,
-): Promise<void> {
+): Promise<InputInvoiceDetail> {
   const body = {
     supplier_name: payload.supplier_name,
     supplier_tax_id: payload.supplier_tax_id ?? null,
@@ -134,7 +160,8 @@ export async function createInputInvoice(
     note: payload.note ?? null,
   };
 
-  await apiClient.post("/input-invoices", body);
+  const res = await apiClient.post<any>("/input-invoices", body);
+  return mapInputInvoiceDetail(res.data);
 }
 
 /**
@@ -145,27 +172,7 @@ export async function getInputInvoice(
   id: number,
 ): Promise<InputInvoiceDetail> {
   const res = await apiClient.get<any>(`/input-invoices/${id}`);
-  const r = res.data;
-
-  return {
-    id: r.id,
-    tenant_code: r.tenant_code,
-    supplier_name: r.supplier_name,
-    supplier_tax_id: r.supplier_tax_id ?? null,
-    supplier_address: r.supplier_address ?? null,
-    invoice_number: r.invoice_number,
-    issue_date: r.issue_date,
-    due_date: r.due_date ?? null,
-    total_base:
-      r.total_base != null ? Number(r.total_base) : 0,
-    total_vat:
-      r.total_vat != null ? Number(r.total_vat) : 0,
-    total_amount:
-      r.total_amount != null ? Number(r.total_amount) : 0,
-    currency: r.currency,
-    note: r.note ?? null,
-    created_at: r.created_at,
-  };
+  return mapInputInvoiceDetail(res.data);
 }
 
 /**

@@ -12,6 +12,7 @@ import {
   uploadInvoiceAttachment,
   downloadInvoiceAttachment,
   deleteInvoiceAttachment,
+  linkAttachmentToInputInvoice,
   type InvoiceAttachmentItem,
 } from "../services/inputInvoicesApi";
 import type {
@@ -54,6 +55,11 @@ export default function InputInvoicesPage() {
   const [year, setYear] = useState<number | undefined>(CURRENT_YEAR);
   const [month, setMonth] = useState<number | undefined>(CURRENT_MONTH);
   const [supplierFilter, setSupplierFilter] = useState<string>("");
+
+  // za biranje na koju fakturu vežemo attachment:
+  const [attachmentTargetInvoice, setAttachmentTargetInvoice] = useState<
+    Record<number, number | "">
+  >({});
 
   const {
     data: invoicesData,
@@ -98,11 +104,24 @@ export default function InputInvoicesPage() {
     },
   });
 
+  const linkMutation = useMutation({
+    mutationFn: (params: { attachmentId: number; inputInvoiceId: number }) =>
+      linkAttachmentToInputInvoice(params.attachmentId, params.inputInvoiceId),
+    onSuccess: () => {
+      // osvježi attachmente i listu ulaznih faktura
+      queryClient.invalidateQueries({ queryKey: ["invoice-attachments"] });
+      queryClient.invalidateQueries({ queryKey: ["input-invoices"] });
+    },
+  });
+
   const isUploading = uploadMutation.isPending;
   const uploadError = uploadMutation.error as Error | null;
 
   const isDeleting = deleteMutation.isPending;
   const deleteError = deleteMutation.error as Error | null;
+
+  const isLinking = linkMutation.isPending;
+  const linkError = linkMutation.error as Error | null;
 
   const handleFileChange = (evt: ChangeEvent<HTMLInputElement>) => {
     const file = evt.target.files?.[0];
@@ -123,8 +142,25 @@ export default function InputInvoicesPage() {
     deleteMutation.mutate(id);
   };
 
+  const handleLinkAttachment = (attachmentId: number) => {
+    const invoiceId = attachmentTargetInvoice[attachmentId];
+    if (!invoiceId || !Number.isFinite(invoiceId)) {
+      window.alert("Odaberi ulaznu fakturu prije povezivanja dokumenta.");
+      return;
+    }
+
+    linkMutation.mutate({
+      attachmentId,
+      inputInvoiceId: invoiceId as number,
+    });
+  };
+
   const items: InputInvoiceListItem[] = invoicesData?.items ?? [];
   const total = invoicesData?.total ?? 0;
+
+  // prikazujemo samo attachmente koji JOŠ NISU povezani sa ulaznom fakturom
+  const unmatchedAttachments: InvoiceAttachmentItem[] =
+    attachments?.filter((att) => att.input_invoice_id == null) ?? [];
 
   return (
     <div className="space-y-6">
@@ -168,7 +204,10 @@ export default function InputInvoicesPage() {
               isRefetchingAttachments
             }
           >
-            {isLoading || isRefetching || isAttachmentsLoading || isRefetchingAttachments
+            {isLoading ||
+            isRefetching ||
+            isAttachmentsLoading ||
+            isRefetchingAttachments
               ? "Osvježavam..."
               : "Osvježi podatke"}
           </button>
@@ -301,33 +340,66 @@ export default function InputInvoicesPage() {
                     <th className="px-3 py-2 text-right text-xs font-medium">
                       Iznos
                     </th>
+                    <th className="px-3 py-2 text-right text-xs font-medium">
+                      Akcije
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-slate-700">
                   {items.map((inv) => (
-                    <tr
-                      key={inv.id}
-                      className="cursor-pointer hover:bg-slate-50"
-                      onClick={() =>
-                        navigate(`/input-invoices/${inv.id}`)
-                      }
-                    >
-                      <td className="px-3 py-2 font-mono text-xs">
+                    <tr key={inv.id} className="hover:bg-slate-50">
+                      <td
+                        className="px-3 py-2 font-mono text-xs cursor-pointer"
+                        onClick={() =>
+                          navigate(`/input-invoices/${inv.id}`)
+                        }
+                      >
                         {inv.number ?? "-"}
                       </td>
-                      <td className="px-3 py-2 text-xs">
+                      <td
+                        className="px-3 py-2 text-xs cursor-pointer"
+                        onClick={() =>
+                          navigate(`/input-invoices/${inv.id}`)
+                        }
+                      >
                         {inv.supplier_name ?? (
                           <span className="text-slate-400">-</span>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-xs">
+                      <td
+                        className="px-3 py-2 text-xs cursor-pointer"
+                        onClick={() =>
+                          navigate(`/input-invoices/${inv.id}`)
+                        }
+                      >
                         {formatDate(inv.issue_date)}
                       </td>
-                      <td className="px-3 py-2 text-xs">
+                      <td
+                        className="px-3 py-2 text-xs cursor-pointer"
+                        onClick={() =>
+                          navigate(`/input-invoices/${inv.id}`)
+                        }
+                      >
                         {formatDate(inv.due_date)}
                       </td>
-                      <td className="px-3 py-2 text-right text-xs font-medium">
+                      <td
+                        className="px-3 py-2 text-right text-xs font-medium cursor-pointer"
+                        onClick={() =>
+                          navigate(`/input-invoices/${inv.id}`)
+                        }
+                      >
                         {formatAmount(inv.total_amount)}
+                      </td>
+                      <td className="px-3 py-2 text-right text-xs">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            navigate(`/input-invoices/${inv.id}`)
+                          }
+                          className="rounded-md border border-slate-200 px-2 py-0.5 text-[11px] text-slate-700 hover:bg-slate-50"
+                        >
+                          Detalji
+                        </button>
                       </td>
                     </tr>
                   ))}
@@ -337,7 +409,7 @@ export default function InputInvoicesPage() {
           )}
         </div>
 
-        {/* ATTACHMENTS PANEL */}
+        {/* ATTACHMENTS PANEL – samo NEPOVEZANI fajlovi */}
         <div className="space-y-3">
           <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between gap-2">
@@ -346,8 +418,10 @@ export default function InputInvoicesPage() {
                   Uploadovani računi (attachments)
                 </h3>
                 <p className="mt-1 text-[11px] text-slate-500">
-                  Skenirani / slikani računi za dalju obradu (OCR,
-                  povezivanje sa ulaznim fakturama, itd.).
+                  Ovdje se prikazuju samo dokumenti koji još nisu
+                  povezani ni sa jednom ulaznom fakturom. Nakon povezivanja
+                  biće vidljivi isključivo na detaljima odgovarajuće
+                  ulazne fakture.
                 </p>
               </div>
 
@@ -389,7 +463,7 @@ export default function InputInvoicesPage() {
               )}
             </div>
 
-            {/* ATTACHMENTS LISTA */}
+            {/* ATTACHMENTS LISTA – samo nepovezani */}
             <div className="mt-4 max-h-80 space-y-1 overflow-y-auto rounded-md border border-slate-100 bg-slate-50 p-2">
               {isAttachmentsLoading && (
                 <p className="text-xs text-slate-600">
@@ -406,19 +480,20 @@ export default function InputInvoicesPage() {
 
               {!isAttachmentsLoading &&
                 !isAttachmentsError &&
-                (attachments?.length ?? 0) === 0 && (
+                unmatchedAttachments.length === 0 && (
                   <p className="text-xs text-slate-500">
-                    Još nema uploadovanih attachment-a.
+                    Trenutno nema nepovezanih dokumenata. Dokumenti koji
+                    su već povezani sa ulaznim fakturama vide se u
+                    detaljima tih faktura.
                   </p>
                 )}
 
-              {attachments &&
-                attachments.length > 0 &&
-                attachments.map((att) => (
-                  <div
-                    key={att.id}
-                    className="flex items-start justify-between gap-2 rounded-md bg-white px-2 py-1.5 text-xs text-slate-700 shadow-sm"
-                  >
+              {unmatchedAttachments.map((att) => (
+                <div
+                  key={att.id}
+                  className="flex flex-col gap-2 rounded-md bg-white px-2 py-1.5 text-xs text-slate-700 shadow-sm"
+                >
+                  <div className="flex items-start justify-between gap-2">
                     <div className="min-w-0 flex-1">
                       <p className="truncate font-medium">
                         {att.filename ?? `attachment-${att.id}`}
@@ -426,7 +501,7 @@ export default function InputInvoicesPage() {
                       <p className="mt-0.5 text-[11px] text-slate-400">
                         {formatBytes(att.size_bytes)} · status:{" "}
                         <span className="font-semibold">
-                          {att.status ?? "unknown"}
+                          {att.status ?? "unmatched"}
                         </span>
                       </p>
                     </div>
@@ -452,15 +527,67 @@ export default function InputInvoicesPage() {
                       </button>
                     </div>
                   </div>
-                ))}
+
+                  {/* Odabir ulazne fakture + poveži */}
+                  <div className="flex flex-col gap-1 border-t border-slate-100 pt-1.5 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="flex-1">
+                      <label className="mr-2 text-[11px] uppercase tracking-wide text-slate-400">
+                        Poveži sa ulaznom fakturom
+                      </label>
+                      <select
+                        className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1 text-[11px] text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500 sm:w-auto"
+                        value={
+                          attachmentTargetInvoice[att.id] ?? ""
+                        }
+                        onChange={(e) =>
+                          setAttachmentTargetInvoice((prev) => ({
+                            ...prev,
+                            [att.id]:
+                              e.target.value === ""
+                                ? ""
+                                : Number(e.target.value),
+                          }))
+                        }
+                        disabled={items.length === 0 || isLinking}
+                      >
+                        <option value="">
+                          — Odaberi ulaznu fakturu —
+                        </option>
+                        {items.map((inv) => (
+                          <option key={inv.id} value={inv.id}>
+                            {inv.number
+                              ? `${inv.number} · ${inv.supplier_name ?? ""}`.trim()
+                              : `#${inv.id} · ${inv.supplier_name ?? ""}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="flex flex-shrink-0 items-center gap-1 pt-1 sm:pt-0">
+                      <button
+                        type="button"
+                        onClick={() => handleLinkAttachment(att.id)}
+                        disabled={isLinking || items.length === 0}
+                        className="rounded-md bg-emerald-600 px-3 py-1 text-[11px] font-medium text-white shadow-sm hover:bg-emerald-700 disabled:opacity-60"
+                      >
+                        {isLinking ? "Povezujem..." : "Poveži"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
 
-            {(deleteError || isDeleting) && (
+            {(deleteError || linkError || isDeleting || isLinking) && (
               <p className="mt-2 text-[11px] text-slate-500">
                 {isDeleting
                   ? "Brišem attachment..."
+                  : isLinking
+                  ? "Povezujem attachment sa ulaznom fakturom..."
                   : deleteError
                   ? `Greška pri brisanju: ${deleteError.message}`
+                  : linkError
+                  ? `Greška pri povezivanju: ${linkError.message}`
                   : null}
               </p>
             )}

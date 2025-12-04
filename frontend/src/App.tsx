@@ -11,6 +11,8 @@ import CashPage from "./pages/CashPage";
 import InputInvoicesPage from "./pages/InputInvoicesPage";
 import InvoiceCreatePage from "./pages/InvoiceCreatePage";
 import InvoiceDetailPage from "./pages/InvoiceDetailPage";
+import InputInvoiceCreatePage from "./pages/InputInvoiceCreatePage";
+import InputInvoiceDetailPage from "./pages/InputInvoiceDetailPage";
 import TaxPage from "./pages/TaxPage";
 
 function App() {
@@ -70,12 +72,11 @@ function App() {
                 <span>Izlazne fakture</span>
               </NavLink>
 
-              {/* nova stavka – direktno kreiranje izlazne fakture */}
               <NavLink
                 to="/invoices/new"
                 className={({ isActive }) =>
                   [
-                    "ml-6 mt-1", // malo uvučeno ispod Izlazne fakture
+                    "ml-6 mt-1",
                     linkBaseClasses,
                     isActive ? linkActiveClasses : linkInactiveClasses,
                   ].join(" ")
@@ -103,6 +104,22 @@ function App() {
               </NavLink>
 
               <NavLink
+                to="/input-invoices/new"
+                className={({ isActive }) =>
+                  [
+                    "ml-6 mt-1",
+                    linkBaseClasses,
+                    isActive ? linkActiveClasses : linkInactiveClasses,
+                  ].join(" ")
+                }
+              >
+                <span className="mr-2" aria-hidden="true">
+                  ➕
+                </span>
+                <span>Nova ulazna faktura</span>
+              </NavLink>
+
+              <NavLink
                 to="/cash"
                 className={({ isActive }) =>
                   [
@@ -118,7 +135,7 @@ function App() {
               </NavLink>
             </div>
 
-            {/* KNJIGOVODSTVO – funkcionalnost širimo u sljedećim sesijama */}
+            {/* KNJIGOVODSTVO */}
             <div>
               <div className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                 Knjigovodstvo
@@ -224,16 +241,23 @@ function App() {
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<DashboardPage />} />
 
+              {/* Izlazne fakture */}
               <Route path="/invoices" element={<InvoicesListPage />} />
               <Route path="/invoices/new" element={<InvoiceCreatePage />} />
               <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
 
+              {/* Ulazne fakture */}
+              <Route path="/input-invoices" element={<InputInvoicesPage />} />
               <Route
-                path="/input-invoices"
-                element={<InputInvoicesPage />}
+                path="/input-invoices/new"
+                element={<InputInvoiceCreatePage />}
               />
-              <Route path="/cash" element={<CashPage />} />
+              <Route
+                path="/input-invoices/:id"
+                element={<InputInvoiceDetailPage />}
+              />
 
+              <Route path="/cash" element={<CashPage />} />
               <Route path="/tax" element={<TaxPage />} />
 
               <Route

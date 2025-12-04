@@ -1,73 +1,230 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/InputInvoiceCreatePage.tsx
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
-import { createInputInvoice } from "../services/inputInvoicesApi";
+import {
+  createInputInvoice,
+  uploadInvoiceAttachment,
+  deleteInvoiceAttachment,
+  linkAttachmentToInputInvoice,
+  type InvoiceAttachmentItem,
+} from "../services/inputInvoicesApi";
+
+const VAT_RATE = 0.17; // 17% PDV u BiH
 
 export default function InputInvoiceCreatePage() {
   const navigate = useNavigate();
 
+  // Dobavljač
   const [supplierName, setSupplierName] = useState("");
   const [supplierTaxId, setSupplierTaxId] = useState("");
   const [supplierAddress, setSupplierAddress] = useState("");
+
+  // Osnovni podaci
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [issueDate, setIssueDate] = useState("");
   const [dueDate, setDueDate] = useState("");
-  const [totalBase, setTotalBase] = useState("");
-  const [totalVat, setTotalVat] = useState("");
   const [currency, setCurrency] = useState("BAM");
+
+  // Iznosi – osnovica / ukupno (osnovica + PDV)
+  const [includeVat, setIncludeVat] = useState(true);
+  const [baseStr, setBaseStr] = useState("");
+  const [totalStr, setTotalStr] = useState("");
+
+  // Napomena
   const [note, setNote] = useState("");
+
+  // Attachment-i za ovu fakturu (uploadovani na server, ali još nisu linkovani)
+  const [attachments, setAttachments] = useState<InvoiceAttachmentItem[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  // total_amount = total_base + total_vat
-  const parsedBase = parseFloat(totalBase || "0");
-  const parsedVat = parseFloat(totalVat || "0");
-  const totalAmount =
-    Number.isFinite(parsedBase) && Number.isFinite(parsedVat)
-      ? parsedBase + parsedVat
-      : 0;
+  // Izračun iz stringova
+  const numericBase = parseFloat(baseStr.replace(",", ".") || "0") || 0;
+  const numericTotal = parseFloat(totalStr.replace(",", ".") || "0") || 0;
+
+  let totalBase = numericBase;
+  let totalAmount = numericTotal;
+  let totalVat = 0;
+
+  if (includeVat) {
+    if (baseStr !== "" && (totalStr === "" || !Number.isFinite(numericTotal))) {
+      // iz osnovice računamo sve
+      totalBase = numericBase;
+      totalVat = totalBase * VAT_RATE;
+      totalAmount = totalBase + totalVat;
+    } else if (totalStr !== "" && (baseStr === "" || !Number.isFinite(numericBase))) {
+      // iz ukupnog računamo nazad
+      totalAmount = numericTotal;
+      totalBase = totalAmount / (1 + VAT_RATE);
+      totalVat = totalAmount - totalBase;
+    } else {
+      // ako su oba polja popunjena i validna, koristimo osnovicu kao izvor istine
+      totalBase = numericBase;
+      totalVat = totalBase * VAT_RATE;
+      totalAmount = totalBase + totalVat;
+    }
+  } else {
+    // bez PDV-a: ukupno == osnovica
+    if (baseStr !== "" && (totalStr === "" || !Number.isFinite(numericTotal))) {
+      totalBase = numericBase;
+      totalAmount = totalBase;
+    } else if (totalStr !== "" && (baseStr === "" || !Number.isFinite(numericBase))) {
+      totalAmount = numericTotal;
+      totalBase = totalAmount;
+    } else {
+      totalBase = numericBase;
+      totalAmount = totalBase;
+    }
+    totalVat = 0;
+  }
+
+  const displayVat = includeVat ? totalVat : 0;
+
+  function handleBaseChange(e: ChangeEvent<HTMLInputElement>) {
+    const value = e.target.value;
+    setBaseStr(value);
+
+    const v = parseFloat(value.replace(",", "."));
+    if (!Number.isFinite(v)) {
+      return;
+    }
+
+    if (includeVat) {
+      const vat = v * VAT_RATE;
+      const total = v + vat;
+      setTotalStr(total.toFixed(2));
+    } else {
+      setTotalStr(v.toFixed(2));
+    }
+  }
+
+  function handleTotalChange(e: ChangeEvent<HTMLInputElement>) {
+    const value = e.target.value;
+    setTotalStr(value);
+
+    const v = parseFloat(value.replace(",", "."));
+    if (!Number.isFinite(v)) {
+      return;
+    }
+
+    if (includeVat) {
+      const base = v / (1 + VAT_RATE);
+      setBaseStr(base.toFixed(2));
+    } else {
+      setBaseStr(v.toFixed(2));
+    }
+  }
+
+  function handleToggleVat(e: ChangeEvent<HTMLInputElement>) {
+    const checked = e.target.checked;
+    setIncludeVat(checked);
+
+    if (checked) {
+      // prelazimo na "sa PDV-om": iz osnovice računamo ukupno
+      const base = parseFloat(baseStr.replace(",", ".") || "0");
+      if (Number.isFinite(base)) {
+        const vat = base * VAT_RATE;
+        const total = base + vat;
+        setTotalStr(total > 0 ? total.toFixed(2) : totalStr);
+      }
+    } else {
+      // bez PDV-a: ukupno == osnovica
+      const base = parseFloat(baseStr.replace(",", ".") || "0");
+      if (Number.isFinite(base)) {
+        setTotalStr(base.toFixed(2));
+      }
+    }
+  }
+
+  async function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setUploadError(null);
+    setIsUploading(true);
+
+    try {
+      const uploaded = await uploadInvoiceAttachment(file);
+      setAttachments((prev) => [...prev, uploaded]);
+    } catch (err: any) {
+      setUploadError(
+        err?.message ?? "Greška pri uploadu fajla. Pokušaj ponovo.",
+      );
+    } finally {
+      setIsUploading(false);
+      e.target.value = "";
+    }
+  }
+
+  async function handleRemoveAttachment(att: InvoiceAttachmentItem) {
+    if (!window.confirm("Da li sigurno želiš obrisati ovaj prilog?")) {
+      return;
+    }
+
+    try {
+      await deleteInvoiceAttachment(att.id);
+      setAttachments((prev) => prev.filter((a) => a.id !== att.id));
+    } catch (err: any) {
+      alert(
+        err?.message ?? "Greška pri brisanju priloga. Pokušaj ponovo.",
+      );
+    }
+  }
 
   async function handleSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setSaving(true);
     setErrorMsg("");
 
-    const base = parseFloat(totalBase || "0");
-    const vat = parseFloat(totalVat || "0");
-
     if (
       !supplierName.trim() ||
       !invoiceNumber.trim() ||
-      !issueDate ||
-      !Number.isFinite(base) ||
-      !Number.isFinite(vat) ||
-      base < 0 ||
-      vat < 0 ||
-      base + vat <= 0
+      !issueDate
     ) {
       setSaving(false);
       setErrorMsg(
-        "Obavezna polja: dobavljač, broj fakture, datum izdavanja i iznosi (osnovica i PDV ≥ 0, ukupan iznos > 0).",
+        "Obavezna polja: dobavljač, broj fakture i datum izdavanja.",
+      );
+      return;
+    }
+
+    if (totalBase < 0 || totalAmount <= 0 || totalVat < 0) {
+      setSaving(false);
+      setErrorMsg(
+        "Iznosi moraju biti ≥ 0, a ukupno (osnovica + PDV) mora biti veće od 0.",
       );
       return;
     }
 
     try {
-      await createInputInvoice({
+      // 1) Kreiramo ulaznu fakturu
+      const created = await createInputInvoice({
         supplier_name: supplierName.trim(),
         supplier_tax_id: supplierTaxId.trim() || null,
         supplier_address: supplierAddress.trim() || null,
         invoice_number: invoiceNumber.trim(),
         issue_date: issueDate,
         due_date: dueDate || null,
-        total_base: parseFloat(base.toFixed(2)),
-        total_vat: parseFloat(vat.toFixed(2)),
-        total_amount: parseFloat((base + vat).toFixed(2)),
+        total_base: parseFloat(totalBase.toFixed(2)),
+        total_vat: parseFloat(displayVat.toFixed(2)),
+        total_amount: parseFloat(totalAmount.toFixed(2)),
         currency: currency.trim() || "BAM",
         note: note.trim() || null,
       });
 
+      // 2) Linkujemo sve uploadovane priloge na ovu fakturu
+      if (attachments.length > 0) {
+        await Promise.all(
+          attachments.map((att) =>
+            linkAttachmentToInputInvoice(att.id, created.id),
+          ),
+        );
+      }
+
+      // 3) Redirect na listu ulaznih faktura
       navigate("/input-invoices");
     } catch (err: any) {
       setErrorMsg(
@@ -184,42 +341,67 @@ export default function InputInvoiceCreatePage() {
           </div>
         </div>
 
-        {/* Iznosi */}
+        {/* Iznosi + PDV 17% */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <div className="space-y-1">
-            <label className="text-xs font-medium">Osnovica bez PDV-a *</label>
+            <label className="text-xs font-medium">
+              Osnovica bez PDV-a *
+            </label>
             <input
               type="number"
               min={0}
               step="0.01"
-              value={totalBase}
-              onChange={(e) => setTotalBase(e.target.value)}
+              value={baseStr}
+              onChange={handleBaseChange}
               className="input"
               placeholder="npr. 100.00"
             />
           </div>
 
           <div className="space-y-1">
-            <label className="text-xs font-medium">PDV *</label>
+            <label className="text-xs font-medium">
+              PDV 17% (dodatak na osnovicu)
+            </label>
+            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+              <div className="flex items-center justify-between gap-2">
+                <span>Iznos PDV-a:</span>
+                <span className="font-mono">
+                  {displayVat > 0 ? displayVat.toFixed(2) : "0.00"}{" "}
+                  {currency || "BAM"}
+                </span>
+              </div>
+              <div className="mt-2 flex items-center gap-2">
+                <input
+                  id="include-vat"
+                  type="checkbox"
+                  className="h-3 w-3 rounded border-slate-300 text-slate-900"
+                  checked={includeVat}
+                  onChange={handleToggleVat}
+                />
+                <label
+                  htmlFor="include-vat"
+                  className="text-[11px] text-slate-600"
+                >
+                  Uključi PDV (stopa je fiksnih 17%. Možeš ga samo uključiti ili
+                  isključiti iz obračuna.)
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs font-medium">
+              Ukupno (osnovica + PDV)
+            </label>
             <input
               type="number"
               min={0}
               step="0.01"
-              value={totalVat}
-              onChange={(e) => setTotalVat(e.target.value)}
-              className="input"
-              placeholder="npr. 17.00"
+              value={totalStr}
+              onChange={handleTotalChange}
+              className="input text-right"
+              placeholder="npr. 117.00"
             />
-          </div>
-
-          <div className="space-y-1">
-            <label className="text-xs font-medium">Ukupno (osn. + PDV)</label>
-            <div className="input flex items-center justify-end bg-slate-50 text-right">
-              <span className="text-xs text-slate-700">
-                {totalAmount > 0 ? totalAmount.toFixed(2) : "0.00"}{" "}
-                {currency || "BAM"}
-              </span>
-            </div>
           </div>
         </div>
 
@@ -234,6 +416,66 @@ export default function InputInvoiceCreatePage() {
             className="input min-h-[80px]"
             placeholder="npr. Račun za struju za oktobar."
           />
+        </div>
+
+        {/* Upload računa */}
+        <div className="space-y-2 border-t pt-3">
+          <label className="text-xs font-medium">
+            Prilaganje računa (PDF/slika, opcionalno)
+          </label>
+          <input
+            type="file"
+            accept="application/pdf,image/*"
+            onChange={handleFileChange}
+            disabled={isUploading}
+            className="block w-full text-xs text-slate-700 file:mr-3 file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-slate-800"
+          />
+          {isUploading && (
+            <p className="text-[11px] text-slate-500">
+              Uploadujem fajl...
+            </p>
+          )}
+          {uploadError && (
+            <p className="text-[11px] text-red-600">
+              {uploadError}
+            </p>
+          )}
+
+          {attachments.length > 0 && (
+            <div className="mt-2 space-y-1 rounded-md border border-slate-200 bg-slate-50 p-2">
+              {attachments.map((att) => (
+                <div
+                  key={att.id}
+                  className="flex items-center justify-between rounded-md bg-white px-2 py-1.5 text-xs text-slate-700 shadow-sm"
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate font-medium">
+                      {att.filename ?? `attachment-${att.id}`}
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-slate-400">
+                      ID: {att.id} · status:{" "}
+                      <span className="font-semibold">
+                        {att.status ?? "n/a"}
+                      </span>
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void handleRemoveAttachment(att)}
+                    className="rounded-md border border-red-100 px-2 py-0.5 text-[11px] text-red-600 hover:bg-red-50"
+                  >
+                    Ukloni
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <p className="mt-1 text-[11px] text-slate-400">
+            Fajl će biti sačuvan među &quot;Uploadovanim računima
+            (attachments)&quot; za ovaj tenant i biće automatski povezan sa
+            ovom ulaznom fakturom nakon snimanja.
+          </p>
         </div>
 
         {/* Error + submit */}
