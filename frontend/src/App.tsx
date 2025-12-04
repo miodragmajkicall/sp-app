@@ -1,3 +1,4 @@
+// /home/miso/dev/sp-app/sp-app/frontend/src/App.tsx
 import {
   BrowserRouter,
   NavLink,
@@ -14,6 +15,7 @@ import InvoiceDetailPage from "./pages/InvoiceDetailPage";
 import InputInvoiceCreatePage from "./pages/InputInvoiceCreatePage";
 import InputInvoiceDetailPage from "./pages/InputInvoiceDetailPage";
 import TaxPage from "./pages/TaxPage";
+import KprPage from "./pages/KprPage";
 
 function App() {
   const linkBaseClasses =
@@ -141,12 +143,20 @@ function App() {
                 Knjigovodstvo
               </div>
 
-              <div className="flex items-center rounded-md px-3 py-2 text-slate-500 cursor-default">
+              <NavLink
+                to="/kpr"
+                className={({ isActive }) =>
+                  [
+                    linkBaseClasses,
+                    isActive ? linkActiveClasses : linkInactiveClasses,
+                  ].join(" ")
+                }
+              >
                 <span className="mr-2" aria-hidden="true">
                   📘
                 </span>
-                <span>KPR (uskoro)</span>
-              </div>
+                <span>KPR</span>
+              </NavLink>
 
               <NavLink
                 to="/tax"
@@ -257,7 +267,13 @@ function App() {
                 element={<InputInvoiceDetailPage />}
               />
 
+              {/* Novac */}
               <Route path="/cash" element={<CashPage />} />
+
+              {/* KPR */}
+              <Route path="/kpr" element={<KprPage />} />
+
+              {/* Porezi */}
               <Route path="/tax" element={<TaxPage />} />
 
               <Route
