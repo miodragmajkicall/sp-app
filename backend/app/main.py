@@ -16,6 +16,7 @@ from app.routes import (
     dashboard,
     sam,
     reports,
+    kpr,
 )
 from app.models import FinalizedPeriodModificationError
 
@@ -56,6 +57,10 @@ tags_metadata = [
     {
         "name": "sam",
         "description": "SAM blok – pregled prihoda, rashoda i obaveza.",
+    },
+    {
+        "name": "kpr",
+        "description": "Knjiga prihoda i rashoda (KPR) – objedinjena evidencija svih prihoda i rashoda.",
     },
     {
         "name": "reports",
@@ -172,6 +177,9 @@ app.include_router(dashboard.router)
 
 # SAM blok (sumarni financijski pregled)
 app.include_router(sam.router)
+
+# KPR – knjiga prihoda i rashoda
+app.include_router(kpr.router)
 
 # Reports (godišnji cashflow, itd.)
 app.include_router(reports.router)
