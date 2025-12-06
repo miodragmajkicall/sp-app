@@ -1,3 +1,4 @@
+# /home/miso/dev/sp-app/sp-app/backend/tests/test_cash_e2e.py
 from decimal import Decimal
 
 from fastapi.testclient import TestClient
@@ -6,7 +7,8 @@ from app.main import app
 
 client = TestClient(app)
 
-TENANT = {"X-Tenant-Code": "t-demo"}
+# Poseban tenant za e2e cash testove – NE koristimo 't-demo'
+TEST_TENANT_CASH_E2E = "cash-e2e-demo"
 
 
 def _clear_tenant_cash(tenant_code: str) -> None:
@@ -15,6 +17,9 @@ def _clear_tenant_cash(tenant_code: str) -> None:
 
     Koristimo je u testovima kako bismo imali čist i ponovljiv (idempotentan)
     kontekst za svaki tenant koji se koristi u testovima.
+
+    VAŽNO: u e2e testovima koristimo poseban tenant (npr. 'cash-e2e-demo'),
+    kako ne bismo dirali razvojne podatke za 't-demo' koje unosiš kroz UI.
     """
     headers = {"X-Tenant-Code": tenant_code}
     r = client.get("/cash/", headers=headers)
@@ -36,7 +41,8 @@ def test_cash_crud_flow():
     - brisanje
     - provjera da je nakon brisanja 404.
     """
-    tenant_code = "t-demo"
+    # Koristimo poseban test tenant, da ne diramo 't-demo'
+    tenant_code = TEST_TENANT_CASH_E2E
     headers = {"X-Tenant-Code": tenant_code}
 
     # Očistimo prethodne podatke za slučaj ponovnog pokretanja testova

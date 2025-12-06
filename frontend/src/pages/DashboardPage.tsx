@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import { apiClient, getApiBaseUrl } from "../services/apiClient";
+import { fetchInvoicesList } from "../services/invoicesApi";
+import { fetchInputInvoicesList } from "../services/inputInvoicesApi";
 
 interface MonthlyCashSummary {
   year: number;
@@ -57,14 +59,126 @@ function formatAmount(value: number): string {
   });
 }
 
+function computePreviousYearMonth(
+  year: number,
+  month: number,
+): { year: number; month: number } {
+  if (month === 1) {
+    return { year: year - 1, month: 12 };
+  }
+  return { year, month: month - 1 };
+}
+
+function getShortMonthLabel(month: number): string {
+  const d = new Date(2025, month - 1, 1);
+  return d.toLocaleDateString("sr-Latn-BA", { month: "short" });
+}
+
+function buildAiComment(
+  current: DashboardMonthlyResponse | undefined,
+  previous: DashboardMonthlyResponse | undefined,
+): string | null {
+  if (!current) {
+    return null;
+  }
+
+  const curIncome = toNumber(current.cash?.income_total);
+  const curExpense = toNumber(current.cash?.expense_total);
+  const curNet = toNumber(current.cash?.net_cashflow);
+
+  if (!previous) {
+    if (curIncome === 0 && curExpense === 0) {
+      return "Nema još dovoljno prometa za analizu ovog mjeseca. Kako se gomilaju prihodi i troškovi, ovdje ćeš dobijati kratak sažetak kretanja.";
+    }
+    if (curNet >= 0) {
+      return `Ovaj mjesec si u plusu ${formatAmount(
+        curNet,
+      )} KM. Prati da li se ovaj trend zadrži i u narednim mjesecima.`;
+    }
+    return `Ovaj mjesec si u minusu ${formatAmount(
+      Math.abs(curNet),
+    )} KM. Provjeri najveće troškove i razmisli šta možeš optimizovati.`;
+  }
+
+  const prevIncome = toNumber(previous.cash?.income_total);
+  const prevExpense = toNumber(previous.cash?.expense_total);
+  const prevNet = toNumber(previous.cash?.net_cashflow);
+
+  const incomeDelta = curIncome - prevIncome;
+  const expenseDelta = curExpense - prevExpense;
+  const netDelta = curNet - prevNet;
+
+  const incomePct =
+    prevIncome !== 0 ? (incomeDelta / Math.abs(prevIncome)) * 100 : null;
+  const expensePct =
+    prevExpense !== 0 ? (expenseDelta / Math.abs(prevExpense)) * 100 : null;
+
+  const incomePart =
+    incomePct === null
+      ? null
+      : incomePct > 5
+      ? `Prihodi su veći za oko ${incomePct.toFixed(
+          1,
+        )}% u odnosu na prošli mjesec.`
+      : incomePct < -5
+      ? `Prihodi su manji za oko ${Math.abs(incomePct).toFixed(
+          1,
+        )}% u odnosu na prošli mjesec.`
+      : "Prihodi su na sličnom nivou kao prošli mjesec.";
+
+  const expensePart =
+    expensePct === null
+      ? null
+      : expensePct > 5
+      ? `Troškovi su veći za oko ${expensePct.toFixed(
+          1,
+        )}% u odnosu na prošli mjesec.`
+      : expensePct < -5
+      ? `Troškovi su manji za oko ${Math.abs(expensePct).toFixed(
+          1,
+        )}% u odnosu na prošli mjesec.`
+      : "Troškovi su na sličnom nivou kao prošli mjesec.";
+
+  let netPart: string;
+  if (curNet > 0 && netDelta >= 0) {
+    netPart = `Neto rezultat je pozitivan (${formatAmount(
+      curNet,
+    )} KM) i bolji je nego prošli mjesec.`;
+  } else if (curNet > 0 && netDelta < 0) {
+    netPart = `Neto rezultat je i dalje pozitivan (${formatAmount(
+      curNet,
+    )} KM), ali je slabiji nego prošli mjesec.`;
+  } else if (curNet <= 0 && netDelta >= 0) {
+    netPart = `Ovaj mjesec si blizu nule ili u manjim gubicima (${formatAmount(
+      curNet,
+    )} KM), ali je bolje nego prošli mjesec.`;
+  } else {
+    netPart = `Neto rezultat je negativan (${formatAmount(
+      curNet,
+    )} KM) i lošiji je nego prošli mjesec.`;
+  }
+
+  const parts = [incomePart, expensePart, netPart].filter(
+    (p): p is string => p !== null,
+  );
+  if (parts.length === 0) {
+    return null;
+  }
+
+  return parts.join(" ");
+}
+
 export default function DashboardPage() {
   const apiUrl = getApiBaseUrl();
   const navigate = useNavigate();
 
-  const { data, isLoading, isError, error } = useQuery<
-    DashboardMonthlyResponse,
-    Error
-  >({
+  // 1) Trenutni mjesečni dashboard
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+  } = useQuery<DashboardMonthlyResponse, Error>({
     queryKey: ["dashboard", "monthly", "current"],
     queryFn: async () => {
       const res = await apiClient.get<DashboardMonthlyResponse>(
@@ -72,6 +186,101 @@ export default function DashboardPage() {
       );
       return res.data;
     },
+  });
+
+  // 2) Prethodni mjesec – za AI komentar
+  const { data: previousMonthlyData } = useQuery<
+    DashboardMonthlyResponse,
+    Error
+  >({
+    queryKey: [
+      "dashboard",
+      "monthly",
+      "previous",
+      data?.year,
+      data?.month,
+    ],
+    enabled: !!data,
+    queryFn: async () => {
+      if (!data) {
+        throw new Error("Missing current month data");
+      }
+      const { year, month } = computePreviousYearMonth(
+        data.year,
+        data.month,
+      );
+      const res = await apiClient.get<DashboardMonthlyResponse>(
+        `/dashboard/monthly/${year}/${month}`,
+      );
+      return res.data;
+    },
+    staleTime: 60_000,
+  });
+
+  // 3) Lista izlaznih faktura (za zadnjih 5 + overdue + top kupce)
+  const { data: invoicesListData } = useQuery({
+    queryKey: ["dashboard", "invoices", "recent"],
+    queryFn: () => fetchInvoicesList(),
+    staleTime: 60_000,
+  });
+
+  // 4) Lista ulaznih faktura za TEKUĆI mjesec (za kategorije + top dobavljače + zadnjih 5)
+  const { data: inputInvoicesListData } = useQuery({
+    queryKey: [
+      "dashboard",
+      "input-invoices",
+      "current-month",
+      data?.year,
+      data?.month,
+    ],
+    enabled: !!data,
+    queryFn: async () => {
+      if (!data) {
+        throw new Error("Missing dashboard data");
+      }
+      return fetchInputInvoicesList({
+        year: data.year,
+        month: data.month,
+        limit: 200,
+        offset: 0,
+      });
+    },
+    staleTime: 60_000,
+  });
+
+  // 5) Yearly cash by month – za graf prihoda po mjesecima
+  const { data: yearlyCashByMonth } = useQuery<
+    (DashboardMonthlyResponse | null)[]
+  >({
+    queryKey: [
+      "dashboard",
+      "cash",
+      "yearly-by-month",
+      data?.year,
+    ],
+    enabled: !!data,
+    queryFn: async () => {
+      if (!data) {
+        throw new Error("Missing dashboard data");
+      }
+      const year = data.year;
+      const months = Array.from(
+        { length: 12 },
+        (_, idx) => idx + 1,
+      );
+      const results = await Promise.all(
+        months.map((m) =>
+          apiClient
+            .get<DashboardMonthlyResponse>(
+              `/dashboard/monthly/${year}/${m}`,
+            )
+            .then((res) => res.data)
+            .catch(() => null),
+        ),
+      );
+      return results;
+    },
+    staleTime: 60_000,
   });
 
   const monthLabel = (() => {
@@ -105,6 +314,103 @@ export default function DashboardPage() {
       : cashNet < 0
       ? "text-rose-600"
       : "text-slate-700";
+
+  // Zadnjih 5 izlaznih i ulaznih faktura
+  const lastOutgoingInvoices =
+    invoicesListData?.items.slice(0, 5) ?? [];
+  const lastInputInvoices =
+    inputInvoicesListData?.items.slice(0, 5) ?? [];
+
+  // Neplaćene fakture starije od 30 dana
+  const overdueUnpaidCount =
+    invoicesListData?.items.filter((inv) => {
+      if (!inv.due_date) return false;
+      if (inv.is_paid) return false;
+      const due = new Date(inv.due_date);
+      if (Number.isNaN(due.getTime())) return false;
+      const today = new Date();
+      const diffDays =
+        (today.getTime() - due.getTime()) /
+        (1000 * 60 * 60 * 24);
+      return diffDays > 30;
+    }).length ?? 0;
+
+  // Graf prihoda po mjesecima (stubičasti)
+  const incomeSeries =
+    yearlyCashByMonth?.map((m, idx) => {
+      const month = idx + 1;
+      const income = m ? toNumber(m.cash?.income_total) : 0;
+      return {
+        month,
+        label: getShortMonthLabel(month),
+        value: income,
+      };
+    }) ?? [];
+
+  const maxIncomeValue = Math.max(
+    ...incomeSeries.map((i) => Math.abs(i.value)),
+    0,
+  );
+
+  // Graf rashoda po "kategorijama" – ovdje koristimo dobavljača kao kategoriju
+  const expenseByCategoryMap = new Map<string, number>();
+  if (inputInvoicesListData) {
+    for (const inv of inputInvoicesListData.items) {
+      const name = inv.supplier_name || "Ostalo";
+      const amount = inv.total_amount ?? 0;
+      expenseByCategoryMap.set(
+        name,
+        (expenseByCategoryMap.get(name) ?? 0) + amount,
+      );
+    }
+  }
+
+  const expenseCategories = Array.from(
+    expenseByCategoryMap.entries(),
+  )
+    .map(([name, total]) => ({
+      name,
+      total,
+    }))
+    .sort((a, b) => b.total - a.total)
+    .slice(0, 6);
+
+  const maxExpenseCategory = Math.max(
+    ...expenseCategories.map((c) => Math.abs(c.total)),
+    0,
+  );
+
+  // Top kupci (po ukupnom prometu)
+  const topCustomers = (() => {
+    const map = new Map<string, number>();
+    if (invoicesListData) {
+      for (const inv of invoicesListData.items) {
+        const name = inv.buyer_name || "Nepoznat kupac";
+        const amount = inv.total_amount ?? 0;
+        map.set(name, (map.get(name) ?? 0) + amount);
+      }
+    }
+    return Array.from(map.entries())
+      .map(([name, total]) => ({ name, total }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 5);
+  })();
+
+  // Top dobavljači (po ukupnom prometu u tekućem mjesecu)
+  const topSuppliers = (() => {
+    const map = new Map<string, number>();
+    if (inputInvoicesListData) {
+      for (const inv of inputInvoicesListData.items) {
+        const name = inv.supplier_name || "Nepoznat dobavljač";
+        const amount = inv.total_amount ?? 0;
+        map.set(name, (map.get(name) ?? 0) + amount);
+      }
+    }
+    return Array.from(map.entries())
+      .map(([name, total]) => ({ name, total }))
+      .sort((a, b) => b.total - a.total)
+      .slice(0, 5);
+  })();
 
   // Brza upozorenja / info badge-ovi
   const alerts: { type: "warning" | "info"; text: string }[] = [];
@@ -140,6 +446,13 @@ export default function DashboardPage() {
     });
   }
 
+  if (overdueUnpaidCount > 0) {
+    alerts.push({
+      type: "warning",
+      text: `Imaš ${overdueUnpaidCount} neplaćenih izlaznih faktura sa rokom dospijeća starijim od 30 dana.`,
+    });
+  }
+
   // Podaci za mini graf kase (3 stubića: prihodi, rashodi, neto)
   const cashChartItems = [
     {
@@ -158,7 +471,7 @@ export default function DashboardPage() {
       key: "Neto",
       value: cashNet,
       colorClass:
-        cashNet >= 0 ? "bg-sky-500" : "bg-slate-700", // neto može biti +/-,
+        cashNet >= 0 ? "bg-sky-500" : "bg-slate-700",
       hint: "Prihodi - rashodi za mjesec",
     },
   ];
@@ -167,6 +480,8 @@ export default function DashboardPage() {
     ...cashChartItems.map((i) => Math.abs(i.value)),
     0,
   );
+
+  const aiComment = buildAiComment(data, previousMonthlyData);
 
   return (
     <div className="space-y-6">
@@ -188,7 +503,9 @@ export default function DashboardPage() {
               </span>
               <span className="font-semibold text-slate-700">
                 {monthLabel} • tenant{" "}
-                <span className="font-mono">{data.tenant_code}</span>
+                <span className="font-mono">
+                  {data.tenant_code}
+                </span>
               </span>
             </span>
           )}
@@ -203,8 +520,66 @@ export default function DashboardPage() {
 
       {isError && (
         <p className="text-sm text-red-600">
-          Greška pri učitavanju kontrolne table: {error.message}
+          Greška pri učitavanju kontrolne table:{" "}
+          {error.message}
         </p>
+      )}
+
+      {/* SUMMARY tekućeg mjeseca */}
+      {!isLoading && !isError && data && (
+        <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4">
+          <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide mb-2">
+            Summary za tekući mjesec
+          </p>
+          <div className="grid gap-4 md:grid-cols-5 text-xs text-slate-700">
+            <div>
+              <p className="text-[11px] text-slate-500">
+                Ukupni prihodi
+              </p>
+              <p className="text-sm font-semibold text-emerald-600">
+                {formatAmount(cashIncome)} KM
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-slate-500">
+                Ukupni rashodi
+              </p>
+              <p className="text-sm font-semibold text-rose-600">
+                {formatAmount(cashExpense)} KM
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-slate-500">
+                Rezultat (profit / gubitak)
+              </p>
+              <p className={`text-sm font-semibold ${netClass}`}>
+                {formatAmount(cashNet)} KM
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-slate-500">
+                Procijenjeni porez
+              </p>
+              <p className="text-sm font-semibold text-slate-900">
+                {formatAmount(taxTotal)} KM
+              </p>
+              <p className="text-[10px] text-slate-500">
+                Paušal / 2% u skladu sa TAX modulom.
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] text-slate-500">
+                Doprinosi (mjesečno)
+              </p>
+              <p className="text-sm font-semibold text-slate-900">
+                {formatAmount(samTotal)} KM
+              </p>
+              <p className="text-[10px] text-slate-500">
+                Ukupni SAM doprinosi za ovaj mjesec.
+              </p>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Upozorenja / brzi info badge-ovi */}
@@ -234,8 +609,24 @@ export default function DashboardPage() {
             ))}
           </ul>
           <p className="text-[10px] text-amber-900/80 mt-1">
-            Ova lista se generiše automatski na osnovu stanja kase i TAX / SAM
-            modula za aktivni mjesec.
+            Ova lista se generiše automatski na osnovu stanja
+            kase, faktura i TAX / SAM modula za aktivni
+            mjesec.
+          </p>
+        </div>
+      )}
+
+      {/* AI komentar mjeseca (Premium dodatak) */}
+      {!isLoading && !isError && data && (
+        <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+              AI komentar mjeseca (Premium – beta)
+            </p>
+          </div>
+          <p className="text-sm text-slate-700">
+            {aiComment ??
+              "Nema dovoljno podataka za detaljniji komentar. Kako se gomilaju mjeseci i promet, ovdje ćeš imati kratki sažetak kretanja prihoda, troškova i neto rezultata."}
           </p>
         </div>
       )}
@@ -246,11 +637,14 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
-                Kretanje gotovine – {monthLabel || `${data.year}-${data.month}`}
+                Kretanje gotovine –{" "}
+                {monthLabel || `${data.year}-${data.month}`}
               </p>
               <p className="text-xs text-slate-600">
                 Poređenje ukupnih{" "}
-                <span className="font-semibold">prihoda, rashoda i neta</span>{" "}
+                <span className="font-semibold">
+                  prihoda, rashoda i neta
+                </span>{" "}
                 za aktivni mjesec.
               </p>
             </div>
@@ -259,15 +653,15 @@ export default function DashboardPage() {
           <div className="mt-2 h-40 flex items-end justify-around gap-6 border border-slate-100 rounded-lg bg-slate-50 px-6 py-4">
             {maxCashAbs === 0 ? (
               <p className="text-[11px] text-slate-500">
-                Nema dovoljno podataka za prikaz grafa – provjeri da li postoje
-                zapisi u kasi za ovaj mjesec.
+                Nema dovoljno podataka za prikaz grafa – provjeri
+                da li postoje zapisi u kasi za ovaj mjesec.
               </p>
             ) : (
               cashChartItems.map((item) => {
                 const heightPercent =
                   maxCashAbs > 0
                     ? Math.max(
-                        8, // minimalna visina da se bolje vidi stubić
+                        8,
                         (Math.abs(item.value) / maxCashAbs) * 100,
                       )
                     : 0;
@@ -288,7 +682,9 @@ export default function DashboardPage() {
                         }
                         style={{
                           height:
-                            maxCashAbs > 0 ? `${heightPercent}%` : "0%",
+                            maxCashAbs > 0
+                              ? `${heightPercent}%`
+                              : "0%",
                         }}
                       ></div>
                     </div>
@@ -305,9 +701,9 @@ export default function DashboardPage() {
           </div>
 
           <p className="text-[10px] text-slate-500 mt-1">
-            Visina stubića je proporcionalna apsolutnoj vrijednosti (|iznos|).
-            Neto može biti pozitivan ili negativan; boja označava vrstu
-            vrijednosti.
+            Visina stubića je proporcionalna apsolutnoj
+            vrijednosti (|iznos|). Neto može biti pozitivan ili
+            negativan; boja označava vrstu vrijednosti.
           </p>
         </div>
       )}
@@ -334,14 +730,16 @@ export default function DashboardPage() {
               </span>
             </p>
             <p className="text-[11px] text-slate-400 pt-1">
-              Pozitivan neto iznos znači višak u kasi za ovaj mjesec.
+              Pozitivan neto iznos znači višak u kasi za ovaj
+              mjesec.
             </p>
           </div>
 
           {/* Izlazne fakture kartica */}
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col gap-2">
             <p className="text-xs font-medium text-slate-500">
-              Izlazne fakture – {monthLabel || `${data.year}-${data.month}`}
+              Izlazne fakture –{" "}
+              {monthLabel || `${data.year}-${data.month}`}
             </p>
             <p className="text-2xl font-semibold text-slate-900">
               {invoicesCount}
@@ -364,7 +762,8 @@ export default function DashboardPage() {
           {/* Porezi kartica */}
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col gap-2">
             <p className="text-xs font-medium text-slate-500">
-              Porezi – {monthLabel || `${data.year}-${data.month}`}
+              Porezi –{" "}
+              {monthLabel || `${data.year}-${data.month}`}
             </p>
             <p className="text-lg font-semibold text-slate-900">
               {formatAmount(taxTotal)} KM
@@ -400,7 +799,8 @@ export default function DashboardPage() {
           {/* SAM kartica */}
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col gap-2">
             <p className="text-xs font-medium text-slate-500">
-              SAM doprinosi – {monthLabel || `${data.year}-${data.month}`}
+              SAM doprinosi –{" "}
+              {monthLabel || `${data.year}-${data.month}`}
             </p>
             <p className="text-lg font-semibold text-slate-900">
               {formatAmount(samTotal)} KM
@@ -425,8 +825,329 @@ export default function DashboardPage() {
               )}
             </p>
             <p className="text-[11px] text-slate-400">
-              Vrijednosti dolaze iz TAX / SAM modula za aktivni mjesec.
+              Vrijednosti dolaze iz TAX / SAM modula za aktivni
+              mjesec.
             </p>
+          </div>
+        </div>
+      )}
+
+      {/* Grafovi – prihodi po mjesecima + rashodi po kategorijama */}
+      {!isLoading && !isError && data && (
+        <div className="grid gap-4 md:grid-cols-2">
+          {/* Graf prihoda po mjesecima */}
+          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
+            <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+              Prihodi po mjesecima – {data.year}
+            </p>
+            <p className="text-xs text-slate-500">
+              Stubičasti graf ukupnih prihoda po mjesecima (na osnovu kase /
+              dashboard podataka).
+            </p>
+
+            <div className="mt-2 h-40 flex items-end gap-2 border border-slate-100 rounded-lg bg-slate-50 px-4 py-4 overflow-x-auto">
+              {incomeSeries.length === 0 || maxIncomeValue === 0 ? (
+                <p className="text-[11px] text-slate-500">
+                  Nema dovoljno podataka za prikaz ovog grafa.
+                </p>
+              ) : (
+                incomeSeries.map((item) => {
+                  const heightPercent =
+                    (Math.abs(item.value) / maxIncomeValue) *
+                    100;
+                  return (
+                    <div
+                      key={item.month}
+                      className="flex flex-col items-center justify-end gap-1 h-full min-w-[18px]"
+                      title={`${item.label}: ${formatAmount(
+                        item.value,
+                      )} KM`}
+                    >
+                      <div className="flex flex-col justify-end w-full h-full">
+                        <div
+                          className="w-3 mx-auto rounded-t-md shadow-sm bg-emerald-500"
+                          style={{
+                            height: `${Math.max(
+                              6,
+                              heightPercent,
+                            )}%`,
+                          }}
+                        ></div>
+                      </div>
+                      <span className="text-[10px] text-slate-600">
+                        {item.label}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+
+          {/* Graf rashoda po kategorijama */}
+          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
+            <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+              Rashodi po kategorijama (dobavljači) – {monthLabel}
+            </p>
+            <p className="text-xs text-slate-500">
+              Prikaz troškova po dobavljačima za tekući mjesec. Kasnije
+              ovo lako možemo zamijeniti pravim kategorijama (gorivo,
+              zakup, režije…).
+            </p>
+
+            <div className="mt-2 h-40 flex items-end gap-4 border border-slate-100 rounded-lg bg-slate-50 px-4 py-4 overflow-x-auto">
+              {expenseCategories.length === 0 ||
+              maxExpenseCategory === 0 ? (
+                <p className="text-[11px] text-slate-500">
+                  Nema dovoljno podataka za prikaz ovog grafa.
+                </p>
+              ) : (
+                expenseCategories.map((cat) => {
+                  const heightPercent =
+                    (Math.abs(cat.total) / maxExpenseCategory) *
+                    100;
+                  return (
+                    <div
+                      key={cat.name}
+                      className="flex flex-col items-center justify-end gap-1 h-full min-w-[40px]"
+                      title={`${cat.name}: ${formatAmount(
+                        cat.total,
+                      )} KM`}
+                    >
+                      <div className="flex flex-col justify-end w-full h-full">
+                        <div
+                          className="w-6 mx-auto rounded-t-md shadow-sm bg-rose-500"
+                          style={{
+                            height: `${Math.max(
+                              8,
+                              heightPercent,
+                            )}%`,
+                          }}
+                        ></div>
+                      </div>
+                      <span className="text-[10px] text-center text-slate-600 line-clamp-2">
+                        {cat.name}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Zadnjih 5 faktura – izlazne i ulazne */}
+      {!isLoading && !isError && (
+        <div className="grid gap-4 md:grid-cols-2">
+          {/* Zadnjih 5 izlaznih faktura */}
+          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+                  Zadnjih 5 izlaznih faktura
+                </p>
+                <p className="text-xs text-slate-500">
+                  Brzi pregled najnovijih faktura koje si izdao.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => navigate("/invoices")}
+                className="inline-flex items-center justify-center rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+              >
+                Sve fakture
+              </button>
+            </div>
+
+            {lastOutgoingInvoices.length === 0 ? (
+              <p className="text-[11px] text-slate-500">
+                Nema izlaznih faktura za prikaz. Kreiraj prvu
+                fakturu u modulu izlaznih faktura.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-left text-[11px] text-slate-700">
+                  <thead>
+                    <tr className="border-b border-slate-100 text-slate-500">
+                      <th className="py-1 pr-3">Datum</th>
+                      <th className="py-1 pr-3">Broj</th>
+                      <th className="py-1 pr-3">Kupac</th>
+                      <th className="py-1 text-right">Iznos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lastOutgoingInvoices.map((inv) => (
+                      <tr
+                        key={inv.id}
+                        className="border-b border-slate-50 last:border-0"
+                      >
+                        <td className="py-1 pr-3 text-slate-600">
+                          {inv.issue_date ?? "-"}
+                        </td>
+                        <td className="py-1 pr-3 font-mono text-slate-800">
+                          {inv.number ?? "-"}
+                        </td>
+                        <td className="py-1 pr-3 text-slate-700">
+                          {inv.buyer_name ?? "-"}
+                        </td>
+                        <td className="py-1 text-right text-slate-800">
+                          {inv.total_amount != null
+                            ? `${formatAmount(
+                                inv.total_amount,
+                              )} KM`
+                            : "-"}
+                          {!inv.is_paid && (
+                            <span className="ml-1 inline-flex rounded-full bg-rose-50 px-2 py-[1px] text-[10px] font-medium text-rose-700">
+                              neplaćena
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Zadnjih 5 ulaznih računa */}
+          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+                  Zadnjih 5 ulaznih računa
+                </p>
+                <p className="text-xs text-slate-500">
+                  Najnoviji troškovi (računi dobavljača).
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => navigate("/input-invoices")}
+                className="inline-flex items-center justify-center rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+              >
+                Sve ulazne fakture
+              </button>
+            </div>
+
+            {lastInputInvoices.length === 0 ? (
+              <p className="text-[11px] text-slate-500">
+                Nema ulaznih računa za prikaz. Dodaj prvi račun u
+                modulu ulaznih faktura.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-left text-[11px] text-slate-700">
+                  <thead>
+                    <tr className="border-b border-slate-100 text-slate-500">
+                      <th className="py-1 pr-3">Datum</th>
+                      <th className="py-1 pr-3">Broj</th>
+                      <th className="py-1 pr-3">Dobavljač</th>
+                      <th className="py-1 text-right">Iznos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {lastInputInvoices.map((inv) => (
+                      <tr
+                        key={inv.id}
+                        className="border-b border-slate-50 last:border-0"
+                      >
+                        <td className="py-1 pr-3 text-slate-600">
+                          {inv.issue_date ?? "-"}
+                        </td>
+                        <td className="py-1 pr-3 font-mono text-slate-800">
+                          {inv.number ?? "-"}
+                        </td>
+                        <td className="py-1 pr-3 text-slate-700">
+                          {inv.supplier_name ?? "-"}
+                        </td>
+                        <td className="py-1 text-right text-slate-800">
+                          {inv.total_amount != null
+                            ? `${formatAmount(
+                                inv.total_amount,
+                              )} KM`
+                            : "-"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Premium kartice – Top kupci / Top dobavljači */}
+      {!isLoading && !isError && (
+        <div className="grid gap-4 md:grid-cols-2">
+          {/* Top kupci */}
+          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+                Top kupci (Premium)
+              </p>
+            </div>
+            {topCustomers.length === 0 ? (
+              <p className="text-[11px] text-slate-500">
+                Nema dovoljno izlaznih faktura za prikaz top
+                kupaca.
+              </p>
+            ) : (
+              <ul className="space-y-1 text-xs text-slate-700">
+                {topCustomers.map((c, idx) => (
+                  <li
+                    key={c.name}
+                    className="flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="w-5 text-[11px] text-slate-500">
+                        #{idx + 1}
+                      </span>
+                      <span>{c.name}</span>
+                    </div>
+                    <span className="font-semibold">
+                      {formatAmount(c.total)} KM
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {/* Top dobavljači */}
+          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+                Top dobavljači (Premium, tekući mjesec)
+              </p>
+            </div>
+            {topSuppliers.length === 0 ? (
+              <p className="text-[11px] text-slate-500">
+                Nema dovoljno ulaznih računa za prikaz top
+                dobavljača.
+              </p>
+            ) : (
+              <ul className="space-y-1 text-xs text-slate-700">
+                {topSuppliers.map((s, idx) => (
+                  <li
+                    key={s.name}
+                    className="flex items-center justify-between"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="w-5 text-[11px] text-slate-500">
+                        #{idx + 1}
+                      </span>
+                      <span>{s.name}</span>
+                    </div>
+                    <span className="font-semibold">
+                      {formatAmount(s.total)} KM
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
           </div>
         </div>
       )}
