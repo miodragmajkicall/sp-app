@@ -3,166 +3,171 @@ import { apiClient } from "./apiClient";
 import type {
   InvoiceListResponse,
   InvoiceRowItem,
-  InvoiceCreatePayload,
   InvoiceDetail,
-  InvoiceItemDetail,
+  InvoiceCreatePayload,
 } from "../types/invoice";
 
-export interface FetchInvoicesListOptions {
-  /** ako je true – backend vraća samo neplaćene (unpaid_only) */
-  unpaidOnly?: boolean;
+export interface InvoicesListParams {
+  year?: number;
+  month?: number;
+  unpaid_only?: boolean;
+  date_from?: string;
+  date_to?: string;
+  buyer_query?: string;
+  page?: number;
+  page_size?: number;
 }
 
 /**
- * GET – UI-friendly lista izlaznih faktura
- * Koristi backend endpoint /invoices/list koji vraća { total, items }.
+ * Helperi za konverziju backend vrijednosti (string/Decimal) u broj.
  */
-export async function fetchInvoicesList(
-  options?: FetchInvoicesListOptions,
-): Promise<InvoiceListResponse> {
-  const unpaidOnly = options?.unpaidOnly === true;
+function toNumberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const n = Number(value);
+  if (Number.isNaN(n)) return null;
+  return n;
+}
 
-  const res = await apiClient.get<{
-    total: number;
-    items: Array<{
-      id: number;
-      invoice_number: string | null;
-      buyer_name: string | null;
-      issue_date: string | null;
-      due_date: string | null;
-      total_amount: string | number | null;
-      is_paid: boolean | null;
-    }>;
-  }>("/invoices/list", {
-    params: {
-      unpaid_only: unpaidOnly ? true : undefined,
-      page: 1,
-      page_size: 200,
-    },
-  });
+function toNumberOrZero(value: unknown): number {
+  const n = Number(value);
+  if (Number.isNaN(n)) return 0;
+  return n;
+}
 
-  const raw = res.data;
-
-  const items: InvoiceRowItem[] = raw.items.map((item) => ({
-    id: item.id,
-    number: item.invoice_number ?? null,
-    buyer_name: item.buyer_name ?? null,
-    issue_date: item.issue_date ?? null,
-    due_date: item.due_date ?? null,
-    total_amount:
-      item.total_amount != null ? Number(item.total_amount) : null,
-    is_paid: item.is_paid ?? false,
-  }));
-
+/**
+ * Mapiranje jednog reda iz backend /invoices/list u UI InvoiceRowItem.
+ *
+ * Backend vraća:
+ *  - invoice_number
+ *  - total_amount kao string (Decimal) itd.
+ *
+ * UI očekuje:
+ *  - number (broj fakture) kao string | null
+ *  - total_amount kao number | null
+ */
+function mapInvoiceRowItem(raw: any): InvoiceRowItem {
   return {
-    total: raw.total,
-    items,
+    id: raw.id,
+    number: raw.invoice_number ?? null,
+    buyer_name: raw.buyer_name ?? null,
+    issue_date: raw.issue_date ?? null,
+    due_date: raw.due_date ?? null,
+    total_amount: toNumberOrNull(raw.total_amount),
+    is_paid: Boolean(raw.is_paid),
   };
 }
 
 /**
- * Alias ako nam negdje zatreba samo lista bez metapodataka.
- */
-export async function fetchInvoices(): Promise<InvoiceRowItem[]> {
-  const data = await fetchInvoicesList();
-  return data.items;
-}
-
-/**
- * POST – kreiranje nove izlazne fakture
+ * Mapiranje detaljne fakture (GET /invoices/{id}) u InvoiceDetail.
  *
- * Sada šaljemo SVE stavke koje je korisnik unio:
- * - quantity = količina
- * - unit_price = cijena bez PDV-a
- * - vat_rate = 0.17 (17%)
- *
- * Backend SAM računa total_base / total_vat / total_amount.
- * Više nema duplog PDV-a.
+ * Backend vraća Decimal polja kao stringove, ovdje ih pretvaramo u number
+ * tako da UI kod može normalno da radi sa njima (toFixed, sabiranje, grafici…).
  */
-export async function createInvoice(
-  payload: InvoiceCreatePayload,
-): Promise<void> {
-  const body = {
-    invoice_number: payload.number,
-    buyer_name: payload.buyer_name,
-    buyer_address: payload.buyer_address ?? null,
-    issue_date: payload.issue_date,
-    due_date: payload.due_date,
-    items: payload.items.map((item) => ({
-      description: item.description,
-      quantity: item.quantity,
-      unit_price: item.unit_price,
-      vat_rate: item.vat_rate,
-    })),
-  };
-
-  await apiClient.post("/invoices", body);
-}
-
-/**
- * GET /invoices/{id} – puni detalj fakture + stavke
- */
-export async function fetchInvoiceById(
-  invoiceId: number,
-): Promise<InvoiceDetail> {
-  const res = await apiClient.get<{
-    id: number;
-    tenant_code: string;
-    invoice_number: string;
-    issue_date: string;
-    due_date: string | null;
-    buyer_name: string;
-    buyer_address: string | null;
-    total_base: string | number;
-    total_vat: string | number;
-    total_amount: string | number;
-    is_paid: boolean;
-    items: Array<{
-      id: number;
-      description: string;
-      quantity: string | number;
-      unit_price: string | number;
-      vat_rate: string | number;
-      base_amount: string | number;
-      vat_amount: string | number;
-      total_amount: string | number;
-    }>;
-  }>(`/invoices/${invoiceId}`);
-
-  const raw = res.data;
-
-  const items: InvoiceItemDetail[] = raw.items.map((i) => ({
-    id: i.id,
-    description: i.description,
-    quantity: Number(i.quantity),
-    unit_price: Number(i.unit_price),
-    vat_rate: Number(i.vat_rate),
-    base_amount: Number(i.base_amount),
-    vat_amount: Number(i.vat_amount),
-    total_amount: Number(i.total_amount),
-  }));
-
-  const detail: InvoiceDetail = {
+function mapInvoiceDetail(raw: any): InvoiceDetail {
+  return {
     id: raw.id,
     tenant_code: raw.tenant_code,
     invoice_number: raw.invoice_number,
     issue_date: raw.issue_date,
-    due_date: raw.due_date,
+    due_date: raw.due_date ?? null,
     buyer_name: raw.buyer_name,
-    buyer_address: raw.buyer_address,
-    total_base: Number(raw.total_base),
-    total_vat: Number(raw.total_vat),
-    total_amount: Number(raw.total_amount),
-    is_paid: raw.is_paid,
-    items,
+    buyer_address: raw.buyer_address ?? null,
+    total_base: toNumberOrZero(raw.total_base),
+    total_vat: toNumberOrZero(raw.total_vat),
+    total_amount: toNumberOrZero(raw.total_amount),
+    is_paid: Boolean(raw.is_paid),
+    items: Array.isArray(raw.items)
+      ? raw.items.map((it: any) => ({
+          id: it.id,
+          description: it.description,
+          quantity: toNumberOrZero(it.quantity),
+          unit_price: toNumberOrZero(it.unit_price),
+          vat_rate: toNumberOrZero(it.vat_rate),
+          base_amount: toNumberOrZero(it.base_amount),
+          vat_amount: toNumberOrZero(it.vat_amount),
+          total_amount: toNumberOrZero(it.total_amount),
+        }))
+      : [],
   };
-
-  return detail;
 }
 
 /**
- * POST – označi fakturu kao plaćenu
+ * UI lista faktura – koristi novi backend endpoint /invoices/list.
+ * Vraća total + items (InvoiceRowItem) SA MAPIRANJEM na očekivane tipove.
  */
-export async function markInvoicePaid(invoiceId: number): Promise<void> {
-  await apiClient.post(`/invoices/${invoiceId}/mark-paid`, null);
+export async function fetchInvoicesList(
+  params: InvoicesListParams = {},
+): Promise<InvoiceListResponse> {
+  const response = await apiClient.get("/invoices/list", { params });
+  const raw = response.data as any;
+
+  const items: InvoiceRowItem[] = Array.isArray(raw.items)
+    ? raw.items.map(mapInvoiceRowItem)
+    : [];
+
+  const total =
+    typeof raw.total === "number" && Number.isFinite(raw.total)
+      ? raw.total
+      : items.length;
+
+  return {
+    total,
+    items,
+  };
+}
+
+/**
+ * Detaljna faktura – GET /invoices/{id}
+ */
+export async function fetchInvoiceById(
+  id: number,
+): Promise<InvoiceDetail> {
+  const response = await apiClient.get(`/invoices/${id}`);
+  return mapInvoiceDetail(response.data);
+}
+
+/**
+ * Kreiranje nove fakture – POST /invoices
+ *
+ * Napomena: frontend payload ima polje `number`,
+ * a backend očekuje `invoice_number`.
+ */
+export async function createInvoice(
+  payload: InvoiceCreatePayload,
+): Promise<InvoiceDetail> {
+  const backendPayload = {
+    invoice_number: payload.number,
+    buyer_name: payload.buyer_name,
+    buyer_address: payload.buyer_address ?? null,
+    issue_date: payload.issue_date,
+    due_date: payload.due_date ?? null,
+    items: payload.items,
+  };
+
+  const response = await apiClient.post("/invoices", backendPayload);
+  return mapInvoiceDetail(response.data);
+}
+
+/**
+ * Označavanje fakture kao plaćene – POST /invoices/{id}/mark-paid
+ */
+export async function markInvoicePaid(
+  id: number,
+): Promise<InvoiceDetail> {
+  const response = await apiClient.post(`/invoices/${id}/mark-paid`);
+  return mapInvoiceDetail(response.data);
+}
+
+/**
+ * Export liste faktura – /invoices/export (CSV za Excel).
+ * Vraća Blob koji možeš preuzeti ili otvoriti.
+ */
+export async function exportInvoicesExcel(
+  params: InvoicesListParams = {},
+): Promise<Blob> {
+  const response = await apiClient.get("/invoices/export", {
+    params,
+    responseType: "blob",
+  });
+  return response.data;
 }

@@ -1,11 +1,15 @@
+// /home/miso/dev/sp-app/sp-app/frontend/src/pages/InvoicesListPage.tsx
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+
 import {
   fetchInvoicesList,
   markInvoicePaid,
+  exportInvoicesExcel,
+  type InvoicesListParams,
 } from "../services/invoicesApi";
-import type { InvoiceRowItem } from "../types/invoice";
+import type { InvoiceListResponse, InvoiceRowItem } from "../types/invoice";
 
 function formatDate(value?: string | null): string {
   if (!value) return "-";
@@ -23,21 +27,33 @@ function formatAmount(value?: number | null): string {
   return `${value.toFixed(2)} KM`;
 }
 
-type StatusFilter = "ALL" | "PAID" | "UNPAID";
+const CURRENT_YEAR = new Date().getFullYear();
 
 export default function InvoicesListPage() {
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>("ALL");
-  const [actionError, setActionError] = useState("");
-  const [markingId, setMarkingId] = useState<number | null>(null);
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
-  // paginacija: 50 faktura po stranici
-  const PAGE_SIZE = 50;
+  // Filteri i paginacija
+  const [year, setYear] = useState<number | undefined>(CURRENT_YEAR);
+  const [month, setMonth] = useState<number | undefined>(undefined);
+  const [buyerQuery, setBuyerQuery] = useState("");
+  const [unpaidOnly, setUnpaidOnly] = useState(false);
+
   const [page, setPage] = useState(1);
+  const [pageSize] = useState(20);
 
-  // kad promijenimo filter – vraćamo se na prvu stranicu
-  useEffect(() => {
-    setPage(1);
-  }, [statusFilter]);
+  // Derivirani parametri za query
+  const queryParams: InvoicesListParams = useMemo(
+    () => ({
+      year,
+      month,
+      buyer_query: buyerQuery || undefined,
+      unpaid_only: unpaidOnly || undefined,
+      page,
+      page_size: pageSize,
+    }),
+    [year, month, buyerQuery, unpaidOnly, page, pageSize],
+  );
 
   const {
     data,
@@ -45,346 +61,324 @@ export default function InvoicesListPage() {
     isError,
     error,
     refetch,
-    isRefetching,
-  } = useQuery({
-    queryKey: ["invoices-list", { statusFilter, page }],
-    queryFn: () =>
-      fetchInvoicesList({
-        unpaidOnly: statusFilter === "UNPAID",
-        page,
-        pageSize: PAGE_SIZE,
-      }),
+    isFetching,
+  } = useQuery<InvoiceListResponse>({
+    queryKey: ["invoices", "ui-list", queryParams],
+    queryFn: () => fetchInvoicesList(queryParams),
     keepPreviousData: true,
   });
 
-  const visibleItems: InvoiceRowItem[] = useMemo(() => {
-    if (!data) return [];
-    if (statusFilter === "ALL") return data.items;
-    if (statusFilter === "UNPAID") {
-      // već filtrirano na backu, ali za svaki slučaj filter i ovdje
-      return data.items.filter((i) => !i.is_paid);
-    }
-    // PAID – filtriramo samo u UI-u
-    return data.items.filter((i) => i.is_paid);
-  }, [data, statusFilter]);
-
   const total = data?.total ?? 0;
-  const totalPages = total > 0 ? Math.max(1, Math.ceil(total / PAGE_SIZE)) : 1;
+  const items = data?.items ?? [];
 
-  const fromIndex =
-    total === 0 ? 0 : (page - 1) * PAGE_SIZE + (visibleItems.length > 0 ? 1 : 0);
-  const toIndex =
-    total === 0
-      ? 0
-      : (page - 1) * PAGE_SIZE + (visibleItems.length || 0);
+  const totalPages = useMemo(() => {
+    if (!total) return 1;
+    return Math.max(1, Math.ceil(total / pageSize));
+  }, [total, pageSize]);
 
-  function goToPage(p: number) {
-    if (p < 1 || (data && p > totalPages)) return;
-    setPage(p);
-  }
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
 
-  function renderPageNumbers() {
-    if (!data || totalPages <= 1) return null;
+  const handleClearFilters = () => {
+    setYear(CURRENT_YEAR);
+    setMonth(undefined);
+    setBuyerQuery("");
+    setUnpaidOnly(false);
+    setPage(1);
+  };
 
-    const items: JSX.Element[] = [];
-
-    const pushPage = (p: number) => {
-      items.push(
-        <button
-          key={p}
-          type="button"
-          onClick={() => goToPage(p)}
-          className={[
-            "min-w-[32px] px-2 py-1 rounded-md border text-xs font-medium",
-            p === page
-              ? "bg-slate-900 text-white border-slate-900"
-              : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50",
-          ].join(" ")}
-        >
-          {p}
-        </button>,
-      );
-    };
-
-    if (totalPages <= 7) {
-      for (let p = 1; p <= totalPages; p += 1) {
-        pushPage(p);
-      }
-    } else {
-      pushPage(1);
-
-      const start = Math.max(2, page - 1);
-      const end = Math.min(totalPages - 1, page + 1);
-
-      if (start > 2) {
-        items.push(
-          <span
-            key="start-ellipsis"
-            className="px-1 text-xs text-slate-500"
-          >
-            …
-          </span>,
-        );
-      }
-
-      for (let p = start; p <= end; p += 1) {
-        pushPage(p);
-      }
-
-      if (end < totalPages - 1) {
-        items.push(
-          <span
-            key="end-ellipsis"
-            className="px-1 text-xs text-slate-500"
-          >
-            …
-          </span>,
-        );
-      }
-
-      pushPage(totalPages);
+  const handleMarkPaid = async (invoice: InvoiceRowItem) => {
+    if (!window.confirm(`Označiti fakturu ${invoice.number ?? `#${invoice.id}`} kao plaćenu?`)) {
+      return;
     }
 
-    return items;
-  }
-
-  async function handleMarkPaid(inv: InvoiceRowItem) {
-    if (inv.is_paid) return;
-    if (markingId !== null) return;
-
-    setActionError("");
-    setMarkingId(inv.id);
     try {
-      await markInvoicePaid(inv.id);
+      await markInvoicePaid(invoice.id);
+      // Osvježimo listu i eventualne keširane detalje
       await refetch();
+      queryClient.invalidateQueries({ queryKey: ["invoice-detail", invoice.id] });
     } catch (err) {
-      console.error("Greška pri markInvoicePaid:", err);
-      const anyErr = err as any;
-      const backendDetail =
-        anyErr?.response?.data?.detail ||
-        anyErr?.response?.data?.message ||
-        anyErr?.message ||
-        "Nepoznata greška";
-
-      setActionError(
-        `Greška pri označavanju fakture ${
-          inv.number ?? `#${inv.id}`
-        } kao plaćene: ${backendDetail}`,
-      );
-    } finally {
-      setMarkingId(null);
+      console.error(err);
+      alert("Greška pri označavanju fakture kao plaćene.");
     }
-  }
+  };
+
+  const handleExport = async () => {
+    try {
+      const blob = await exportInvoicesExcel(queryParams);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "invoices-export.csv";
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error(err);
+      alert("Greška pri eksportu faktura.");
+    }
+  };
 
   return (
-    <div className="space-y-4">
-      {/* Header + dugmad */}
-      <div className="flex items-center justify-between gap-3">
+    <div className="space-y-5">
+      {/* Header */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-slate-800">
             Izlazne fakture
           </h2>
           <p className="text-xs text-slate-500 mt-1">
-            Pregled svih izlaznih faktura za tenant{" "}
-            <span className="font-mono">t-demo</span>.
+            Pregled, filtriranje, označavanje plaćenih faktura i export u Excel.
           </p>
         </div>
 
-        <div className="flex items-center gap-2">
-          <Link
-            to="/invoices/new"
-            className="inline-flex items-center rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-700"
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={handleExport}
+            className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50"
           >
-            + Nova izlazna faktura
-          </Link>
+            Export (Excel)
+          </button>
 
           <button
             type="button"
-            onClick={() => refetch()}
-            className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-60"
-            disabled={isLoading || isRefetching}
+            onClick={() => navigate("/invoices/new")}
+            className="btn-primary text-xs px-4 py-1.5"
           >
-            {isRefetching || isLoading ? "Osvježavam..." : "Osvježi listu"}
+            + Nova faktura
           </button>
         </div>
       </div>
 
-      {/* Filter statusa */}
-      <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="text-slate-500">Filter status:</span>
-        <button
-          type="button"
-          onClick={() => setStatusFilter("ALL")}
-          className={[
-            "rounded-full px-3 py-1 border text-xs",
-            statusFilter === "ALL"
-              ? "bg-slate-900 text-white border-slate-900"
-              : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50",
-          ].join(" ")}
-        >
-          Sve
-        </button>
-        <button
-          type="button"
-          onClick={() => setStatusFilter("UNPAID")}
-          className={[
-            "rounded-full px-3 py-1 border text-xs",
-            statusFilter === "UNPAID"
-              ? "bg-amber-500 text-white border-amber-500"
-              : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50",
-          ].join(" ")}
-        >
-          Neplaćene
-        </button>
-        <button
-          type="button"
-          onClick={() => setStatusFilter("PAID")}
-          className={[
-            "rounded-full px-3 py-1 border text-xs",
-            statusFilter === "PAID"
-              ? "bg-emerald-600 text-white border-emerald-600"
-              : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50",
-          ].join(" ")}
-        >
-          Plaćene
-        </button>
-      </div>
-
-      {isLoading && (
-        <p className="text-sm text-slate-600">Učitavam fakture...</p>
-      )}
-
-      {isError && (
-        <p className="text-sm text-red-600">
-          Greška pri učitavanju faktura:{" "}
-          {error instanceof Error ? error.message : "Nepoznata greška"}
-        </p>
-      )}
-
-      {actionError && (
-        <p className="text-xs text-red-600">{actionError}</p>
-      )}
-
-      {!!data && total === 0 && (
-        <p className="text-sm text-slate-500">
-          Trenutno nema nijedne izlazne fakture.
-        </p>
-      )}
-
-      {!!data && total > 0 && visibleItems.length === 0 && (
-        <p className="text-sm text-slate-500">
-          Nema faktura za odabrani filter.
-        </p>
-      )}
-
-      {!!data && visibleItems.length > 0 && (
-        <div className="rounded-xl border border-slate-200 bg-white shadow-sm flex flex-col">
-          {/* Info traka iznad tabele */}
-          <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 text-[11px] text-slate-500">
-            <span>
-              Ukupno faktura:{" "}
-              <span className="font-mono font-semibold text-slate-700">
-                {total}
+      {/* Filteri */}
+      <section className="bg-white border border-slate-200 rounded-lg shadow-sm p-4 space-y-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-slate-700">
+            Filteri
+          </h3>
+          <div className="flex items-center gap-2 text-[11px] text-slate-500">
+            {isFetching ? (
+              <span>Osvježavam listu…</span>
+            ) : (
+              <span>
+                Pronađeno:{" "}
+                <span className="font-semibold text-slate-700">
+                  {total}
+                </span>{" "}
+                faktura
               </span>
-              {statusFilter !== "ALL" && (
-                <>
-                  {" "}
-                  • prikazano na ovoj stranici:{" "}
-                  <span className="font-mono text-slate-700">
-                    {visibleItems.length}
-                  </span>
-                </>
-              )}
-            </span>
-            <span className="hidden sm:inline">
-              Na svakoj stranici se prikazuje do{" "}
-              <span className="font-mono">{PAGE_SIZE}</span> faktura. Koristi
-              skrol unutar liste za pregled.
-            </span>
+            )}
+            <button
+              type="button"
+              onClick={handleClearFilters}
+              className="underline underline-offset-2 hover:text-slate-700"
+            >
+              Reset filtera
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-[0.7fr,0.7fr,1.2fr,auto] gap-3 items-end">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-slate-700">
+              Godina
+            </label>
+            <select
+              value={year ?? ""}
+              onChange={(e) =>
+                setYear(
+                  e.target.value === ""
+                    ? undefined
+                    : Number(e.target.value),
+                )
+              }
+              className="input"
+            >
+              <option value="">Sve godine</option>
+              {/* Možeš po potrebi proširiti listu godina */}
+              <option value={CURRENT_YEAR}>{CURRENT_YEAR}</option>
+              <option value={CURRENT_YEAR - 1}>{CURRENT_YEAR - 1}</option>
+              <option value={CURRENT_YEAR - 2}>{CURRENT_YEAR - 2}</option>
+            </select>
           </div>
 
-          {/* Scroll kontejner za tabelu */}
-          <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-slate-700">
+              Mjesec
+            </label>
+            <select
+              value={month ?? ""}
+              onChange={(e) =>
+                setMonth(
+                  e.target.value === ""
+                    ? undefined
+                    : Number(e.target.value),
+                )
+              }
+              className="input"
+            >
+              <option value="">Svi mjeseci</option>
+              <option value="1">Januar</option>
+              <option value="2">Februar</option>
+              <option value="3">Mart</option>
+              <option value="4">April</option>
+              <option value="5">Maj</option>
+              <option value="6">Juni</option>
+              <option value="7">Juli</option>
+              <option value="8">Avgust</option>
+              <option value="9">Septembar</option>
+              <option value="10">Oktobar</option>
+              <option value="11">Novembar</option>
+              <option value="12">Decembar</option>
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs font-medium text-slate-700">
+              Kupac (pretraga po nazivu)
+            </label>
+            <input
+              type="text"
+              value={buyerQuery}
+              onChange={(e) => {
+                setBuyerQuery(e.target.value);
+                setPage(1);
+              }}
+              className="input"
+              placeholder="npr. 'Frizer', 'Kafic', 'SP Primjer'"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <input
+              id="unpaid-only"
+              type="checkbox"
+              checked={unpaidOnly}
+              onChange={(e) => {
+                setUnpaidOnly(e.target.checked);
+                setPage(1);
+              }}
+              className="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+            />
+            <label
+              htmlFor="unpaid-only"
+              className="text-xs font-medium text-slate-700"
+            >
+              Samo neplaćene
+            </label>
+          </div>
+        </div>
+      </section>
+
+      {/* Tabela */}
+      <section className="bg-white border border-slate-200 rounded-lg shadow-sm">
+        {isLoading && (
+          <div className="p-4 text-sm text-slate-600">
+            Učitavam fakture...
+          </div>
+        )}
+
+        {isError && (
+          <div className="p-4 text-sm text-red-600">
+            Greška pri učitavanju faktura:{" "}
+            {error instanceof Error ? error.message : "Nepoznata greška"}
+          </div>
+        )}
+
+        {!isLoading && !isError && items.length === 0 && (
+          <div className="p-4 text-sm text-slate-500">
+            Nema faktura za zadate filtere.
+          </div>
+        )}
+
+        {!isLoading && !isError && items.length > 0 && (
+          <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
-              <thead className="bg-slate-50 text-slate-500 sticky top-0 z-10">
+              <thead className="bg-slate-50 text-slate-500">
                 <tr>
-                  <th className="px-3 py-2 text-left font-medium">Broj</th>
-                  <th className="px-3 py-2 text-left font-medium">Kupac</th>
-                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
-                    Datum izdavanja
+                  <th className="px-3 py-2 text-left font-medium">
+                    Broj
                   </th>
-                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
+                  <th className="px-3 py-2 text-left font-medium">
+                    Kupac
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium">
+                    Datum
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium">
                     Rok plaćanja
                   </th>
                   <th className="px-3 py-2 text-right font-medium">
-                    Iznos
+                    Iznos (sa PDV)
                   </th>
                   <th className="px-3 py-2 text-center font-medium">
-                    Plaćena
+                    Status
                   </th>
-                  <th className="px-3 py-2 text-center font-medium">
+                  <th className="px-3 py-2 text-right font-medium">
                     Akcije
                   </th>
                 </tr>
               </thead>
-
               <tbody className="divide-y divide-slate-100 text-slate-700">
-                {visibleItems.map((inv: InvoiceRowItem) => (
-                  <tr key={inv.id}>
-                    <td className="px-3 py-2 font-mono text-xs">
+                {items.map((invoice) => (
+                  <tr key={invoice.id} className="hover:bg-slate-50">
+                    <td className="px-3 py-2">
                       <Link
-                        to={`/invoices/${inv.id}`}
-                        state={{ invoice: inv }}
-                        className="text-slate-800 hover:text-slate-900 hover:underline underline-offset-2"
+                        to={`/invoices/${invoice.id}`}
+                        state={{ invoice }}
+                        className="text-slate-800 hover:underline"
                       >
-                        {inv.number ?? "-"}
+                        {invoice.number ?? `#${invoice.id}`}
                       </Link>
                     </td>
                     <td className="px-3 py-2">
-                      {inv.buyer_name ?? (
-                        <span className="text-slate-400">-</span>
+                      {invoice.buyer_name || (
+                        <span className="text-slate-400">
+                          Nepoznat kupac
+                        </span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-xs">
-                      {formatDate(inv.issue_date)}
+                    <td className="px-3 py-2">
+                      {formatDate(invoice.issue_date)}
                     </td>
-                    <td className="px-3 py-2 text-xs">
-                      {formatDate(inv.due_date)}
+                    <td className="px-3 py-2">
+                      {formatDate(invoice.due_date)}
                     </td>
-                    <td className="px-3 py-2 text-right font-medium">
-                      {formatAmount(inv.total_amount)}
+                    <td className="px-3 py-2 text-right font-mono">
+                      {formatAmount(invoice.total_amount)}
                     </td>
                     <td className="px-3 py-2 text-center">
-                      {inv.is_paid ? (
+                      {invoice.is_paid ? (
                         <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
-                          DA
+                          PLAĆENA
                         </span>
                       ) : (
                         <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
-                          NE
+                          NIJE PLAĆENA
                         </span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-center">
-                      <div className="flex items-center justify-center gap-2">
+                    <td className="px-3 py-2 text-right">
+                      <div className="flex items-center justify-end gap-2">
                         <Link
-                          to={`/invoices/${inv.id}`}
-                          state={{ invoice: inv }}
-                          className="inline-flex items-center rounded-md border border-slate-300 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                          to={`/invoices/${invoice.id}`}
+                          state={{ invoice }}
+                          className="text-[11px] text-slate-700 underline underline-offset-2 hover:text-slate-900"
                         >
                           Detalji
                         </Link>
-
-                        {!inv.is_paid && (
+                        {!invoice.is_paid && (
                           <button
                             type="button"
-                            onClick={() => handleMarkPaid(inv)}
-                            disabled={markingId === inv.id}
-                            className="inline-flex items-center rounded-md bg-emerald-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-emerald-700 disabled:opacity-60"
+                            onClick={() => handleMarkPaid(invoice)}
+                            className="text-[11px] text-emerald-700 underline underline-offset-2 hover:text-emerald-900"
                           >
-                            {markingId === inv.id
-                              ? "Označavam..."
-                              : "Označi kao plaćenu"}
+                            Označi plaćenu
                           </button>
                         )}
                       </div>
@@ -394,53 +388,44 @@ export default function InvoicesListPage() {
               </tbody>
             </table>
           </div>
+        )}
 
-          {/* Paginacija dole */}
-          {data && total > 0 && (
-            <div className="flex items-center justify-between px-3 py-2 border-t border-slate-100 text-[11px] text-slate-600">
-              <div>
-                {fromIndex > 0 && toIndex > 0 ? (
-                  <>
-                    Prikaz{" "}
-                    <span className="font-mono">
-                      {fromIndex}–{toIndex}
-                    </span>{" "}
-                    od{" "}
-                    <span className="font-mono">
-                      {total}
-                    </span>{" "}
-                    faktura.
-                  </>
-                ) : (
-                  <>Nema faktura za prikaz.</>
-                )}
-              </div>
-
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => goToPage(page - 1)}
-                  disabled={page <= 1}
-                  className="px-2 py-1 rounded-md border border-slate-300 bg-white text-xs text-slate-700 disabled:opacity-50 hover:bg-slate-50"
-                >
-                  ◀
-                </button>
-
-                {renderPageNumbers()}
-
-                <button
-                  type="button"
-                  onClick={() => goToPage(page + 1)}
-                  disabled={page >= totalPages}
-                  className="px-2 py-1 rounded-md border border-slate-300 bg-white text-xs text-slate-700 disabled:opacity-50 hover:bg-slate-50"
-                >
-                  ▶
-                </button>
-              </div>
+        {/* Paginacija */}
+        {!isLoading && !isError && totalPages > 1 && (
+          <div className="flex items-center justify-between px-4 py-2 border-t border-slate-100 text-xs text-slate-600">
+            <div>
+              Stranica{" "}
+              <span className="font-semibold">
+                {page}
+              </span>{" "}
+              od{" "}
+              <span className="font-semibold">
+                {totalPages}
+              </span>
             </div>
-          )}
-        </div>
-      )}
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => Math.max(1, p - 1))}
+                className="px-2 py-1 rounded-md border border-slate-300 bg-white disabled:opacity-40 hover:bg-slate-50"
+              >
+                ← Nazad
+              </button>
+              <button
+                type="button"
+                disabled={page >= totalPages}
+                onClick={() =>
+                  setPage((p) => Math.min(totalPages, p + 1))
+                }
+                className="px-2 py-1 rounded-md border border-slate-300 bg-white disabled:opacity-40 hover:bg-slate-50"
+              >
+                Naprijed →
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
     </div>
   );
 }

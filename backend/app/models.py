@@ -127,6 +127,9 @@ class Invoice(Base):
     buyer_name = Column(String(128), nullable=False)
     buyer_address = Column(String(256), nullable=True)
 
+    # Napomena na fakturi (opcionalno)
+    note = Column(Text, nullable=True)
+
     # Sume – server izračunava
     total_base = Column(Numeric(14, 2), nullable=False, default=0)
     total_vat = Column(Numeric(14, 2), nullable=False, default=0)

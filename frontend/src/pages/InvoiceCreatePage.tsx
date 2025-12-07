@@ -4,7 +4,10 @@ import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
 import { createInvoice, fetchInvoicesList } from "../services/invoicesApi";
-import type { InvoiceListResponse, InvoiceCreatePayload } from "../types/invoice";
+import type {
+  InvoiceListResponse,
+  InvoiceCreatePayload,
+} from "../types/invoice";
 
 type InvoiceItem = {
   description: string;
@@ -34,7 +37,9 @@ export default function InvoiceCreatePage() {
   const navigate = useNavigate();
 
   // Osnovni podaci o fakturi
-  const [issueDate, setIssueDate] = useState<string>(() => getTodayAsDateString());
+  const [issueDate, setIssueDate] = useState<string>(() =>
+    getTodayAsDateString(),
+  );
   const [dueDate, setDueDate] = useState<string>(() =>
     addDays(getTodayAsDateString(), 7),
   );
