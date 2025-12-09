@@ -1,3 +1,4 @@
+# /home/miso/dev/sp-app/sp-app/backend/app/schemas/input_invoice.py
 from __future__ import annotations
 
 from datetime import date, datetime
@@ -51,13 +52,47 @@ class InputInvoiceBase(BaseModel):
         max_length=64,
         description="Broj ulazne fakture kod dobavljača.",
     )
+
+    # Datum dokumenta (računa)
     issue_date: date = Field(
         ...,
         description="Datum izdavanja ulazne fakture (YYYY-MM-DD).",
     )
+
+    # Datum knjiženja – može biti jednak datumu dokumenta, ali može biti i različit
+    posting_date: Optional[date] = Field(
+        None,
+        description=(
+            "Datum knjiženja u evidenciji (YYYY-MM-DD). "
+            "Ako nije eksplicitno zadat, backend ga može postaviti na datum dokumenta."
+        ),
+    )
+
+    # Rok dospijeća
     due_date: Optional[date] = Field(
         None,
         description="Rok dospijeća (opcionalno).",
+    )
+
+    # Kategorija troška – gorivo, kancelarija, usluge, itd.
+    expense_category: Optional[str] = Field(
+        None,
+        max_length=64,
+        description="Kategorija troška (gorivo, kancelarija, usluge, itd.).",
+    )
+
+    # Da li se rashod priznaje za porez
+    is_tax_deductible: bool = Field(
+        default=True,
+        description=(
+            "Da li se rashod priznaje za porez (true = priznat rashod, false = nepriznat)."
+        ),
+    )
+
+    # Status plaćanja – False = nije plaćeno, True = plaćeno
+    is_paid: bool = Field(
+        default=False,
+        description="Status plaćanja (true = plaćeno, false = nije plaćeno).",
     )
 
     total_base: Decimal = Field(
@@ -111,7 +146,11 @@ class InputInvoiceCreate(InputInvoiceBase):
                 "supplier_address": "Kralja Petra I Karađorđevića 15, Banja Luka",
                 "invoice_number": "2025-INV-001",
                 "issue_date": "2025-11-01",
+                "posting_date": "2025-11-01",
                 "due_date": "2025-11-15",
+                "expense_category": "Komunalije",
+                "is_tax_deductible": True,
+                "is_paid": False,
                 "total_base": "100.00",
                 "total_vat": "17.00",
                 "total_amount": "117.00",
@@ -143,6 +182,9 @@ class InputInvoiceUpdate(BaseModel):
             "example": {
                 "supplier_name": "Elektrodistribucija Banja Luka",
                 "due_date": "2025-11-20",
+                "expense_category": "Komunalije",
+                "is_tax_deductible": True,
+                "is_paid": True,
                 "note": "Ispravka roka dospijeća i dopuna napomene.",
             }
         },
@@ -175,9 +217,29 @@ class InputInvoiceUpdate(BaseModel):
         None,
         description="Novi datum izdavanja ulazne fakture (YYYY-MM-DD, opcionalno).",
     )
+    posting_date: Optional[date] = Field(
+        None,
+        description="Novi datum knjiženja (YYYY-MM-DD, opcionalno).",
+    )
     due_date: Optional[date] = Field(
         None,
         description="Novi rok dospijeća (opcionalno).",
+    )
+
+    expense_category: Optional[str] = Field(
+        None,
+        max_length=64,
+        description="Kategorija troška (ako se ažurira).",
+    )
+
+    is_tax_deductible: Optional[bool] = Field(
+        None,
+        description="Da li se rashod priznaje za porez (ako se mijenja).",
+    )
+
+    is_paid: Optional[bool] = Field(
+        None,
+        description="Status plaćanja (ako se mijenja).",
     )
 
     total_base: Optional[Decimal] = Field(
@@ -247,6 +309,7 @@ class InputInvoiceRowItem(BaseModel):
     - osnovne informacije o dobavljaču,
     - broj i datumi fakture,
     - zbirni iznosi,
+    - status plaćanja i priznat rashod,
     - valuta i vrijeme kreiranja.
     """
 
@@ -256,11 +319,30 @@ class InputInvoiceRowItem(BaseModel):
     tenant_code: str = Field(..., description="Tenant kod kojem faktura pripada.")
     supplier_name: str = Field(..., description="Naziv dobavljača.")
     invoice_number: str = Field(..., description="Broj ulazne fakture.")
+
     issue_date: date = Field(..., description="Datum izdavanja ulazne fakture.")
     due_date: Optional[date] = Field(
         None,
         description="Rok dospijeća (ako je poznat).",
     )
+    posting_date: Optional[date] = Field(
+        None,
+        description="Datum knjiženja (ako je poznat).",
+    )
+
+    expense_category: Optional[str] = Field(
+        None,
+        description="Kategorija troška (gorivo, kancelarija, usluge, itd.).",
+    )
+    is_tax_deductible: bool = Field(
+        ...,
+        description="Da li se rashod priznaje za porez.",
+    )
+    is_paid: bool = Field(
+        ...,
+        description="Status plaćanja (true = plaćeno, false = nije plaćeno).",
+    )
+
     total_base: Decimal = Field(..., description="Osnovica bez PDV-a.")
     total_vat: Decimal = Field(..., description="Iznos PDV-a.")
     total_amount: Decimal = Field(..., description="Ukupan iznos sa PDV-om.")
@@ -293,6 +375,10 @@ class InputInvoiceListResponse(BaseModel):
                         "invoice_number": "2025-INV-001",
                         "issue_date": "2025-11-01",
                         "due_date": "2025-11-15",
+                        "posting_date": "2025-11-01",
+                        "expense_category": "Komunalije",
+                        "is_tax_deductible": True,
+                        "is_paid": False,
                         "total_base": "100.00",
                         "total_vat": "17.00",
                         "total_amount": "117.00",
@@ -306,6 +392,10 @@ class InputInvoiceListResponse(BaseModel):
                         "invoice_number": "2025-INV-002",
                         "issue_date": "2025-11-05",
                         "due_date": "2025-11-20",
+                        "posting_date": "2025-11-05",
+                        "expense_category": "Telekom usluge",
+                        "is_tax_deductible": True,
+                        "is_paid": True,
                         "total_base": "50.00",
                         "total_vat": "8.50",
                         "total_amount": "58.50",
@@ -320,7 +410,7 @@ class InputInvoiceListResponse(BaseModel):
     total: int = Field(
         ...,
         ge=0,
-        description="Ukupan broj ulaznih faktura koje zadovoljavaju aktivne filtere.",
+        description="Ukupan broj ulaznih faktura koje zadovoljavaju aktive filtere.",
     )
     items: List[InputInvoiceRowItem] = Field(
         ...,

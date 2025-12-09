@@ -13,6 +13,7 @@ export interface FetchInputInvoicesListOptions {
   year?: number;
   month?: number;
   supplierName?: string;
+  expenseCategory?: string;
   limit?: number;
   offset?: number;
 }
@@ -25,9 +26,16 @@ export interface InputInvoiceCreatePayload {
   supplier_name: string;
   supplier_tax_id?: string | null;
   supplier_address?: string | null;
+
   invoice_number: string;
   issue_date: string; // YYYY-MM-DD
+  posting_date?: string | null; // može biti null
   due_date: string | null; // može biti null
+
+  expense_category?: string | null;
+  is_tax_deductible: boolean;
+  is_paid: boolean;
+
   total_base: number;
   total_vat: number;
   total_amount: number;
@@ -46,7 +54,12 @@ export interface InputInvoiceUpdatePayload {
 
   invoice_number?: string;
   issue_date?: string;
+  posting_date?: string | null;
   due_date?: string | null;
+
+  expense_category?: string | null;
+  is_tax_deductible?: boolean;
+  is_paid?: boolean;
 
   total_base?: number;
   total_vat?: number;
@@ -66,10 +79,23 @@ function mapInputInvoiceListItem(raw: any): InputInvoiceListItem {
     supplier_name: raw.supplier_name ?? null,
     issue_date: raw.issue_date ?? null,
     due_date: raw.due_date ?? null,
-    received_date: (raw as any).received_date ?? null,
+    posting_date: raw.posting_date ?? null,
     total_amount:
       raw.total_amount != null ? Number(raw.total_amount) : null,
     currency: raw.currency ?? null,
+    expense_category: raw.expense_category ?? null,
+    is_tax_deductible:
+      typeof raw.is_tax_deductible === "boolean"
+        ? raw.is_tax_deductible
+        : raw.is_tax_deductible != null
+        ? Boolean(raw.is_tax_deductible)
+        : null,
+    is_paid:
+      typeof raw.is_paid === "boolean"
+        ? raw.is_paid
+        : raw.is_paid != null
+        ? Boolean(raw.is_paid)
+        : null,
   };
 }
 
@@ -85,7 +111,15 @@ function mapInputInvoiceDetail(r: any): InputInvoiceDetail {
     supplier_address: r.supplier_address ?? null,
     invoice_number: r.invoice_number,
     issue_date: r.issue_date,
+    posting_date: r.posting_date ?? null,
     due_date: r.due_date ?? null,
+    expense_category: r.expense_category ?? null,
+    is_tax_deductible:
+      typeof r.is_tax_deductible === "boolean"
+        ? r.is_tax_deductible
+        : Boolean(r.is_tax_deductible),
+    is_paid:
+      typeof r.is_paid === "boolean" ? r.is_paid : Boolean(r.is_paid),
     total_base:
       r.total_base != null ? Number(r.total_base) : 0,
     total_vat:
@@ -113,6 +147,7 @@ export async function fetchInputInvoicesList(
       year: options.year,
       month: options.month,
       supplier_name: options.supplierName || undefined,
+      expense_category: options.expenseCategory || undefined,
       limit: options.limit,
       offset: options.offset,
     },
@@ -146,13 +181,17 @@ export async function fetchInputInvoices(
 export async function createInputInvoice(
   payload: InputInvoiceCreatePayload,
 ): Promise<InputInvoiceDetail> {
-  const body = {
+  const body: Record<string, unknown> = {
     supplier_name: payload.supplier_name,
     supplier_tax_id: payload.supplier_tax_id ?? null,
     supplier_address: payload.supplier_address ?? null,
     invoice_number: payload.invoice_number,
     issue_date: payload.issue_date,
+    posting_date: payload.posting_date ?? null,
     due_date: payload.due_date,
+    expense_category: payload.expense_category ?? null,
+    is_tax_deductible: payload.is_tax_deductible,
+    is_paid: payload.is_paid,
     total_base: payload.total_base,
     total_vat: payload.total_vat,
     total_amount: payload.total_amount,
@@ -201,8 +240,21 @@ export async function updateInputInvoice(
   if (payload.issue_date !== undefined) {
     body.issue_date = payload.issue_date;
   }
+  if (payload.posting_date !== undefined) {
+    body.posting_date = payload.posting_date;
+  }
   if (payload.due_date !== undefined) {
     body.due_date = payload.due_date;
+  }
+
+  if (payload.expense_category !== undefined) {
+    body.expense_category = payload.expense_category;
+  }
+  if (payload.is_tax_deductible !== undefined) {
+    body.is_tax_deductible = payload.is_tax_deductible;
+  }
+  if (payload.is_paid !== undefined) {
+    body.is_paid = payload.is_paid;
   }
 
   if (payload.total_base !== undefined) {

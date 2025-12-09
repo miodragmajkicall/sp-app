@@ -1,3 +1,4 @@
+# /home/miso/dev/sp-app/sp-app/backend/app/models.py
 from __future__ import annotations
 
 from datetime import date
@@ -289,8 +290,24 @@ class InputInvoice(Base):
     supplier_address = Column(String(256), nullable=True)
 
     invoice_number = Column(String(64), nullable=False)
+
+    # Datum dokumenta (računa)
     issue_date = Column(Date, nullable=False)
+
+    # Rok dospijeća
     due_date = Column(Date, nullable=True)
+
+    # Datum knjiženja (poseban od datuma dokumenta)
+    posting_date = Column(Date, nullable=True)
+
+    # Kategorija troška – gorivo, kancelarija, usluge, itd.
+    expense_category = Column(String(64), nullable=True)
+
+    # Da li se rashod priznaje za porez
+    is_tax_deductible = Column(Boolean, nullable=False, default=True)
+
+    # Status plaćanja – False = nije plaćeno, True = plaćeno
+    is_paid = Column(Boolean, nullable=False, default=False)
 
     total_base = Column(Numeric(14, 2), nullable=False, default=0)
     total_vat = Column(Numeric(14, 2), nullable=False, default=0)
@@ -359,9 +376,7 @@ class TaxMonthlyResult(Base):
     is_final = Column(Boolean, nullable=False, default=True)
 
     created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
     __table_args__ = (
@@ -410,9 +425,7 @@ class TaxYearlyResult(Base):
     is_final = Column(Boolean, nullable=False, default=True)
 
     created_at = Column(
-        DateTime(timezone=True),
-        nullable=False,
-        server_default=func.now(),
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
     __table_args__ = (

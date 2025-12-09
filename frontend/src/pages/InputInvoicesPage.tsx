@@ -48,6 +48,17 @@ function formatBytes(size?: number | null): string {
 const CURRENT_YEAR = new Date().getFullYear();
 const CURRENT_MONTH = new Date().getMonth() + 1;
 
+// Standardne kategorije troškova za dropdown (Basic lista)
+const EXPENSE_CATEGORY_OPTIONS = [
+  "",
+  "Gorivo",
+  "Kancelarijski materijal",
+  "Komunalije",
+  "Telekom usluge",
+  "Usluge trećih lica",
+  "Ostali troškovi",
+];
+
 export default function InputInvoicesPage() {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -55,6 +66,8 @@ export default function InputInvoicesPage() {
   const [year, setYear] = useState<number | undefined>(CURRENT_YEAR);
   const [month, setMonth] = useState<number | undefined>(CURRENT_MONTH);
   const [supplierFilter, setSupplierFilter] = useState<string>("");
+  const [expenseCategoryFilter, setExpenseCategoryFilter] =
+    useState<string>("");
 
   // za biranje na koju fakturu vežemo attachment:
   const [attachmentTargetInvoice, setAttachmentTargetInvoice] = useState<
@@ -69,12 +82,16 @@ export default function InputInvoicesPage() {
     refetch,
     isRefetching,
   } = useQuery<InputInvoiceListResponse, Error>({
-    queryKey: ["input-invoices", { year, month, supplierFilter }],
+    queryKey: [
+      "input-invoices",
+      { year, month, supplierFilter, expenseCategoryFilter },
+    ],
     queryFn: () =>
       fetchInputInvoicesList({
         year,
         month,
         supplierName: supplierFilter || undefined,
+        expenseCategory: expenseCategoryFilter || undefined,
       }),
   });
 
@@ -173,7 +190,7 @@ export default function InputInvoicesPage() {
           <p className="mt-1 text-xs text-slate-500">
             Troškovi / ulazne fakture za tenant{" "}
             <span className="font-mono">t-demo</span>. Lista je filtrirana po
-            godini, mjesecu i dobavljaču.
+            godini, mjesecu, dobavljaču i kategoriji troška.
           </p>
           <p className="mt-0.5 text-[11px] text-slate-400">
             Ukupno zapisa (prema filterima):{" "}
@@ -280,6 +297,24 @@ export default function InputInvoicesPage() {
                 className="mt-1 w-48 rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 placeholder:text-slate-300 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
               />
             </div>
+
+            {/* EXPENSE CATEGORY */}
+            <div>
+              <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                Kategorija troška
+              </label>
+              <select
+                value={expenseCategoryFilter}
+                onChange={(e) => setExpenseCategoryFilter(e.target.value)}
+                className="mt-1 w-44 rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              >
+                {EXPENSE_CATEGORY_OPTIONS.map((opt) => (
+                  <option key={opt || "all"} value={opt}>
+                    {opt === "" ? "Sve kategorije" : opt}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
 
           <div className="flex gap-2">
@@ -289,6 +324,7 @@ export default function InputInvoicesPage() {
                 setYear(CURRENT_YEAR);
                 setMonth(CURRENT_MONTH);
                 setSupplierFilter("");
+                setExpenseCategoryFilter("");
               }}
               className="rounded-md border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
             >
@@ -335,7 +371,19 @@ export default function InputInvoicesPage() {
                       Datum fakture
                     </th>
                     <th className="whitespace-nowrap px-3 py-2 text-left text-xs font-medium">
+                      Datum knjiženja
+                    </th>
+                    <th className="whitespace-nowrap px-3 py-2 text-left text-xs font-medium">
                       Rok plaćanja
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium">
+                      Kategorija troška
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium">
+                      Priznat rashod
+                    </th>
+                    <th className="px-3 py-2 text-left text-xs font-medium">
+                      Status plaćanja
                     </th>
                     <th className="px-3 py-2 text-right text-xs font-medium">
                       Iznos
@@ -380,7 +428,49 @@ export default function InputInvoicesPage() {
                           navigate(`/input-invoices/${inv.id}`)
                         }
                       >
+                        {formatDate(inv.posting_date)}
+                      </td>
+                      <td
+                        className="px-3 py-2 text-xs cursor-pointer"
+                        onClick={() =>
+                          navigate(`/input-invoices/${inv.id}`)
+                        }
+                      >
                         {formatDate(inv.due_date)}
+                      </td>
+                      <td
+                        className="px-3 py-2 text-xs cursor-pointer"
+                        onClick={() =>
+                          navigate(`/input-invoices/${inv.id}`)
+                        }
+                      >
+                        {inv.expense_category ?? (
+                          <span className="text-slate-400">-</span>
+                        )}
+                      </td>
+                      <td
+                        className="px-3 py-2 text-xs cursor-pointer"
+                        onClick={() =>
+                          navigate(`/input-invoices/${inv.id}`)
+                        }
+                      >
+                        {inv.is_tax_deductible == null
+                          ? "-"
+                          : inv.is_tax_deductible
+                          ? "DA"
+                          : "NE"}
+                      </td>
+                      <td
+                        className="px-3 py-2 text-xs cursor-pointer"
+                        onClick={() =>
+                          navigate(`/input-invoices/${inv.id}`)
+                        }
+                      >
+                        {inv.is_paid == null
+                          ? "-"
+                          : inv.is_paid
+                          ? "Plaćeno"
+                          : "Nije plaćeno"}
                       </td>
                       <td
                         className="px-3 py-2 text-right text-xs font-medium cursor-pointer"

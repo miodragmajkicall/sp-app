@@ -11,6 +11,17 @@ import {
 
 const VAT_RATE = 0.17; // 17% PDV u BiH
 
+// Standardne kategorije troškova – usklađeno sa listom na stranici liste ulaznih faktura
+const EXPENSE_CATEGORY_OPTIONS = [
+  "",
+  "Gorivo",
+  "Kancelarijski materijal",
+  "Komunalije",
+  "Telekom usluge",
+  "Usluge trećih lica",
+  "Ostali troškovi",
+];
+
 export default function InputInvoiceCreatePage() {
   const navigate = useNavigate();
 
@@ -22,8 +33,14 @@ export default function InputInvoiceCreatePage() {
   // Osnovni podaci
   const [invoiceNumber, setInvoiceNumber] = useState("");
   const [issueDate, setIssueDate] = useState("");
+  const [postingDate, setPostingDate] = useState(""); // datum knjiženja
   const [dueDate, setDueDate] = useState("");
   const [currency, setCurrency] = useState("BAM");
+
+  // Kategorija troška + statusi
+  const [expenseCategory, setExpenseCategory] = useState<string>("");
+  const [isTaxDeductible, setIsTaxDeductible] = useState<boolean>(true); // podrazumijevano priznat rashod
+  const [isPaid, setIsPaid] = useState<boolean>(false); // podrazumijevano nije plaćeno
 
   // Iznosi – osnovica / ukupno (osnovica + PDV)
   const [includeVat, setIncludeVat] = useState(true);
@@ -179,11 +196,7 @@ export default function InputInvoiceCreatePage() {
     setSaving(true);
     setErrorMsg("");
 
-    if (
-      !supplierName.trim() ||
-      !invoiceNumber.trim() ||
-      !issueDate
-    ) {
+    if (!supplierName.trim() || !invoiceNumber.trim() || !issueDate) {
       setSaving(false);
       setErrorMsg(
         "Obavezna polja: dobavljač, broj fakture i datum izdavanja.",
@@ -199,6 +212,10 @@ export default function InputInvoiceCreatePage() {
       return;
     }
 
+    // Ako korisnik nije eksplicitno unio datum knjiženja, podrazumijevano koristimo datum izdavanja
+    const effectivePostingDate =
+      postingDate || issueDate || null;
+
     try {
       // 1) Kreiramo ulaznu fakturu
       const created = await createInputInvoice({
@@ -207,7 +224,11 @@ export default function InputInvoiceCreatePage() {
         supplier_address: supplierAddress.trim() || null,
         invoice_number: invoiceNumber.trim(),
         issue_date: issueDate,
+        posting_date: effectivePostingDate,
         due_date: dueDate || null,
+        expense_category: expenseCategory || null,
+        is_tax_deductible: isTaxDeductible,
+        is_paid: isPaid,
         total_base: parseFloat(totalBase.toFixed(2)),
         total_vat: parseFloat(displayVat.toFixed(2)),
         total_amount: parseFloat(totalAmount.toFixed(2)),
@@ -323,9 +344,30 @@ export default function InputInvoiceCreatePage() {
               type="date"
               required
               value={issueDate}
-              onChange={(e) => setIssueDate(e.target.value)}
+              onChange={(e) => {
+                const val = e.target.value;
+                setIssueDate(val);
+                // ako korisnik nije ručno unio datum knjiženja, podesi ga istovjetno datumu izdavanja
+                setPostingDate((prev) => (prev ? prev : val));
+              }}
               className="input"
             />
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs font-medium">
+              Datum knjiženja (opcionalno)
+            </label>
+            <input
+              type="date"
+              value={postingDate}
+              onChange={(e) => setPostingDate(e.target.value)}
+              className="input"
+            />
+            <p className="mt-0.5 text-[10px] text-slate-400">
+              Ako ostaviš prazno, koristiće se datum izdavanja kao datum
+              knjiženja.
+            </p>
           </div>
 
           <div className="space-y-1">
@@ -338,6 +380,64 @@ export default function InputInvoiceCreatePage() {
               onChange={(e) => setDueDate(e.target.value)}
               className="input"
             />
+          </div>
+        </div>
+
+        {/* Kategorija troška + statusi */}
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+          <div className="space-y-1">
+            <label className="text-xs font-medium">
+              Kategorija troška (opcionalno)
+            </label>
+            <select
+              value={expenseCategory}
+              onChange={(e) => setExpenseCategory(e.target.value)}
+              className="input"
+            >
+              {EXPENSE_CATEGORY_OPTIONS.map((opt) => (
+                <option key={opt || "all"} value={opt}>
+                  {opt === "" ? "— Bez kategorije —" : opt}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs font-medium">Priznat rashod</label>
+            <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+              <input
+                id="is-tax-deductible"
+                type="checkbox"
+                className="h-3 w-3 rounded border-slate-300 text-slate-900"
+                checked={isTaxDeductible}
+                onChange={(e) => setIsTaxDeductible(e.target.checked)}
+              />
+              <label
+                htmlFor="is-tax-deductible"
+                className="text-[11px] text-slate-700"
+              >
+                Ovaj trošak je priznati rashod u KPR / poreznoj osnovici.
+              </label>
+            </div>
+          </div>
+
+          <div className="space-y-1">
+            <label className="text-xs font-medium">Status plaćanja</label>
+            <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-700">
+              <input
+                id="is-paid"
+                type="checkbox"
+                className="h-3 w-3 rounded border-slate-300 text-slate-900"
+                checked={isPaid}
+                onChange={(e) => setIsPaid(e.target.checked)}
+              />
+              <label
+                htmlFor="is-paid"
+                className="text-[11px] text-slate-700"
+              >
+                Označi kao plaćeno (npr. već knjiženo kroz Kasa/Banku).
+              </label>
+            </div>
           </div>
         </div>
 

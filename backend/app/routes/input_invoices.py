@@ -1,3 +1,4 @@
+# /home/miso/dev/sp-app/sp-app/backend/app/routes/input_invoices.py
 from __future__ import annotations
 
 from datetime import date
@@ -78,9 +79,10 @@ def _ensure_tenant_exists(db: Session, code: str) -> None:
         "- `invoice_number` mora biti jedinstven **po dobavljaču i tenant-u**;\n"
         "- iznosi (`total_base`, `total_vat`, `total_amount`) trenutno dolaze iz klijenta "
         "(kasnije se može dodati automatski obračun);\n"
+        "- `posting_date` može biti različit od `issue_date` (datum knjiženja);\n"
         "- tenant se određuje preko `X-Tenant-Code` header-a."
     ),
-    responses={
+    responses={  # type: ignore[assignment]
         201: {
             "description": "Ulazna faktura je uspješno kreirana.",
             "content": {
@@ -93,7 +95,11 @@ def _ensure_tenant_exists(db: Session, code: str) -> None:
                         "supplier_address": "Kralja Petra I Karađorđevića 15, Banja Luka",
                         "invoice_number": "2025-INV-001",
                         "issue_date": "2025-11-01",
+                        "posting_date": "2025-11-01",
                         "due_date": "2025-11-15",
+                        "expense_category": "Komunalije",
+                        "is_tax_deductible": True,
+                        "is_paid": False,
                         "total_base": "100.00",
                         "total_vat": "17.00",
                         "total_amount": "117.00",
@@ -139,11 +145,20 @@ def create_input_invoice(
 
     - Jedinstvenost: (tenant_code, supplier_name, invoice_number)
     - Iznosi dolaze iz payload-a (za sada nema automatskog obračuna).
+    - Ako `posting_date` nije zadat, postavlja se na `issue_date`.
     """
     tenant = _require_tenant(x_tenant_code)
     _ensure_tenant_exists(db, tenant)
 
     data = payload.model_dump()
+
+    # Ako datum knjiženja nije eksplicitno postavljen, koristi datum dokumenta
+    if not data.get("posting_date") and data.get("issue_date"):
+        data["posting_date"] = data["issue_date"]
+
+    # Prazna kategorija troška se tretira kao None
+    if data.get("expense_category") == "":
+        data["expense_category"] = None
 
     obj = InputInvoice(
         tenant_code=tenant,
@@ -299,11 +314,11 @@ def list_input_invoices_slash(
     description=(
         "UI-friendly lista ulaznih faktura za tabelu:\n"
         "- vraća objekt sa `total` i `items` listom,\n"
-        "- podržava filtere `year`, `month`, `supplier_name`, `limit`, `offset`.\n\n"
+        "- podržava filtere `year`, `month`, `supplier_name`, `expense_category`, `limit`, `offset`.\n\n"
         "`total` je ukupan broj zapisa koji zadovoljavaju filtere (bez obzira na limit),\n"
         "dok `items` sadrži jednu stranicu podataka za prikaz u UI-ju."
     ),
-    responses={
+    responses={  # type: ignore[assignment]
         200: {
             "description": "Uspješno vraćena lista ulaznih faktura za UI tabelu.",
             "content": {
@@ -318,6 +333,10 @@ def list_input_invoices_slash(
                                 "invoice_number": "2025-INV-001",
                                 "issue_date": "2025-11-01",
                                 "due_date": "2025-11-15",
+                                "posting_date": "2025-11-01",
+                                "expense_category": "Komunalije",
+                                "is_tax_deductible": True,
+                                "is_paid": False,
                                 "total_base": "100.00",
                                 "total_vat": "17.00",
                                 "total_amount": "117.00",
@@ -331,6 +350,10 @@ def list_input_invoices_slash(
                                 "invoice_number": "2025-INV-002",
                                 "issue_date": "2025-11-05",
                                 "due_date": "2025-11-20",
+                                "posting_date": "2025-11-05",
+                                "expense_category": "Telekom usluge",
+                                "is_tax_deductible": True,
+                                "is_paid": True,
                                 "total_base": "50.00",
                                 "total_vat": "8.50",
                                 "total_amount": "58.50",
@@ -370,6 +393,10 @@ def list_input_invoices_ui(
         None,
         description="Prefiks naziva dobavljača (npr. 'Elektro').",
     ),
+    expense_category: Optional[str] = Query(
+        None,
+        description="Filter po kategoriji troška (npr. 'Gorivo', 'Komunalije').",
+    ),
     limit: int = Query(
         50,
         ge=1,
@@ -395,6 +422,8 @@ def list_input_invoices_ui(
         base_filters.append(func.extract("month", InputInvoice.issue_date) == month)
     if supplier_name:
         base_filters.append(InputInvoice.supplier_name.ilike(f"{supplier_name}%"))
+    if expense_category:
+        base_filters.append(InputInvoice.expense_category == expense_category)
 
     # total (bez limita/offseta)
     total_stmt = select(func.count()).select_from(InputInvoice).where(*base_filters)
@@ -426,6 +455,7 @@ def list_input_invoices_ui_slash(
     year: Optional[int] = Query(None, ge=2000, le=2100),
     month: Optional[int] = Query(None, ge=1, le=12),
     supplier_name: Optional[str] = Query(None),
+    expense_category: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
 ):
@@ -438,6 +468,7 @@ def list_input_invoices_ui_slash(
         year=year,
         month=month,
         supplier_name=supplier_name,
+        expense_category=expense_category,
         limit=limit,
         offset=offset,
     )
@@ -456,7 +487,7 @@ def list_input_invoices_ui_slash(
         "Dohvata jednu ulaznu fakturu (račun dobavljača) po njenom ID-u.\n\n"
         "Ako faktura ne postoji ili ne pripada datom tenant-u, vraća se 404."
     ),
-    responses={
+    responses={  # type: ignore[assignment]
         404: {
             "description": (
                 "Ulazna faktura nije pronađena za zadati ID/tenant kombinaciju."
@@ -508,10 +539,11 @@ def get_input_invoice(
         "Ažurira postojeću ulaznu fakturu za zadatog tenanta.\n\n"
         "Podržava djelimične izmjene preko `InputInvoiceUpdate` šeme:\n"
         "- moguće je promijeniti dobavljača, broj, iznose, datume i napomenu;\n"
+        "- moguće je promijeniti kategoriju troška, priznat rashod i status plaćanja;\n"
         "- business lock na nivou modela **blokira izmjene** za finalizovane mjesece "
         "(po `issue_date`)."
     ),
-    responses={
+    responses={  # type: ignore[assignment]
         200: {
             "description": "Ulazna faktura je uspješno ažurirana.",
         },
@@ -570,6 +602,11 @@ def update_input_invoice(
         raise HTTPException(status_code=404, detail="Input invoice not found")
 
     update_data = payload.model_dump(exclude_unset=True)
+
+    # Prazna kategorija troška se tretira kao None
+    if update_data.get("expense_category") == "":
+        update_data["expense_category"] = None
+
     for field_name, value in update_data.items():
         setattr(obj, field_name, value)
 
@@ -603,7 +640,7 @@ def update_input_invoice(
         "Ako faktura ne postoji ili ne pripada tenantu → 404.\n"
         "Ako faktura pripada finalizovanom poreznom mjesecu → 400 (business lock)."
     ),
-    responses={
+    responses={  # type: ignore[assignment]
         204: {
             "description": "Ulazna faktura je uspješno obrisana.",
         },
