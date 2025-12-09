@@ -88,6 +88,23 @@ class CashEntry(Base):
     kind = Column(String(16), nullable=False)
     amount = Column(Numeric(12, 2), nullable=False)
 
+    # Vrsta računa: 'cash' = kasa, 'bank' = tekući račun
+    account = Column(String(16), nullable=False, default="cash")
+
+    # Opciona veza na izlaznu fakturu
+    invoice_id = Column(
+        BigInteger,
+        ForeignKey("invoices.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Opciona veza na ulaznu fakturu
+    input_invoice_id = Column(
+        BigInteger,
+        ForeignKey("input_invoices.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     description = Column(Text, nullable=True)
 
     created_at = Column(
@@ -98,6 +115,10 @@ class CashEntry(Base):
         CheckConstraint(
             "kind in ('income','expense')",
             name="ck_cash_entries_kind",
+        ),
+        CheckConstraint(
+            "account in ('cash','bank')",
+            name="ck_cash_entries_account",
         ),
     )
 

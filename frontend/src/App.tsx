@@ -133,7 +133,7 @@ function App() {
                 <span className="mr-2" aria-hidden="true">
                   💰
                 </span>
-                <span>Novac</span>
+                <span>Kasa</span>
               </NavLink>
             </div>
 
@@ -267,7 +267,7 @@ function App() {
                 element={<InputInvoiceDetailPage />}
               />
 
-              {/* Novac */}
+              {/* Kasa */}
               <Route path="/cash" element={<CashPage />} />
 
               {/* KPR */}

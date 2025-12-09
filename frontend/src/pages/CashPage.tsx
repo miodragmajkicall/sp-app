@@ -1,6 +1,7 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/CashPage.tsx
 
 import React, { FormEvent, useState } from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchCashEntries,
@@ -44,6 +45,56 @@ function kindLabel(kind?: string) {
   return kind ?? "-";
 }
 
+function kindBadgeClass(kind?: string): string {
+  if (kind === "income") {
+    return "inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700";
+  }
+  if (kind === "expense") {
+    return "inline-flex items-center rounded-full bg-rose-50 px-2 py-0.5 text-[11px] font-semibold text-rose-700";
+  }
+  return "inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-600";
+}
+
+function accountLabel(account?: string): string {
+  if (account === "cash") return "KASA";
+  if (account === "bank") return "TEKUĆI RAČUN";
+  return "-";
+}
+
+function accountBadgeClass(account?: string): string {
+  if (account === "cash") {
+    return "inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700";
+  }
+  if (account === "bank") {
+    return "inline-flex items-center rounded-full bg-sky-50 px-2 py-0.5 text-[11px] font-medium text-sky-700";
+  }
+  return "inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600";
+}
+
+function linkedInvoiceCell(entry: CashEntry): React.ReactNode {
+  if (entry.invoice_id) {
+    return (
+      <Link
+        to={`/invoices/${entry.invoice_id}`}
+        className="text-xs font-medium text-slate-700 underline-offset-2 hover:underline"
+      >
+        Izlazna #{entry.invoice_id}
+      </Link>
+    );
+  }
+  if (entry.input_invoice_id) {
+    return (
+      <Link
+        to={`/input-invoices/${entry.input_invoice_id}`}
+        className="text-xs font-medium text-slate-700 underline-offset-2 hover:underline"
+      >
+        Ulazna #{entry.input_invoice_id}
+      </Link>
+    );
+  }
+  return <span className="text-xs text-slate-400">—</span>;
+}
+
 function todayIso(): string {
   return new Date().toISOString().slice(0, 10);
 }
@@ -51,20 +102,17 @@ function todayIso(): string {
 export default function CashPage() {
   const queryClient = useQueryClient();
 
-  const {
-    data,
-    isLoading,
-    isError,
-    error,
-    refetch,
-    isRefetching,
-  } = useQuery<CashEntry[], Error>({
+  const { data, isLoading, isError, error, refetch, isRefetching } = useQuery<
+    CashEntry[],
+    Error
+  >({
     queryKey: ["cash"],
     queryFn: fetchCashEntries,
   });
 
   const [entryDate, setEntryDate] = useState<string>(todayIso());
   const [kind, setKind] = useState<"income" | "expense">("income");
+  const [account, setAccount] = useState<"cash" | "bank">("cash");
   const [amount, setAmount] = useState<string>("");
   const [description, setDescription] = useState<string>("");
   const [formError, setFormError] = useState<string>("");
@@ -98,12 +146,16 @@ export default function CashPage() {
       kind,
       amount: parsed,
       note: description.trim() || null,
+      account,
+      // invoice_id / input_invoice_id za sada ne unosimo ručno u formi;
+      // backend ih može popuniti iz drugih tokova (npr. iz faktura).
     };
 
     try {
       await createEntry(payload);
       setAmount("");
       setDescription("");
+      // po defaultu ostavljamo isti datum, tip i račun (kasa/banka)
       await refetch();
     } catch (err: any) {
       const msg =
@@ -114,6 +166,15 @@ export default function CashPage() {
     }
   }
 
+  const totalCount = data?.length ?? 0;
+  const totalIncome = (data ?? [])
+    .filter((e) => e.kind === "income")
+    .reduce((sum, e) => sum + toNumber(e.amount), 0);
+  const totalExpense = (data ?? [])
+    .filter((e) => e.kind === "expense")
+    .reduce((sum, e) => sum + toNumber(e.amount), 0);
+  const net = totalIncome - totalExpense;
+
   return (
     <div className="space-y-6">
       {/* Header + forma */}
@@ -121,9 +182,36 @@ export default function CashPage() {
         <div>
           <h2 className="text-xl font-semibold text-slate-800">Kasa</h2>
           <p className="text-xs text-slate-500 mt-1">
-            Lista svih unosa u kasi za tenant{" "}
-            <span className="font-mono">t-demo</span>.
+            Evidencija svih priliva i odliva po kasi i bankovnom računu za
+            tenant{" "}
+            <span className="font-mono text-slate-700 bg-slate-100 px-1 py-0.5 rounded">
+              t-demo
+            </span>
+            . Ovi podaci ulaze u KPR i poreske obračune.
           </p>
+
+          <div className="mt-3 inline-flex flex-wrap gap-2 text-xs">
+            <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-700">
+              Ukupno unosa:{" "}
+              <span className="ml-1 font-semibold">{totalCount}</span>
+            </span>
+            <span className="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">
+              Prihodi:{" "}
+              <span className="ml-1 font-semibold">
+                {totalIncome.toFixed(2)} KM
+              </span>
+            </span>
+            <span className="inline-flex items-center rounded-full bg-rose-50 px-2 py-0.5 text-[11px] text-rose-700">
+              Rashodi:{" "}
+              <span className="ml-1 font-semibold">
+                {totalExpense.toFixed(2)} KM
+              </span>
+            </span>
+            <span className="inline-flex items-center rounded-full bg-slate-900 px-2 py-0.5 text-[11px] text-white">
+              Neto:{" "}
+              <span className="ml-1 font-semibold">{net.toFixed(2)} KM</span>
+            </span>
+          </div>
         </div>
 
         {/* Forma za novi unos */}
@@ -161,6 +249,18 @@ export default function CashPage() {
               </select>
             </label>
           </div>
+
+          <label className="text-xs text-slate-600 space-y-1">
+            Račun
+            <select
+              className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              value={account}
+              onChange={(e) => setAccount(e.target.value as "cash" | "bank")}
+            >
+              <option value="cash">KASA</option>
+              <option value="bank">TEKUĆI RAČUN</option>
+            </select>
+          </label>
 
           <label className="text-xs text-slate-600 space-y-1">
             Iznos (KM)
@@ -205,10 +305,7 @@ export default function CashPage() {
       {/* Kontrole liste */}
       <div className="flex items-center justify-between gap-3">
         <p className="text-xs text-slate-500">
-          Ukupno unosa:{" "}
-          <span className="font-semibold text-slate-700">
-            {data?.length ?? 0}
-          </span>
+          Evidencija gotovinskih i bezgotovinskih tokova (kasa / tekući račun).
         </p>
 
         <button
@@ -235,7 +332,7 @@ export default function CashPage() {
       {/* Lista zapisa */}
       {!!data && data.length === 0 && !isLoading && !isError && (
         <p className="text-sm text-slate-500">
-          Trenutno nema unosa u kasi.
+          Trenutno nema unosa u kasi/banci.
         </p>
       )}
 
@@ -247,28 +344,53 @@ export default function CashPage() {
                 <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
                   Datum
                 </th>
-                <th className="px-3 py-2 text-left font-medium">Tip</th>
+                <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
+                  Račun
+                </th>
+                <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
+                  Tip
+                </th>
                 <th className="px-3 py-2 text-left font-medium">Opis</th>
-                <th className="px-3 py-2 text-right font-medium">Iznos</th>
+                <th className="px-3 py-2 text-right font-medium whitespace-nowrap">
+                  Iznos
+                </th>
+                <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
+                  Povezana faktura
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-700">
               {data.map((entry) => {
                 const desc = entry.description ?? entry.note;
-
                 return (
                   <tr key={entry.id}>
-                    <td className="px-3 py-2 text-xs">
+                    <td className="px-3 py-2 text-xs whitespace-nowrap">
                       {formatDate(pickDate(entry))}
                     </td>
-                    <td className="px-3 py-2 text-xs">
-                      {kindLabel(entry.kind)}
+                    <td className="px-3 py-2 text-xs whitespace-nowrap">
+                      <span className={accountBadgeClass(entry.account)}>
+                        {accountLabel(entry.account)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-xs whitespace-nowrap">
+                      <span className={kindBadgeClass(entry.kind)}>
+                        {kindLabel(entry.kind)}
+                      </span>
                     </td>
                     <td className="px-3 py-2">
-                      {desc ?? <span className="text-slate-400">-</span>}
+                      {desc ? (
+                        <span className="text-xs text-slate-800">
+                          {desc}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-400">—</span>
+                      )}
                     </td>
-                    <td className="px-3 py-2 text-right font-medium">
+                    <td className="px-3 py-2 text-right font-medium whitespace-nowrap">
                       {formatAmount(entry)}
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {linkedInvoiceCell(entry)}
                     </td>
                   </tr>
                 );

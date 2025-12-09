@@ -10,6 +10,13 @@ export interface CashEntry {
   kind?: "income" | "expense" | string;
   amount?: number | string;
 
+  // vrsta računa: kasa / banka
+  account?: "cash" | "bank" | string;
+
+  // opcione veze na fakture
+  invoice_id?: number | null;
+  input_invoice_id?: number | null;
+
   // backend U ODGOVORU šalje opis kao "note",
   // ali ostavljamo i "description" radi kompatibilnosti
   note?: string | null;
