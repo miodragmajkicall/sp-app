@@ -72,10 +72,12 @@ function mapInvoiceDetail(raw: any): InvoiceDetail {
     due_date: raw.due_date ?? null,
     buyer_name: raw.buyer_name,
     buyer_address: raw.buyer_address ?? null,
+    buyer_tax_id: raw.buyer_tax_id ?? null,
     total_base: toNumberOrZero(raw.total_base),
     total_vat: toNumberOrZero(raw.total_vat),
     total_amount: toNumberOrZero(raw.total_amount),
     is_paid: Boolean(raw.is_paid),
+    note: raw.note ?? null,
     items: Array.isArray(raw.items)
       ? raw.items.map((it: any) => ({
           id: it.id,
@@ -86,6 +88,7 @@ function mapInvoiceDetail(raw: any): InvoiceDetail {
           base_amount: toNumberOrZero(it.base_amount),
           vat_amount: toNumberOrZero(it.vat_amount),
           total_amount: toNumberOrZero(it.total_amount),
+          discount_percent: toNumberOrZero(it.discount_percent),
         }))
       : [],
   };
@@ -139,8 +142,10 @@ export async function createInvoice(
     invoice_number: payload.number,
     buyer_name: payload.buyer_name,
     buyer_address: payload.buyer_address ?? null,
+    buyer_tax_id: payload.buyer_tax_id ?? null,
     issue_date: payload.issue_date,
     due_date: payload.due_date ?? null,
+    note: payload.note ?? null,
     items: payload.items,
   };
 

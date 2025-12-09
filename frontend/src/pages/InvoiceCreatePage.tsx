@@ -11,8 +11,9 @@ import type {
 
 type InvoiceItem = {
   description: string;
-  quantity: string;   // string radi kontrolisanog inputa
-  unitPrice: string;  // cijena BEZ PDV-a
+  quantity: string;        // string radi kontrolisanog inputa
+  unitPrice: string;       // cijena BEZ PDV-a
+  discountPercent: string; // popust u %
 };
 
 const VAT_RATE = 0.17; // 17%
@@ -33,6 +34,30 @@ function addDays(dateStr: string, days: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+// Jednostavni šabloni – vrijednosti možeš kasnije prilagoditi svojim realnim cijenama
+const INVOICE_TEMPLATES = [
+  {
+    id: "standard-service",
+    label: "Standardna usluga",
+    description: "Standardna usluga / usluge programiranja",
+    quantity: "1",
+    unitPrice: "100.00",
+    discountPercent: "0",
+    paymentDaysOffset: 7,
+    note: "Standardna usluga prema ugovoru.",
+  },
+  {
+    id: "monthly-flat",
+    label: "Mjesečni paušal",
+    description: "Mjesečni paušal za usluge",
+    quantity: "1",
+    unitPrice: "500.00",
+    discountPercent: "0",
+    paymentDaysOffset: 7,
+    note: "Mjesečni paušal za pružene usluge u toku mjeseca.",
+  },
+] as const;
+
 export default function InvoiceCreatePage() {
   const navigate = useNavigate();
 
@@ -48,7 +73,14 @@ export default function InvoiceCreatePage() {
   // Podaci o kupcu
   const [buyerName, setBuyerName] = useState("");
   const [buyerAddress, setBuyerAddress] = useState("");
-  const [buyerIdNumber, setBuyerIdNumber] = useState(""); // informativno
+  const [buyerIdNumber, setBuyerIdNumber] = useState(""); // JIB/PIB kupca – ide ka backendu
+
+  // Napomena fakture
+  const [note, setNote] = useState("");
+
+  // Email opcije (samo UI, bez pozadinske logike)
+  const [sendEmail, setSendEmail] = useState(false);
+  const [buyerEmail, setBuyerEmail] = useState("");
 
   // Stavke
   const [items, setItems] = useState<InvoiceItem[]>([
@@ -56,6 +88,7 @@ export default function InvoiceCreatePage() {
       description: "",
       quantity: "1",
       unitPrice: "",
+      discountPercent: "0",
     },
   ]);
 
@@ -122,6 +155,7 @@ export default function InvoiceCreatePage() {
         description: "",
         quantity: "1",
         unitPrice: "",
+        discountPercent: "0",
       },
     ]);
   }
@@ -133,13 +167,45 @@ export default function InvoiceCreatePage() {
     });
   }
 
-  // Izračun NETO, PDV, UKUPNO za prikaz
+  function applyTemplate(templateId: string) {
+    if (!templateId) return;
+    const tpl = INVOICE_TEMPLATES.find((t) => t.id === templateId);
+    if (!tpl) return;
+
+    setItems([
+      {
+        description: tpl.description,
+        quantity: tpl.quantity,
+        unitPrice: tpl.unitPrice,
+        discountPercent: tpl.discountPercent,
+      },
+    ]);
+
+    if (issueDate) {
+      setDueDate(addDays(issueDate, tpl.paymentDaysOffset));
+    }
+
+    // Napomena šablona, možeš je ručno mijenjati
+    setNote(tpl.note);
+  }
+
+  // Izračun NETO, PDV, UKUPNO za prikaz – uz uračunat popust
   const netTotal = items.reduce((sum, item) => {
     const qty = parseFloat(item.quantity || "0");
     const priceNet = parseFloat(item.unitPrice || "0");
+    const discountPercent = parseFloat(item.discountPercent || "0");
+
     if (!Number.isFinite(qty) || !Number.isFinite(priceNet)) return sum;
     if (qty <= 0 || priceNet < 0) return sum;
-    return sum + qty * priceNet;
+
+    const base = qty * priceNet;
+    const discountFactor =
+      Number.isFinite(discountPercent) && discountPercent > 0
+        ? Math.max(0, 1 - discountPercent / 100)
+        : 1;
+
+    const netAfterDiscount = base * discountFactor;
+    return sum + netAfterDiscount;
   }, 0);
 
   const vatAmount = netTotal * VAT_RATE;
@@ -155,6 +221,7 @@ export default function InvoiceCreatePage() {
       .map((item) => {
         const qty = parseFloat(item.quantity || "0");
         const priceNet = parseFloat(item.unitPrice || "0");
+        const discountPercent = parseFloat(item.discountPercent || "0");
 
         if (
           item.description.trim().length === 0 ||
@@ -171,6 +238,10 @@ export default function InvoiceCreatePage() {
           quantity: qty,
           unit_price: priceNet,
           vat_rate: VAT_RATE,
+          discount_percent:
+            Number.isFinite(discountPercent) && discountPercent > 0
+              ? discountPercent
+              : 0,
         };
       })
       .filter(
@@ -181,6 +252,7 @@ export default function InvoiceCreatePage() {
           quantity: number;
           unit_price: number;
           vat_rate: number;
+          discount_percent: number;
         } => x !== null,
       );
 
@@ -192,13 +264,21 @@ export default function InvoiceCreatePage() {
       return;
     }
 
+    if (!buyerName.trim()) {
+      setSaving(false);
+      setErrorMsg("Unesi naziv kupca (obavezno polje).");
+      return;
+    }
+
     try {
       const payload: InvoiceCreatePayload = {
         number,
-        buyer_name: buyerName,
+        buyer_name: buyerName.trim(),
         buyer_address: buyerAddress || null,
+        buyer_tax_id: buyerIdNumber || null,
         issue_date: issueDate,
         due_date: dueDate || null,
+        note: note.trim() || null,
         items: preparedItems,
       };
 
@@ -294,6 +374,30 @@ export default function InvoiceCreatePage() {
                   </p>
                 </div>
               </div>
+
+              {/* Šabloni fakture */}
+              <div className="space-y-1 pt-1">
+                <label className="text-xs font-medium text-slate-700">
+                  Primijeni šablon fakture (opcionalno)
+                </label>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <select
+                    className="input sm:max-w-xs"
+                    defaultValue=""
+                    onChange={(e) => applyTemplate(e.target.value)}
+                  >
+                    <option value="">— Odaberi šablon —</option>
+                    {INVOICE_TEMPLATES.map((tpl) => (
+                      <option key={tpl.id} value={tpl.id}>
+                        {tpl.label}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[11px] text-slate-400 sm:self-center">
+                    Šablon popunjava jednu stavku, rok plaćanja i napomenu.
+                  </p>
+                </div>
+              </div>
             </div>
           </section>
 
@@ -344,8 +448,7 @@ export default function InvoiceCreatePage() {
               </div>
 
               <p className="text-[11px] text-slate-400">
-                U ovoj V1 verziji JIB/PIB se još ne čuva u backendu – polje je
-                informativno pri kreiranju fakture.
+                JIB/PIB se čuva u backendu i prikazuje na PDF fakturi.
               </p>
             </div>
           </section>
@@ -370,19 +473,26 @@ export default function InvoiceCreatePage() {
             {items.map((item, index) => {
               const qty = parseFloat(item.quantity || "0");
               const unitPriceNet = parseFloat(item.unitPrice || "0");
+              const discountPercent = parseFloat(item.discountPercent || "0");
 
-              const lineNet =
+              const base =
                 Number.isFinite(qty) && Number.isFinite(unitPriceNet)
                   ? qty * unitPriceNet
                   : 0;
 
+              const discountFactor =
+                Number.isFinite(discountPercent) && discountPercent > 0
+                  ? Math.max(0, 1 - discountPercent / 100)
+                  : 1;
+
+              const lineNet = base * discountFactor;
               const lineVat = lineNet * VAT_RATE;
               const lineGross = lineNet + lineVat;
 
               return (
                 <div
                   key={index}
-                  className="grid grid-cols-1 md:grid-cols-[2fr,0.7fr,0.9fr,1.2fr,auto] gap-2 items-start border border-slate-200 rounded-md p-3 bg-slate-50"
+                  className="grid grid-cols-1 md:grid-cols-[2fr,0.7fr,0.9fr,0.8fr,1.3fr,auto] gap-2 items-start border border-slate-200 rounded-md p-3 bg-slate-50"
                 >
                   <div className="space-y-1">
                     <label className="text-[11px] font-medium text-slate-700">
@@ -433,11 +543,28 @@ export default function InvoiceCreatePage() {
 
                   <div className="space-y-1">
                     <label className="text-[11px] font-medium text-slate-700">
+                      Popust %
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      step="0.01"
+                      value={item.discountPercent}
+                      onChange={(e) =>
+                        updateItem(index, "discountPercent", e.target.value)
+                      }
+                      className="input"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <label className="text-[11px] font-medium text-slate-700">
                       Iznos sa PDV-om
                     </label>
                     <div className="input bg-slate-100 text-right flex flex-col items-end justify-center">
                       <span className="text-[11px] text-slate-500">
-                        Neto:{" "}
+                        Neto (poslije popusta):{" "}
                         <span className="font-mono">
                           {lineNet > 0 ? lineNet.toFixed(2) : "0.00"} BAM
                         </span>
@@ -473,65 +600,120 @@ export default function InvoiceCreatePage() {
           </div>
         </section>
 
-        {/* Donji blok: rezime + snimanje */}
+        {/* Donji blok: napomena + rezime + email */}
         <section className="grid grid-cols-1 lg:grid-cols-[2fr,1fr] gap-4 items-start">
-          <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-4">
+          <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-4 space-y-3">
             <h3 className="text-sm font-semibold text-slate-700 border-b border-slate-100 pb-2">
-              Napomena / status snimanja
+              Napomena & status snimanja
             </h3>
-            <div className="pt-2 text-sm text-slate-600 space-y-2">
-              {errorMsg ? (
-                <p className="text-red-600">{errorMsg}</p>
-              ) : (
-                <p className="text-xs text-slate-500">
-                  Provjeri da li su popunjene sve obavezne kolonice i da je
-                  barem jedna stavka validna (opis, količina, cijena).
+
+            <div className="space-y-2 pt-1">
+              <div className="space-y-1">
+                <label className="text-xs font-medium text-slate-700">
+                  Napomena na fakturi (opcionalno)
+                </label>
+                <textarea
+                  rows={3}
+                  className="input resize-none"
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  placeholder="npr. Plaćanje po prijemu fakture, rok 7 dana..."
+                />
+              </div>
+
+              <div className="pt-1 text-sm text-slate-600 space-y-2">
+                {errorMsg ? (
+                  <p className="text-red-600 text-xs">{errorMsg}</p>
+                ) : (
+                  <p className="text-xs text-slate-500">
+                    Provjeri da li su popunjene sve obavezne kolonice i da je
+                    barem jedna stavka validna (opis, količina, cijena).
+                  </p>
+                )}
+                <p className="text-[11px] text-slate-400">
+                  Nakon snimanja, faktura će se pojaviti u listi{" "}
+                  <span className="font-semibold">Izlazne fakture</span>. Detaljni
+                  prikaz sada koristi sve stavke, popuste i ukupne iznose sa
+                  PDV-om.
                 </p>
-              )}
-              <p className="text-[11px] text-slate-400">
-                Nakon snimanja, faktura će se pojaviti u listi{" "}
-                <span className="font-semibold">Izlazne fakture</span>. Detaljni
-                prikaz sada koristi sve stavke i ukupne iznose sa PDV-om.
-              </p>
+              </div>
             </div>
           </div>
 
-          <div className="bg-slate-900 text-slate-50 rounded-lg shadow-md p-4 space-y-3">
-            <h3 className="text-sm font-semibold text-slate-50 border-b border-slate-700 pb-2">
-              Rezime iznosa
-            </h3>
-            <div className="space-y-1 text-sm">
-              <div className="flex items-center justify-between">
-                <span className="text-slate-200">Neto osnovica:</span>
-                <span className="font-mono">
-                  {netTotal > 0 ? netTotal.toFixed(2) : "0.00"} BAM
-                </span>
+          <div className="space-y-3">
+            <div className="bg-slate-900 text-slate-50 rounded-lg shadow-md p-4 space-y-3">
+              <h3 className="text-sm font-semibold text-slate-50 border-b border-slate-700 pb-2">
+                Rezime iznosa
+              </h3>
+              <div className="space-y-1 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-200">Neto osnovica:</span>
+                  <span className="font-mono">
+                    {netTotal > 0 ? netTotal.toFixed(2) : "0.00"} BAM
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-200">
+                    PDV {(VAT_RATE * 100).toFixed(0)}%:
+                  </span>
+                  <span className="font-mono">
+                    {vatAmount > 0 ? vatAmount.toFixed(2) : "0.00"} BAM
+                  </span>
+                </div>
+                <div className="flex items-center justify-between pt-2 border-t border-slate-700 mt-1">
+                  <span className="text-slate-100 font-semibold">
+                    Ukupno za naplatu:
+                  </span>
+                  <span className="font-mono text-lg font-semibold">
+                    {grossTotal > 0 ? grossTotal.toFixed(2) : "0.00"} BAM
+                  </span>
+                </div>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-slate-200">
-                  PDV {(VAT_RATE * 100).toFixed(0)}%:
-                </span>
-                <span className="font-mono">
-                  {vatAmount > 0 ? vatAmount.toFixed(2) : "0.00"} BAM
-                </span>
-              </div>
-              <div className="flex items-center justify-between pt-2 border-t border-slate-700 mt-1">
-                <span className="text-slate-100 font-semibold">
-                  Ukupno za naplatu:
-                </span>
-                <span className="font-mono text-lg font-semibold">
-                  {grossTotal > 0 ? grossTotal.toFixed(2) : "0.00"} BAM
-                </span>
-              </div>
+
+              <button
+                type="submit"
+                disabled={saving}
+                className="btn-primary w-full mt-3"
+              >
+                {saving ? "Spremam..." : "Snimi fakturu"}
+              </button>
             </div>
 
-            <button
-              type="submit"
-              disabled={saving}
-              className="btn-primary w-full mt-3"
-            >
-              {saving ? "Spremam..." : "Snimi fakturu"}
-            </button>
+            {/* Email sekcija – samo UI, bez pozadinske akcije */}
+            <div className="bg-white rounded-lg border border-slate-200 shadow-sm p-4 space-y-2">
+              <h3 className="text-sm font-semibold text-slate-700 border-b border-slate-100 pb-2">
+                Slanje fakture emailom (placeholder)
+              </h3>
+              <div className="flex items-start gap-2">
+                <input
+                  id="send-email"
+                  type="checkbox"
+                  className="mt-1"
+                  checked={sendEmail}
+                  onChange={(e) => setSendEmail(e.target.checked)}
+                />
+                <div className="flex-1 space-y-1">
+                  <label
+                    htmlFor="send-email"
+                    className="text-xs font-medium text-slate-700"
+                  >
+                    Pošalji fakturu kupcu putem emaila
+                  </label>
+                  <input
+                    type="email"
+                    className="input text-xs"
+                    placeholder="email kupca (opcionalno)"
+                    value={buyerEmail}
+                    onChange={(e) => setBuyerEmail(e.target.value)}
+                    disabled={!sendEmail}
+                  />
+                  <p className="text-[11px] text-slate-400">
+                    U ovoj verziji opcija je samo vizuelna – budući modul će
+                    koristiti ove podatke za automatsko slanje fakture.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
         </section>
       </form>

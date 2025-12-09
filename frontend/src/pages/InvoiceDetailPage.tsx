@@ -1,11 +1,11 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/InvoiceDetailPage.tsx
 import React, { useState } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 
 import type { InvoiceRowItem, InvoiceDetail } from "../types/invoice";
 import { apiClient } from "../services/apiClient";
-import { fetchInvoiceById } from "../services/invoicesApi";
+import { fetchInvoiceById, markInvoicePaid } from "../services/invoicesApi";
 
 function formatDate(value?: string | null): string {
   if (!value) return "-";
@@ -27,6 +27,7 @@ export default function InvoiceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  const queryClient = useQueryClient();
 
   const numericId = id ? Number(id) : null;
 
@@ -47,6 +48,8 @@ export default function InvoiceDetailPage() {
 
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfError, setPdfError] = useState("");
+  const [statusSaving, setStatusSaving] = useState(false);
+  const [statusError, setStatusError] = useState("");
 
   const handleOpenPdf = async () => {
     if (numericId == null || !Number.isFinite(numericId)) return;
@@ -68,6 +71,31 @@ export default function InvoiceDetailPage() {
       setPdfError("Greška pri preuzimanju PDF fakture.");
     } finally {
       setPdfLoading(false);
+    }
+  };
+
+  const handleStatusChange = async (
+    e: React.ChangeEvent<HTMLSelectElement>,
+  ) => {
+    if (!invoice || numericId == null || !Number.isFinite(numericId)) return;
+
+    const value = e.target.value;
+    setStatusError("");
+
+    // Dozvoljavamo samo prelaz NIJE PLAĆENA -> PLAĆENA, jer backend ima samo /mark-paid
+    if (value === "PAID" && !invoice.is_paid) {
+      try {
+        setStatusSaving(true);
+        await markInvoicePaid(numericId);
+        await queryClient.invalidateQueries({
+          queryKey: ["invoice-detail", numericId],
+        });
+      } catch (err) {
+        console.error(err);
+        setStatusError("Greška pri ažuriranju statusa plaćanja.");
+      } finally {
+        setStatusSaving(false);
+      }
     }
   };
 
@@ -164,6 +192,14 @@ export default function InvoiceDetailPage() {
                     {invoice.buyer_address}
                   </p>
                 )}
+                {invoice.buyer_tax_id && (
+                  <p className="text-xs text-slate-500">
+                    JIB/PIB:{" "}
+                    <span className="font-mono">
+                      {invoice.buyer_tax_id}
+                    </span>
+                  </p>
+                )}
               </div>
 
               <div>
@@ -210,18 +246,42 @@ export default function InvoiceDetailPage() {
               </div>
 
               <div>
-                <p className="text-[11px] uppercase tracking-wide text-slate-400">
-                  Status plaćanja
-                </p>
-                {invoice.is_paid ? (
-                  <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
-                    PLAĆENA
-                  </span>
-                ) : (
-                  <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
-                    NIJE PLAĆENA
-                  </span>
-                )}
+                <div className="flex items-center justify-between gap-2">
+                  <div>
+                    <p className="text-[11px] uppercase tracking-wide text-slate-400">
+                      Status plaćanja
+                    </p>
+                    {invoice.is_paid ? (
+                      <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-semibold text-emerald-700">
+                        PLAĆENA
+                      </span>
+                    ) : (
+                      <span className="inline-flex rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-semibold text-amber-700">
+                        NIJE PLAĆENA
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="text-right">
+                    <label className="text-[11px] uppercase tracking-wide text-slate-400 block mb-1">
+                      Promijeni status
+                    </label>
+                    <select
+                      className="input text-xs py-1 px-2"
+                      value={invoice.is_paid ? "PAID" : "UNPAID"}
+                      onChange={handleStatusChange}
+                      disabled={statusSaving}
+                    >
+                      <option value="UNPAID">NIJE PLAĆENA</option>
+                      <option value="PAID">PLAĆENA</option>
+                    </select>
+                    {statusError && (
+                      <p className="text-[11px] text-red-600 mt-1">
+                        {statusError}
+                      </p>
+                    )}
+                  </div>
+                </div>
               </div>
 
               <div className="text-xs text-slate-400 pt-2">
@@ -246,6 +306,18 @@ export default function InvoiceDetailPage() {
               </div>
             </div>
           </div>
+
+          {/* Napomena fakture, ako postoji */}
+          {invoice.note && (
+            <div className="bg-white border rounded-lg p-4 text-sm text-slate-700">
+              <h3 className="text-sm font-semibold text-slate-700 mb-2">
+                Napomena fakture
+              </h3>
+              <p className="text-xs whitespace-pre-line text-slate-600">
+                {invoice.note}
+              </p>
+            </div>
+          )}
 
           {/* Stavke fakture */}
           <div className="bg-white border rounded-lg p-4">
@@ -272,6 +344,9 @@ export default function InvoiceDetailPage() {
                         Jed. cijena (bez PDV)
                       </th>
                       <th className="px-3 py-2 text-right font-medium">
+                        Popust %
+                      </th>
+                      <th className="px-3 py-2 text-right font-medium">
                         PDV %
                       </th>
                       <th className="px-3 py-2 text-right font-medium">
@@ -296,6 +371,9 @@ export default function InvoiceDetailPage() {
                         </td>
                         <td className="px-3 py-2 text-right font-mono">
                           {item.unit_price.toFixed(2)} KM
+                        </td>
+                        <td className="px-3 py-2 text-right font-mono">
+                          {item.discount_percent.toFixed(2)}%
                         </td>
                         <td className="px-3 py-2 text-right font-mono">
                           {(item.vat_rate * 100).toFixed(0)}%

@@ -21,8 +21,9 @@ export interface InvoiceListResponse {
 export interface InvoiceCreateItemPayload {
   description: string;
   quantity: number;
-  unit_price: number; // cijena bez PDV-a
-  vat_rate: number;   // npr. 0.17
+  unit_price: number;      // cijena bez PDV-a
+  vat_rate: number;        // npr. 0.17
+  discount_percent?: number; // popust u %, npr. 0–100
 }
 
 // Payload za kreiranje fakture sa više stavki
@@ -30,8 +31,10 @@ export interface InvoiceCreatePayload {
   number: string;
   buyer_name: string;
   buyer_address?: string | null;
+  buyer_tax_id?: string | null;
   issue_date: string;       // "YYYY-MM-DD"
   due_date: string | null;  // ili null
+  note?: string | null;
   items: InvoiceCreateItemPayload[];
 }
 
@@ -45,6 +48,7 @@ export interface InvoiceItemDetail {
   base_amount: number;
   vat_amount: number;
   total_amount: number;
+  discount_percent: number; // 0–100, ako BE ne šalje, mapiramo na 0
 }
 
 // Detaljna faktura (GET /invoices/{id})
@@ -56,9 +60,11 @@ export interface InvoiceDetail {
   due_date: string | null;
   buyer_name: string;
   buyer_address: string | null;
+  buyer_tax_id: string | null;
   total_base: number;
   total_vat: number;
   total_amount: number;
   is_paid: boolean;
+  note: string | null;
   items: InvoiceItemDetail[];
 }
