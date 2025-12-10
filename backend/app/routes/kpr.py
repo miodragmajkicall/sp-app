@@ -3,8 +3,9 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from io import BytesIO
+from io import BytesIO, StringIO
 from typing import List, Optional
+import csv
 
 from fastapi import APIRouter, Depends, Header, Query
 from fastapi.responses import StreamingResponse
@@ -447,5 +448,117 @@ def export_kpr_pdf(
     return StreamingResponse(
         BytesIO(pdf_bytes),
         media_type="application/pdf",
+        headers=headers,
+    )
+
+
+# ======================================================
+#  EXCEL / CSV EXPORT – /kpr/export-excel
+# ======================================================
+
+
+@router.get(
+    "/export-excel",
+    summary="Excel/CSV export Knjige prihoda i rashoda (KPR)",
+    response_class=StreamingResponse,
+    description=(
+        "Generiše CSV fajl (kompatibilan sa Excel-om) za Knjigu prihoda i rashoda "
+        "za traženi period.\n\n"
+        "CSV sadrži kolone: datum, vrsta, kategorija, kupac/dobavljač, dok_broj, "
+        "opis, iznos, valuta, poreski_priznat, source, source_id.\n"
+    ),
+)
+def export_kpr_excel(
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta za kojeg se eksportuje KPR.",
+    ),
+    year: int = Query(
+        ...,
+        ge=1900,
+        le=2100,
+        description="Godina za KPR export (obavezno).",
+    ),
+    month: Optional[int] = Query(
+        None,
+        ge=1,
+        le=12,
+        description="Mjesec za KPR export (opciono). Ako nije zadat, eksportuje se cijela godina.",
+    ),
+) -> StreamingResponse:
+    tenant = _require_tenant(x_tenant_code)
+    _ensure_tenant(db, tenant)
+
+    rows = _collect_kpr_rows(db, tenant_code=tenant, year=year, month=month)
+
+    buffer = StringIO()
+    writer = csv.writer(buffer)
+
+    # Header
+    writer.writerow(
+        [
+            "datum",
+            "vrsta",
+            "kategorija",
+            "kupac_dobavljac",
+            "dok_broj",
+            "opis",
+            "iznos",
+            "valuta",
+            "poreski_priznat",
+            "source",
+            "source_id",
+        ]
+    )
+
+    for r in rows:
+        row_date = _get_row_date(r).isoformat()
+        vrsta = "PRIHOD" if r.kind == "income" else "RASHOD"
+        kategorija = r.category or ""
+        kupac = r.counterparty or ""
+        dok_broj = r.document_number or ""
+        opis = r.description or ""
+        iznos = str(_as_decimal(r.amount))
+        valuta = getattr(r, "currency", "BAM") or "BAM"
+        poreski = "DA" if r.tax_deductible else "NE"
+        source = r.source or ""
+        source_id = r.source_id
+
+        writer.writerow(
+            [
+                row_date,
+                vrsta,
+                kategorija,
+                kupac,
+                dok_broj,
+                opis,
+                iznos,
+                valuta,
+                poreski,
+                source,
+                source_id,
+            ]
+        )
+
+    csv_text = buffer.getvalue()
+    buffer.close()
+
+    # UTF-8 sa BOM da Excel na Windowsu pravilno prepozna encoding
+    data = csv_text.encode("utf-8-sig")
+
+    filename = f"kpr-{tenant}-{year}"
+    if month is not None:
+        filename += f"-{month:02d}"
+    filename += ".csv"
+
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+    }
+
+    return StreamingResponse(
+        BytesIO(data),
+        media_type="text/csv; charset=utf-8",
         headers=headers,
     )

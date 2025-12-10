@@ -105,3 +105,35 @@ export async function exportKprPdf(
 
   URL.revokeObjectURL(url);
 }
+
+/**
+ * GET /kpr/export-excel – preuzimanje CSV/Excel verzije KPR-a.
+ */
+export async function exportKprExcel(
+  year?: number,
+  month?: number,
+): Promise<void> {
+  const res = await apiClient.get<Blob>("/kpr/export-excel", {
+    params: {
+      year,
+      month,
+    },
+    responseType: "blob",
+  });
+
+  const contentTypeHeader =
+    (res.headers["content-type"] as string | undefined) ||
+    "text/csv";
+
+  const blob = new Blob([res.data], { type: contentTypeHeader });
+  const url = URL.createObjectURL(blob);
+
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "kpr.csv";
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+
+  URL.revokeObjectURL(url);
+}

@@ -1,7 +1,13 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/KprPage.tsx
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { fetchKprList, exportKprPdf } from "../services/kprApi";
+import { useMemo, useState, type FormEvent } from "react";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import { fetchKprList, exportKprPdf, exportKprExcel } from "../services/kprApi";
+import { createCashEntry } from "../services/cashApi";
+import type { CashEntryCreatePayload } from "../services/cashApi";
 import type { KprListResponse, KprRowItem } from "../types/kpr";
 
 const CURRENT_YEAR = new Date().getFullYear();
@@ -44,10 +50,56 @@ function formatCategory(category: string): string {
   }
 }
 
+/**
+ * Konto (prihod / rashod / ostalo) – logička klasifikacija za KPR.
+ */
+function formatAccount(row: KprRowItem): string {
+  if (row.kind === "income") return "Prihod";
+  if (row.kind === "expense") return "Rashod";
+  return "Ostalo";
+}
+
+/**
+ * Referenca – izvor stavke: faktura / ulazni račun / ručni unos (cash).
+ */
+function formatReference(row: KprRowItem): string {
+  const category = row.category || row.source || "";
+
+  if (category === "invoice") {
+    return "Faktura";
+  }
+  if (category === "input_invoice") {
+    return "Ulazni račun";
+  }
+  if (category === "cash") {
+    return "Ručni unos (cash)";
+  }
+  return "Ostalo";
+}
+
+function todayIso(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
 export default function KprPage() {
   const [year, setYear] = useState<number | undefined>(CURRENT_YEAR);
   const [month, setMonth] = useState<number | undefined>(CURRENT_MONTH);
   const [kindFilter, setKindFilter] = useState<KindFilter>("ALL");
+
+  // stanje za ručni KPR unos (modal)
+  const [isManualModalOpen, setIsManualModalOpen] = useState(false);
+  const [manualDate, setManualDate] = useState<string>(todayIso());
+  const [manualKind, setManualKind] = useState<"income" | "expense">(
+    "expense",
+  );
+  const [manualAccount, setManualAccount] = useState<"cash" | "bank">(
+    "cash",
+  );
+  const [manualAmount, setManualAmount] = useState<string>("");
+  const [manualDescription, setManualDescription] = useState<string>("");
+  const [manualError, setManualError] = useState<string>("");
+
+  const queryClient = useQueryClient();
 
   const {
     data,
@@ -63,6 +115,22 @@ export default function KprPage() {
         year,
         month,
       }),
+  });
+
+  const {
+    mutateAsync: createManualEntry,
+    isLoading: isSavingManual,
+  } = useMutation({
+    mutationFn: async (payload: CashEntryCreatePayload) =>
+      createCashEntry(payload),
+    onSuccess: () => {
+      // osvježavamo i cash i KPR i dashboard, jer unos utiče na sve
+      queryClient.invalidateQueries({ queryKey: ["cash"] });
+      queryClient.invalidateQueries({ queryKey: ["kpr"] });
+      queryClient.invalidateQueries({
+        queryKey: ["dashboard", "monthly", "current"],
+      });
+    },
   });
 
   const allItems: KprRowItem[] = data?.items ?? [];
@@ -115,8 +183,177 @@ export default function KprPage() {
     }
   };
 
+  const handleExportExcel = async () => {
+    if (!year || !month) {
+      window.alert(
+        "Za Excel/CSV export trenutno zahtijevamo odabranu godinu i mjesec.",
+      );
+      return;
+    }
+    try {
+      await exportKprExcel(year, month);
+    } catch (err) {
+      console.error("Greška pri exportKprExcel:", err);
+      const anyErr = err as any;
+      const msg =
+        anyErr?.response?.data?.detail ||
+        anyErr?.message ||
+        "Nepoznata greška pri exportu Excel fajla.";
+      window.alert(msg);
+    }
+  };
+
+  async function handleManualSubmit(e: FormEvent) {
+    e.preventDefault();
+    setManualError("");
+
+    const parsed = Number(manualAmount);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      setManualError("Iznos mora biti veći od nule.");
+      return;
+    }
+
+    const payload: CashEntryCreatePayload = {
+      entry_date: manualDate,
+      kind: manualKind,
+      amount: parsed,
+      note: manualDescription.trim() || null,
+      account: manualAccount,
+    };
+
+    try {
+      await createManualEntry(payload);
+      // reset forme, ali ostavljamo datum + račun da se lakše unosi više stavki
+      setManualAmount("");
+      setManualDescription("");
+      await refetch();
+      setIsManualModalOpen(false);
+    } catch (err: any) {
+      const msg =
+        err?.response?.data?.detail ||
+        err?.message ||
+        "Greška pri snimanju unosa.";
+      setManualError(String(msg));
+    }
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative">
+      {/* MODAL ZA RUČNI KPR UNOS */}
+      {isManualModalOpen && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/30">
+          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-4 shadow-lg space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="text-sm font-semibold text-slate-800">
+                Novi KPR unos (ručni)
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsManualModalOpen(false)}
+                className="text-xs text-slate-500 hover:text-slate-700"
+              >
+                Zatvori
+              </button>
+            </div>
+
+            <p className="text-[11px] text-slate-500">
+              Koristi se za stavke poput bankarskih provizija, naknada i
+              drugih manualnih prihoda/rashoda koji ulaze u KPR.
+            </p>
+
+            <form onSubmit={handleManualSubmit} className="space-y-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="text-xs text-slate-600 space-y-1">
+                  Datum
+                  <input
+                    type="date"
+                    className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                    value={manualDate}
+                    onChange={(e) => setManualDate(e.target.value)}
+                    required
+                  />
+                </label>
+
+                <label className="text-xs text-slate-600 space-y-1">
+                  Tip
+                  <select
+                    className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                    value={manualKind}
+                    onChange={(e) =>
+                      setManualKind(
+                        e.target.value as "income" | "expense",
+                      )
+                    }
+                  >
+                    <option value="income">PRIHOD</option>
+                    <option value="expense">RASHOD</option>
+                  </select>
+                </label>
+              </div>
+
+              <label className="text-xs text-slate-600 space-y-1">
+                Račun
+                <select
+                  className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                  value={manualAccount}
+                  onChange={(e) =>
+                    setManualAccount(e.target.value as "cash" | "bank")
+                  }
+                >
+                  <option value="cash">KASA</option>
+                  <option value="bank">TEKUĆI RAČUN</option>
+                </select>
+              </label>
+
+              <label className="text-xs text-slate-600 space-y-1">
+                Iznos (KM)
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                  value={manualAmount}
+                  onChange={(e) => setManualAmount(e.target.value)}
+                  required
+                />
+              </label>
+
+              <label className="text-xs text-slate-600 space-y-1">
+                Opis (npr. bankarska provizija, članarina...)
+                <input
+                  type="text"
+                  className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                  value={manualDescription}
+                  onChange={(e) => setManualDescription(e.target.value)}
+                  placeholder="npr. Bankarska provizija za kartično plaćanje"
+                />
+              </label>
+
+              {manualError && (
+                <p className="text-xs text-red-600">{manualError}</p>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsManualModalOpen(false)}
+                  className="rounded-md border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                >
+                  Otkaži
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSavingManual}
+                  className="inline-flex items-center rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-60"
+                >
+                  {isSavingManual ? "Spašavam..." : "Snimi unos"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* HEADER */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
@@ -139,6 +376,14 @@ export default function KprPage() {
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
+            onClick={() => setIsManualModalOpen(true)}
+            className="inline-flex items-center rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-500"
+          >
+            + Novi KPR unos
+          </button>
+
+          <button
+            type="button"
             onClick={() => refetch()}
             className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-60"
             disabled={isLoading || isRefetching}
@@ -152,6 +397,14 @@ export default function KprPage() {
             className="inline-flex items-center rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-slate-800"
           >
             📄 Export KPR (PDF)
+          </button>
+
+          <button
+            type="button"
+            onClick={handleExportExcel}
+            className="inline-flex items-center rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-600"
+          >
+            📊 Export KPR (Excel)
           </button>
         </div>
       </div>
@@ -291,7 +544,7 @@ export default function KprPage() {
         </div>
         <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800">
           <div className="font-semibold text-[11px] uppercase tracking-wide">
-            Rezultat (prihodi - rashodi)
+            Osnova za 2% (prihodi - rashodi)
           </div>
           <div className="mt-1 text-sm font-semibold">
             {formatAmount(totals.net)}
@@ -355,7 +608,13 @@ export default function KprPage() {
                     Vrsta
                   </th>
                   <th className="px-3 py-2 text-left font-medium">
+                    Konto
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium">
                     Kategorija
+                  </th>
+                  <th className="px-3 py-2 text-left font-medium">
+                    Referenca
                   </th>
                   <th className="px-3 py-2 text-left font-medium">
                     Kupac / Dobavljač
@@ -393,7 +652,13 @@ export default function KprPage() {
                       </span>
                     </td>
                     <td className="px-3 py-1.5 whitespace-nowrap text-[11px]">
+                      {formatAccount(row)}
+                    </td>
+                    <td className="px-3 py-1.5 whitespace-nowrap text-[11px]">
                       {formatCategory(row.category)}
+                    </td>
+                    <td className="px-3 py-1.5 whitespace-nowrap text-[11px]">
+                      {formatReference(row)}
                     </td>
                     <td className="px-3 py-1.5 text-[11px]">
                       {row.counterparty ?? (
