@@ -17,6 +17,7 @@ from app.routes import (
     sam,
     reports,
     kpr,
+    promet,
 )
 from app.models import FinalizedPeriodModificationError
 
@@ -61,6 +62,10 @@ tags_metadata = [
     {
         "name": "kpr",
         "description": "Knjiga prihoda i rashoda (KPR) – objedinjena evidencija svih prihoda i rashoda.",
+    },
+    {
+        "name": "promet",
+        "description": "Knjiga prometa (KP-1042) – evidencija bezgotovinskog prometa za FBiH paušalce.",
     },
     {
         "name": "reports",
@@ -180,6 +185,9 @@ app.include_router(sam.router)
 
 # KPR – knjiga prihoda i rashoda
 app.include_router(kpr.router)
+
+# Promet – Knjiga prometa (KP-1042)
+app.include_router(promet.router)
 
 # Reports (godišnji cashflow, itd.)
 app.include_router(reports.router)
