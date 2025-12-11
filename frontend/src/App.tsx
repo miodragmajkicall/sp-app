@@ -16,6 +16,7 @@ import InputInvoiceCreatePage from "./pages/InputInvoiceCreatePage";
 import InputInvoiceDetailPage from "./pages/InputInvoiceDetailPage";
 import TaxPage from "./pages/TaxPage";
 import KprPage from "./pages/KprPage";
+import PrometPage from "./pages/PrometPage";
 
 function App() {
   const linkBaseClasses =
@@ -159,6 +160,21 @@ function App() {
               </NavLink>
 
               <NavLink
+                to="/promet"
+                className={({ isActive }) =>
+                  [
+                    linkBaseClasses,
+                    isActive ? linkActiveClasses : linkInactiveClasses,
+                  ].join(" ")
+                }
+              >
+                <span className="mr-2" aria-hidden="true">
+                  🧾
+                </span>
+                <span>Knjiga prometa</span>
+              </NavLink>
+
+              <NavLink
                 to="/tax"
                 className={({ isActive }) =>
                   [
@@ -272,6 +288,9 @@ function App() {
 
               {/* KPR */}
               <Route path="/kpr" element={<KprPage />} />
+
+              {/* Promet */}
+              <Route path="/promet" element={<PrometPage />} />
 
               {/* Porezi */}
               <Route path="/tax" element={<TaxPage />} />

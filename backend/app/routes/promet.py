@@ -1,20 +1,20 @@
-# /home/miso/dev/sp-app/sp-app/backend/app/routes/promet.py
+# /home/miso/dev/sp-app-sp-app/backend/app/routes/promet.py
 from __future__ import annotations
 
 import io
 from datetime import date
+from decimal import Decimal
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import CashEntry, Invoice
+from app.models import CashEntry
 from app.schemas.promet import PrometListResponse, PrometRow
-from app.services.pdf_promet import render_promet_pdf
-from app.tenant_security import require_tenant_code
+from app.tenant_security import require_tenant_code, ensure_tenant_exists
 
 router = APIRouter(
     tags=["promet"],
@@ -22,7 +22,7 @@ router = APIRouter(
 
 
 # ======================================================
-#  TENANT HELPER
+#  TENANT HELPERI
 # ======================================================
 
 
@@ -30,8 +30,12 @@ def _require_tenant(x_tenant_code: Optional[str]) -> str:
     return require_tenant_code(x_tenant_code)
 
 
+def _ensure_tenant_exists(db: Session, code: str) -> None:
+    ensure_tenant_exists(db, code)
+
+
 # ======================================================
-#  HELPER – bazni SELECT za Knjigu prometa
+#  HELPER – bazni upit za KP (Knjiga prometa)
 # ======================================================
 
 
@@ -44,82 +48,122 @@ def _build_promet_base_stmt(
     partner_query: Optional[str],
 ):
     """
-    Gradi bazni SELECT za Knjigu prometa.
+    Za prvu verziju Knjige prometa koristimo CashEntry kao izvor podataka.
 
-    Pravila:
-    - koristimo CashEntry kao izvor bezgotovinskog prometa:
-        kind = 'income'
-        account = 'bank'
-        invoice_id IS NOT NULL
-    - join na Invoice radi broja dokumenta i naziva kupca,
-    - datum = entry_date (datum bezgotovinskog prometa na bankovnom računu).
+    Trenutni model CashEntry sadrži:
+      * tenant_code
+      * entry_date (datum prometa / knjiženja)
+      * description (opis / kratki partner)
+      * amount (Decimal)
+      * kind ('income' ili 'expense')
+      * account ('cash' ili 'bank')
+
+    U kasnijim iteracijama možemo:
+    - filtrirati samo bezgotovinske transakcije (npr. account = 'bank'),
+    - povezati sa brojem fakture i stvarnim partnerom.
     """
-    date_col = CashEntry.entry_date
 
-    base_stmt = (
-        select(
-            date_col.label("date"),
-            Invoice.invoice_number.label("document_number"),
-            Invoice.buyer_name.label("partner_name"),
-            CashEntry.amount.label("amount"),
-            CashEntry.description.label("note"),
-        )
-        .join(
-            Invoice,
-            (Invoice.id == CashEntry.invoice_id)
-            & (Invoice.tenant_code == CashEntry.tenant_code),
-        )
-        .where(
-            CashEntry.tenant_code == tenant,
-            CashEntry.kind == "income",
-            CashEntry.account == "bank",
-            CashEntry.invoice_id.is_not(None),
-        )
-    )
+    stmt = select(CashEntry).where(CashEntry.tenant_code == tenant)
 
-    # Filtriranje po godini/mjesecu (preko entry_date)
     if year is not None:
-        base_stmt = base_stmt.where(func.extract("year", date_col) == year)
+        stmt = stmt.where(func.extract("year", CashEntry.entry_date) == year)
     if month is not None:
-        base_stmt = base_stmt.where(func.extract("month", date_col) == month)
+        stmt = stmt.where(func.extract("month", CashEntry.entry_date) == month)
 
-    # Filtriranje po periodu (entry_date od/do)
     if date_from is not None:
-        base_stmt = base_stmt.where(date_col >= date_from)
+        stmt = stmt.where(CashEntry.entry_date >= date_from)
     if date_to is not None:
-        base_stmt = base_stmt.where(date_col <= date_to)
+        stmt = stmt.where(CashEntry.entry_date <= date_to)
 
-    # Filtriranje po kupcu/dobavljaču (naziv partnera)
     if partner_query:
-        base_stmt = base_stmt.where(
-            Invoice.buyer_name.ilike(f"%{partner_query}%"),
+        # Za sada filtriramo po opisu (description) kao proxy za partnera
+        stmt = stmt.where(CashEntry.description.ilike(f"%{partner_query}%"))
+
+    return stmt
+
+
+def _cash_entry_to_promet_row(entry: CashEntry) -> PrometRow:
+    """
+    Mapiranje jednog CashEntry zapisa u PrometRow za KP-1042.
+    """
+
+    # Datum prometa – koristimo entry_date iz modela
+    entry_date = getattr(entry, "entry_date", None)
+    if entry_date is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="CashEntry nema popunjen entry_date.",
         )
 
-    return base_stmt
+    # Broj dokumenta – za sada nemamo direktno polje u modelu,
+    # pa koristimo ID kao fallback (CE-<id>).
+    entry_id = getattr(entry, "id", None)
+    document_number = f"CE-{entry_id}" if entry_id is not None else "CE-N/A"
+
+    # Naziv partnera – za V1 koristimo description kao kratki opis / partnera
+    partner_name = getattr(entry, "description", None) or "N/A"
+
+    raw_amount = getattr(entry, "amount", Decimal("0"))
+    if not isinstance(raw_amount, Decimal):
+        try:
+            raw_amount = Decimal(str(raw_amount))
+        except Exception:
+            raw_amount = Decimal("0")
+
+    kind = getattr(entry, "kind", None)
+    # Konvencija: prihodi pozitivni, rashodi negativni
+    if kind == "expense":
+        signed_amount = -raw_amount
+    else:
+        signed_amount = raw_amount
+
+    note_parts: List[str] = []
+    if kind:
+        note_parts.append(f"Vrsta: {kind}")
+    account = getattr(entry, "account", None)
+    if account:
+        note_parts.append(f"Račun: {account}")
+    description = getattr(entry, "description", None)
+    if description:
+        note_parts.append(description)
+    note = " | ".join(note_parts) if note_parts else None
+
+    return PrometRow(
+        date=entry_date,
+        document_number=document_number,
+        partner_name=str(partner_name),
+        amount=signed_amount,
+        note=note,
+    )
 
 
 # ======================================================
-#  LIST FOR UI – /promet
+#  LISTA ZA UI – /promet
 # ======================================================
 
 
 @router.get(
     "/promet",
     response_model=PrometListResponse,
-    summary="Knjiga prometa (KP-1042) – lista za UI",
+    summary="Lista prometa (KP-1042) za UI tabelu",
     description=(
-        "Vraća podatke za Knjigu prometa (KP-1042 stil) za jednog tenanta.\n\n"
-        "Izvor podataka su CashEntry zapisi sa:\n"
-        "- kind = 'income',\n"
-        "- account = 'bank',\n"
-        "- invoice_id IS NOT NULL (vezano za izlaznu fakturu).\n\n"
+        "UI-friendly lista za Knjigu prometa (KP-1042).\n\n"
         "Podržani filteri:\n"
-        "- year / month – po entry_date,\n"
-        "- date_from / date_to – opseg po entry_date,\n"
-        "- partner_query – filter po nazivu kupca (substring, case-insensitive).\n\n"
+        "- `year` i `month` – filtriranje po godini/mjesecu `entry_date`,\n"
+        "- `date_from` / `date_to` – opseg datuma (uključivo, preko `entry_date`),\n"
+        "- `partner_query` – filter po opisu (substring, case-insensitive).\n\n"
         "Paginacija:\n"
-        "- Može se koristiti page + page_size ili direktno limit + offset."
+        "- Može se koristiti `page` + `page_size` (1-based), ili direktno `limit` + `offset`.\n"
+        "- Ako je `page` zadat, `limit`/`offset` se ignorišu."
     ),
+    responses={
+        200: {
+            "description": "Uspješno vraćena lista prometa.",
+        },
+        400: {
+            "description": "Nedostaje `X-Tenant-Code` header ili su filter parametri nevalidni.",
+        },
+    },
 )
 def list_promet(
     db: Session = Depends(_get_session_dep),
@@ -139,32 +183,33 @@ def list_promet(
     ),
     partner_query: Optional[str] = Query(
         None,
-        description="Filter po nazivu kupca/dobavljača (case-insensitive, substring).",
+        description="Filter po opisu (case-insensitive, substring).",
     ),
     page: Optional[int] = Query(
         None,
         ge=1,
-        description="Broj stranice (1-based). Ako je zadat, koristi se sa page_size.",
+        description="Broj stranice (1-based). Ako je zadat, koristi se zajedno sa `page_size`.",
     ),
     page_size: Optional[int] = Query(
         None,
         ge=1,
-        le=500,
-        description="Broj stavki po stranici kada se koristi page.",
+        le=200,
+        description="Broj stavki po stranici kada se koristi `page`.",
     ),
     limit: int = Query(
         50,
         ge=1,
         le=500,
-        description="Maksimalan broj stavki u odgovoru (koristi se ako page nije zadat).",
+        description="Maksimalan broj stavki u odgovoru (koristi se ako `page` nije zadat).",
     ),
     offset: int = Query(
         0,
         ge=0,
-        description="Offset za rezultate (koristi se ako page nije zadat).",
+        description="Offset za rezultate (koristi se ako `page` nije zadat).",
     ),
 ) -> PrometListResponse:
     tenant = _require_tenant(x_tenant_code)
+    _ensure_tenant_exists(db, tenant)
 
     base_stmt = _build_promet_base_stmt(
         tenant=tenant,
@@ -179,7 +224,7 @@ def list_promet(
     count_stmt = select(func.count()).select_from(base_stmt.subquery())
     total: int = db.execute(count_stmt).scalar_one()
 
-    # paginacija
+    # paginacija – ako je zadat page, ima prednost nad limit/offset
     if page is not None:
         effective_page_size = page_size or limit
         if effective_page_size <= 0:
@@ -191,44 +236,37 @@ def list_promet(
         query_offset = offset
 
     items_stmt = (
-        base_stmt.order_by(CashEntry.entry_date.desc(), Invoice.id.desc())
+        base_stmt.order_by(CashEntry.entry_date.desc(), CashEntry.id.desc())
         .limit(query_limit)
         .offset(query_offset)
     )
-    rows = db.execute(items_stmt).all()
 
-    items: List[PrometRow] = []
-    for row in rows:
-        # row je SQLAlchemy Row; pristupamo po label-ovima
-        items.append(
-            PrometRow(
-                date=row.date,
-                document_number=row.document_number,
-                partner_name=row.partner_name,
-                amount=row.amount,
-                note=row.note,
-            )
-        )
+    cash_rows: List[CashEntry] = db.execute(items_stmt).scalars().all()
+    promet_items: List[PrometRow] = [
+        _cash_entry_to_promet_row(entry) for entry in cash_rows
+    ]
 
-    return PrometListResponse(total=total, items=items)
+    return PrometListResponse(total=total, items=promet_items)
 
 
 # ======================================================
-#  EXPORT PDF – /promet/export-pdf
+#  EXPORT – /promet/export (CSV)
 # ======================================================
 
 
 @router.get(
-    "/promet/export-pdf",
-    summary="Knjiga prometa (KP-1042) – PDF export",
+    "/promet/export",
+    summary="Export Knjige prometa (CSV za Excel)",
     response_class=StreamingResponse,
     description=(
-        "Generiše PDF izvještaj Knjige prometa (KP-1042 stil) za zadatog tenanta i filtere.\n\n"
-        "Podaci se baziraju na CashEntry zapisima (kind='income', account='bank', invoice_id IS NOT NULL) "
-        "i vezanim izlaznim fakturama."
+        "Export Knjige prometa (KP-1042) za zadatog tenanta u CSV format "
+        "koji se može direktno otvoriti u Excel-u.\n\n"
+        "Podržani filteri su isti kao i za `/promet`:\n"
+        "- `year`, `month`, `date_from`, `date_to`, `partner_query`.\n\n"
+        "Format: delimiter `;`, UTF-8 sa BOM radi korektnog prikaza u Excel-u."
     ),
 )
-def export_promet_pdf(
+def export_promet(
     db: Session = Depends(_get_session_dep),
     x_tenant_code: Optional[str] = Header(
         None,
@@ -241,6 +279,7 @@ def export_promet_pdf(
     partner_query: Optional[str] = Query(None),
 ) -> StreamingResponse:
     tenant = _require_tenant(x_tenant_code)
+    _ensure_tenant_exists(db, tenant)
 
     base_stmt = _build_promet_base_stmt(
         tenant=tenant,
@@ -251,37 +290,42 @@ def export_promet_pdf(
         partner_query=partner_query,
     )
 
-    base_stmt = base_stmt.order_by(CashEntry.entry_date.asc(), Invoice.id.asc())
-    rows = db.execute(base_stmt).all()
+    base_stmt = base_stmt.order_by(CashEntry.entry_date.asc(), CashEntry.id.asc())
+    cash_rows: List[CashEntry] = db.execute(base_stmt).scalars().all()
 
-    # period label za zaglavlje
-    if year is not None and month is not None:
-        period_label = f"{month:02d}.{year}"
-    elif year is not None:
-        period_label = str(year)
-    elif date_from and date_to:
-        period_label = f"{date_from.isoformat()} do {date_to.isoformat()}"
-    elif date_from:
-        period_label = f"Od {date_from.isoformat()}"
-    elif date_to:
-        period_label = f"Do {date_to.isoformat()}"
-    else:
-        period_label = None
+    # Priprema CSV sadržaja (Excel-friendly, delimiter ';', UTF-8 sa BOM)
+    output = io.StringIO()
+    # Header red
+    output.write("Datum;Broj dokumenta;Partner;Iznos;Napomena\n")
 
-    pdf_bytes = render_promet_pdf(
-        tenant_code=tenant,
-        rows=rows,
-        period_label=period_label,
-    )
-    buffer = io.BytesIO(pdf_bytes)
+    for entry in cash_rows:
+        row = _cash_entry_to_promet_row(entry)
 
-    filename = "promet-kp-1042.pdf"
+        date_str = row.date.isoformat()
+        doc_no = row.document_number or ""
+        partner = row.partner_name or ""
+        amount_str = f"{row.amount:.2f}"
+        note_str = row.note or ""
+
+        line = (
+            f"{date_str};"
+            f"{doc_no};"
+            f"{partner};"
+            f"{amount_str};"
+            f"{note_str}\n"
+        )
+        output.write(line)
+
+    csv_bytes = ("\ufeff" + output.getvalue()).encode("utf-8")  # BOM za Excel
+    buffer = io.BytesIO(csv_bytes)
+
+    filename = "promet-export.csv"
     headers = {
-        "Content-Disposition": f'inline; filename="{filename}"',
+        "Content-Disposition": f'attachment; filename="{filename}"',
     }
 
     return StreamingResponse(
         buffer,
-        media_type="application/pdf",
+        media_type="text/csv; charset=utf-8",
         headers=headers,
     )

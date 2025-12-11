@@ -65,7 +65,7 @@ tags_metadata = [
     },
     {
         "name": "promet",
-        "description": "Knjiga prometa (KP-1042) – evidencija bezgotovinskog prometa za FBiH paušalce.",
+        "description": "Knjiga prometa (KP-1042) – evidencija bezgotovinskog prometa iz keš knjige.",
     },
     {
         "name": "reports",
