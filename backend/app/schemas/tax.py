@@ -1,5 +1,7 @@
+# /home/miso/dev/sp-app/sp-app/backend/app/schemas/tax.py
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 
@@ -174,11 +176,6 @@ class MonthlyTaxSummaryRead(BaseModel):
 class ErrorResponse(BaseModel):
     """
     Standardizovani model za opis grešaka na TAX endpointima.
-
-    Koristi se u OpenAPI dokumentaciji za tipične 4xx scenarije:
-    - nedostaje X-Tenant-Code header,
-    - pokušaj finalizacije već finalizovanog perioda,
-    - drugi poslovni 4xx scenariji.
     """
 
     model_config = BaseConfig
@@ -194,157 +191,85 @@ class ErrorResponse(BaseModel):
 
 
 class MonthlyTaxStatusItem(BaseModel):
-    """
-    Stavka statusa mjesečnog obračuna za konkretnu godinu.
-
-    Koristi se za endpoint /tax/monthly/status:
-    - za svaki mjesec (1-12) vraća da li postoji obračun i da li je finalizovan.
-    """
-
     model_config = BaseConfig
 
-    month: int = Field(
-        ...,
-        ge=1,
-        le=12,
-        description="Mjesec u godini (1-12).",
-        examples=[1],
-    )
-    is_final: bool = Field(
-        ...,
-        description=(
-            "Da li postoji finalizovan mjesečni obračun za dati mjesec "
-            "(`True` ako postoji zapis u `tax_monthly_results` sa `is_final=True`)."
-        ),
-        examples=[True],
-    )
-    has_data: bool = Field(
-        ...,
-        description=(
-            "Da li postoji bilo kakav obračun za ovaj mjesec.\n"
-            "Trenutno je isto što i `is_final`, ali u budućnosti se može razlikovati "
-            "ako uvedemo koncept 'draft' obračuna."
-        ),
-        examples=[True],
-    )
+    month: int = Field(..., ge=1, le=12, description="Mjesec u godini (1-12).", examples=[1])
+    is_final: bool = Field(..., description="Da li postoji finalizovan obračun.", examples=[True])
+    has_data: bool = Field(..., description="Da li postoji bilo kakav obračun.", examples=[True])
 
 
 class MonthlyTaxStatusResponse(BaseModel):
-    """
-    Odgovor za /tax/monthly/status endpoint.
-
-    Sadrži godinu, kod tenanta i listu statusa po mjesecima (1-12).
-    """
-
     model_config = BaseConfig
 
-    year: int = Field(
-        ...,
-        ge=2000,
-        le=2100,
-        description="Godina na koju se odnosi pregled statusa.",
-        examples=[2025],
-    )
-    tenant_code: str = Field(
-        ...,
-        description="Šifra tenanta za kojeg je status izračunat.",
-        examples=["t-demo"],
-    )
-    items: list[MonthlyTaxStatusItem] = Field(
-        ...,
-        description=(
-            "Lista od 12 elemenata (mjeseci 1-12) sa informacijom o tome "
-            "da li je mjesec finalizovan i da li postoji obračun."
-        ),
-    )
+    year: int = Field(..., ge=2000, le=2100, description="Godina.", examples=[2025])
+    tenant_code: str = Field(..., description="Šifra tenanta.", examples=["t-demo"])
+    items: list[MonthlyTaxStatusItem] = Field(..., description="Lista statusa po mjesecima (1-12).")
 
 
 class YearlyTaxSummaryRead(BaseModel):
-    """
-    Reprezentacija GODIŠNJEG poreznog obračuna za jednog tenanta.
+    model_config = BaseConfig
 
-    Ovaj model sabira finalizovane mjesečne rezultate iz `tax_monthly_results`
-    i vraća zbirne vrijednosti za cijelu godinu.
+    year: int = Field(..., ge=2000, le=2100, description="Godina.", examples=[2025])
+    tenant_code: str = Field(..., description="Šifra tenanta.", examples=["t-demo"])
+
+    months_included: int = Field(..., ge=0, le=12, description="Broj uključenih mjeseci.", examples=[12])
+
+    total_income: Decimal = Field(..., ge=0, description="Zbir prihoda.", examples=[Decimal("60000.00")])
+    total_expense: Decimal = Field(..., ge=0, description="Zbir rashoda.", examples=[Decimal("18000.00")])
+    taxable_base: Decimal = Field(..., description="Zbir osnovice.", examples=[Decimal("42000.00")])
+    income_tax: Decimal = Field(..., description="Zbir poreza.", examples=[Decimal("4200.00")])
+    contributions_total: Decimal = Field(..., description="Zbir doprinosa.", examples=[Decimal("10800.00")])
+    total_due: Decimal = Field(..., description="Ukupno za uplatu.", examples=[Decimal("15000.00")])
+    currency: str = Field("BAM", description="Valuta.", examples=["BAM"])
+
+
+# ======================================================
+#  10.1 /tax/monthly – mjesečni pregled (12 mjeseci + status uplate)
+# ======================================================
+class TaxMonthlyOverviewItem(BaseModel):
+    """
+    Jedan mjesec u godišnjem pregledu poreskih obaveza (10.1).
+
+    Svi iznosi su u valuti (default BAM).
     """
 
     model_config = BaseConfig
 
-    year: int = Field(
-        ...,
-        ge=2000,
-        le=2100,
-        description="Godina za koju je urađen godišnji obračun.",
-        examples=[2025],
-    )
-    tenant_code: str = Field(
-        ...,
-        description="Šifra tenanta na kojeg se odnosi godišnji obračun.",
-        examples=["t-demo"],
-    )
+    year: int = Field(..., ge=2000, le=2100, examples=[2025])
+    month: int = Field(..., ge=1, le=12, examples=[1])
 
-    months_included: int = Field(
-        ...,
-        ge=0,
-        le=12,
-        description=(
-            "Broj mjeseci koji su bili uključeni u godišnji obračun.\n"
-            "Tipično je to broj finalizovanih mjeseci u datoj godini."
-        ),
-        examples=[12],
-    )
+    # iznosi po zahtjevu:
+    income_tax: Decimal = Field(..., ge=0, description="Paušalni porez (KM).", examples=[Decimal("350.00")])
+    pension: Decimal = Field(..., ge=0, description="PIO (KM).", examples=[Decimal("630.00")])
+    health: Decimal = Field(..., ge=0, description="Zdravstveno (KM).", examples=[Decimal("420.00")])
+    unemployment: Decimal = Field(..., ge=0, description="Nezaposlenost (KM).", examples=[Decimal("52.50")])
+    total_due: Decimal = Field(..., ge=0, description="Total (KM).", examples=[Decimal("1452.50")])
 
-    total_income: Decimal = Field(
-        ...,
-        ge=0,
-        description=(
-            "Zbir svih `total_income` vrijednosti iz finalizovanih mjesečnih obračuna "
-            "za dati period."
-        ),
-        examples=[Decimal("60000.00")],
-    )
-    total_expense: Decimal = Field(
-        ...,
-        ge=0,
-        description=(
-            "Zbir svih `total_expense` vrijednosti iz finalizovanih mjesečnih obračuna "
-            "za dati period."
-        ),
-        examples=[Decimal("18000.00")],
-    )
-    taxable_base: Decimal = Field(
-        ...,
-        description=(
-            "Zbir svih mjesečnih `taxable_base` vrijednosti za godinu.\n"
-            "Za DUMMY model dovoljno je da se sabiraju već izračunate mjesečne osnovice."
-        ),
-        examples=[Decimal("42000.00")],
-    )
-    income_tax: Decimal = Field(
-        ...,
-        description=(
-            "Zbir svih mjesečnih `income_tax` vrijednosti za godinu.\n"
-            "Ovo predstavlja ukupni porez na dohodak za godinu."
-        ),
-        examples=[Decimal("4200.00")],
-    )
-    contributions_total: Decimal = Field(
-        ...,
-        description=(
-            "Zbir svih mjesečnih `contributions_total` vrijednosti za godinu.\n"
-            "Predstavlja ukupne doprinose (PIO, zdravstveno, nezaposlenost, itd.)."
-        ),
-        examples=[Decimal("10800.00")],
-    )
-    total_due: Decimal = Field(
-        ...,
-        description=(
-            "Zbir svih mjesečnih `total_due` vrijednosti (porez + doprinosi) "
-            "za godinu."
-        ),
-        examples=[Decimal("15000.00")],
-    )
-    currency: str = Field(
-        "BAM",
-        description="Valuta u kojoj su izraženi svi iznosi godišnjeg obračuna.",
-        examples=["BAM"],
-    )
+    # status uplate:
+    is_paid: bool = Field(False, description="Status uplate (DA/NE).", examples=[False])
+    paid_at: Optional[date] = Field(None, description="Datum uplate.", examples=["2025-01-15"])
+
+    currency: str = Field("BAM", description="Valuta.", examples=["BAM"])
+
+
+class TaxMonthlyOverviewResponse(BaseModel):
+    model_config = BaseConfig
+
+    year: int = Field(..., ge=2000, le=2100, examples=[2025])
+    tenant_code: str = Field(..., examples=["t-demo"])
+    items: list[TaxMonthlyOverviewItem] = Field(..., description="Lista 12 mjeseci (1-12).")
+
+
+class TaxMonthlyPaymentUpsert(BaseModel):
+    """
+    Payload za označavanje uplate.
+
+    Pravila:
+    - ako is_paid=true i paid_at nije poslan → backend upisuje današnji datum
+    - ako is_paid=false → paid_at se briše (postaje null)
+    """
+
+    model_config = BaseConfig
+
+    is_paid: bool = Field(..., description="Da li je uplata izvršena.", examples=[True])
+    paid_at: Optional[date] = Field(None, description="Datum uplate (opciono).", examples=["2025-01-15"])

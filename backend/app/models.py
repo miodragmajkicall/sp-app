@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
+
 
 from sqlalchemy import (
     BigInteger,
@@ -71,7 +73,6 @@ class Tenant(Base):
         UniqueConstraint("code", name="uq_tenants_code"),
     )
 
-    # Relacija za listu faktura (nije obavezna u logici, ali korisna)
     invoices = relationship("Invoice", back_populates="tenant", cascade="all,delete")
 
 
@@ -88,17 +89,14 @@ class CashEntry(Base):
     kind = Column(String(16), nullable=False)
     amount = Column(Numeric(12, 2), nullable=False)
 
-    # Vrsta računa: 'cash' = kasa, 'bank' = tekući račun
     account = Column(String(16), nullable=False, default="cash")
 
-    # Opciona veza na izlaznu fakturu
     invoice_id = Column(
         BigInteger,
         ForeignKey("invoices.id", ondelete="SET NULL"),
         nullable=True,
     )
 
-    # Opciona veza na ulaznu fakturu
     input_invoice_id = Column(
         BigInteger,
         ForeignKey("input_invoices.id", ondelete="SET NULL"),
@@ -131,33 +129,26 @@ class Invoice(Base):
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
 
-    # Tenant iz headera X-Tenant-Code
     tenant_code = Column(
         String(64),
         ForeignKey("tenants.code", ondelete="CASCADE"),
         nullable=False,
     )
 
-    # Broj fakture po tenant-u (npr. 2025-00001)
     invoice_number = Column(String(32), nullable=False)
 
-    # Datumi
     issue_date = Column(Date, nullable=False)
     due_date = Column(Date, nullable=True)
 
-    # Podaci o kupcu
     buyer_name = Column(String(128), nullable=False)
     buyer_address = Column(String(256), nullable=True)
 
-    # Napomena na fakturi (opcionalno)
     note = Column(Text, nullable=True)
 
-    # Sume – server izračunava
     total_base = Column(Numeric(14, 2), nullable=False, default=0)
     total_vat = Column(Numeric(14, 2), nullable=False, default=0)
     total_amount = Column(Numeric(14, 2), nullable=False, default=0)
 
-    # Status plaćanja – False = neplaćena, True = plaćena
     is_paid = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(
@@ -172,14 +163,12 @@ class Invoice(Base):
         ),
     )
 
-    # Relacija prema stavkama
     items = relationship(
         "InvoiceItem",
         back_populates="invoice",
         cascade="all, delete-orphan",
     )
 
-    # Relacija prema tenantu
     tenant = relationship("Tenant", back_populates="invoices")
 
 
@@ -202,10 +191,8 @@ class InvoiceItem(Base):
     quantity = Column(Numeric(12, 2), nullable=False, default=1)
     unit_price = Column(Numeric(14, 2), nullable=False, default=0)
 
-    # PDV stopa – npr. 0.17 = 17%
     vat_rate = Column(Numeric(5, 4), nullable=False, default=0)
 
-    # Izračunate vrijednosti za osnovicu i PDV stavke
     base_amount = Column(Numeric(14, 2), nullable=False, default=0)
     vat_amount = Column(Numeric(14, 2), nullable=False, default=0)
     total_amount = Column(Numeric(14, 2), nullable=False, default=0)
@@ -225,10 +212,6 @@ class InvoiceItem(Base):
 class InvoiceAttachment(Base):
     """
     Attachment fakture/računa (skener/slika računa, PDF, itd.).
-
-    Napomena:
-    - ova tabela **nije** direktno zaključana business lock-om po periodima,
-      jer sama promjena fajla ne utiče na numerički poreski obračun.
     """
 
     __tablename__ = "invoice_attachments"
@@ -241,14 +224,12 @@ class InvoiceAttachment(Base):
         nullable=False,
     )
 
-    # Kada je attachment povezan sa konkretnom izlaznom fakturom
     invoice_id = Column(
         BigInteger,
         ForeignKey("invoices.id", ondelete="SET NULL"),
         nullable=True,
     )
 
-    # Kada je attachment povezan sa konkretnom ulaznom fakturom (račun dobavljača)
     input_invoice_id = Column(
         BigInteger,
         ForeignKey("input_invoices.id", ondelete="SET NULL"),
@@ -259,7 +240,6 @@ class InvoiceAttachment(Base):
     content_type = Column(String(128), nullable=False)
     size_bytes = Column(BigInteger, nullable=False)
 
-    # Relativna ili apsolutna putanja do fajla na disku
     storage_path = Column(Text, nullable=False)
 
     status = Column(
@@ -274,7 +254,6 @@ class InvoiceAttachment(Base):
         server_default=func.now(),
     )
 
-    # Relacija ka ulaznoj fakturi (opciono)
     input_invoice = relationship("InputInvoice", back_populates="attachments")
 
 
@@ -282,20 +261,6 @@ class InvoiceAttachment(Base):
 #  INPUT INVOICES (ULAZNE FAKTURE – TROŠKOVI)
 # ======================================================
 class InputInvoice(Base):
-    """
-    Ulazna faktura (račun dobavljača) kao poseban entitet.
-
-    Napomena (VAŽNO):
-    - vrijednosti iz ove tabele (total_amount po issue_date) ulaze u
-      DUMMY obračun rashoda u tax modulu,
-    - nakon uvođenja business lock-a, InputInvoice je sada obuhvaćena
-      istim model-level zaštitnim mehanizmom kao i Invoice/CashEntry:
-        - prije update/delete provjerava se da li je mjesec (year/month
-          po `issue_date`) finalizovan u `tax_monthly_results`,
-        - ako jeste, pokušaj izmjene ili brisanja baca
-          `FinalizedPeriodModificationError` i transakcija se poništava.
-    """
-
     __tablename__ = "input_invoices"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -312,22 +277,13 @@ class InputInvoice(Base):
 
     invoice_number = Column(String(64), nullable=False)
 
-    # Datum dokumenta (računa)
     issue_date = Column(Date, nullable=False)
-
-    # Rok dospijeća
     due_date = Column(Date, nullable=True)
-
-    # Datum knjiženja (poseban od datuma dokumenta)
     posting_date = Column(Date, nullable=True)
 
-    # Kategorija troška – gorivo, kancelarija, usluge, itd.
     expense_category = Column(String(64), nullable=True)
 
-    # Da li se rashod priznaje za porez
     is_tax_deductible = Column(Boolean, nullable=False, default=True)
-
-    # Status plaćanja – False = nije plaćeno, True = plaćeno
     is_paid = Column(Boolean, nullable=False, default=False)
 
     total_base = Column(Numeric(14, 2), nullable=False, default=0)
@@ -352,7 +308,6 @@ class InputInvoice(Base):
         ),
     )
 
-    # Attachment-i povezani sa ovom ulaznom fakturom
     attachments = relationship(
         "InvoiceAttachment",
         back_populates="input_invoice",
@@ -360,18 +315,98 @@ class InputInvoice(Base):
 
 
 # ======================================================
+#  TAX SETTINGS (per-tenant stope)
+# ======================================================
+class TaxSettings(Base):
+    """
+    Podesive stope za TAX modul po tenantu.
+
+    Ovo nam omogućava da:
+    - /tax/monthly/* koristi realne (ili bar podesive) stope,
+    - UI može imati jednostavan blok “Stope” bez dodatnih menija,
+    - zadržimo sistem jak, ali jednostavan.
+    """
+
+    __tablename__ = "tax_settings"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    tenant_code = Column(
+        String(64),
+        ForeignKey("tenants.code", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+
+    income_tax_rate = Column(Numeric(6, 4), nullable=False, default=Decimal("0.10"))
+    pension_contribution_rate = Column(
+        Numeric(6, 4), nullable=False, default=Decimal("0.18")
+    )
+    health_contribution_rate = Column(
+        Numeric(6, 4), nullable=False, default=Decimal("0.12")
+    )
+    unemployment_contribution_rate = Column(
+        Numeric(6, 4), nullable=False, default=Decimal("0.015")
+    )
+    flat_costs_rate = Column(Numeric(6, 4), nullable=False, default=Decimal("0.30"))
+
+    currency = Column(String(8), nullable=False, default="BAM")
+
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("tenant_code", name="uq_tax_settings_tenant_code"),
+    )
+
+
+# ======================================================
+#  TAX MONTHLY PAYMENTS (status uplate + datum uplate)
+# ======================================================
+class TaxMonthlyPayment(Base):
+    """
+    Evidencija uplate za mjesečne obaveze.
+
+    Namjerno odvojeno od TaxMonthlyResult:
+    - TaxMonthlyResult = "račun / obračun" (finalize/history/locks)
+    - TaxMonthlyPayment = "uplatio / nije uplatio + datum"
+    """
+
+    __tablename__ = "tax_monthly_payments"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    tenant_code = Column(
+        String(64),
+        ForeignKey("tenants.code", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    year = Column(Integer, nullable=False)
+    month = Column(Integer, nullable=False)
+
+    is_paid = Column(Boolean, nullable=False, default=False)
+    paid_at = Column(Date, nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_code",
+            "year",
+            "month",
+            name="uq_tax_monthly_payments_tenant_year_month",
+        ),
+    )
+
+
+# ======================================================
 #  TAX MONTHLY RESULTS
 # ======================================================
 class TaxMonthlyResult(Base):
-    """
-    Persistirani mjesečni obračun poreza/doprinosa po tenantu.
-
-    Ovaj entitet predstavlja zaključani rezultat za jedan (year, month, tenant).
-    Kada postoji zapis sa is_final=True, mjesec se tretira kao finalizovan,
-    a izmjene/brisanja na CashEntry, Invoice i InputInvoice modelima za taj period
-    biće blokirane na nivou modela.
-    """
-
     __tablename__ = "tax_monthly_results"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -414,13 +449,6 @@ class TaxMonthlyResult(Base):
 #  TAX YEARLY RESULTS
 # ======================================================
 class TaxYearlyResult(Base):
-    """
-    Persistirani GODIŠNJI obračun poreza/doprinosa po tenantu.
-
-    Godišnji rezultat se računa sabiranjem finalizovanih mjesečnih
-    rezultata i služi kao summary za izvještaje i uplate na nivou cijele godine.
-    """
-
     __tablename__ = "tax_yearly_results"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -462,13 +490,6 @@ class TaxYearlyResult(Base):
 #  TAX MONTHLY FINALIZE HISTORY (AUDIT LOG)
 # ======================================================
 class TaxMonthlyFinalizeHistory(Base):
-    """
-    Audit log za operacije nad mjesečnim poreznim obračunom.
-
-    Svaki uspješan finalize mjesečnog obračuna upisuje jedan red u ovu tabelu,
-    sa snapshot-om tadašnjih vrijednosti i osnovnim metadata o akciji.
-    """
-
     __tablename__ = "tax_monthly_finalize_history"
 
     id = Column(BigInteger, primary_key=True, autoincrement=True)
@@ -511,17 +532,6 @@ class TaxMonthlyFinalizeHistory(Base):
 
 
 def _ensure_month_not_finalized(obj: object, date_value: date | None) -> None:
-    """
-    Provjerava da li je mjesec za dati tenant_code i datum već finalizovan
-    u tabeli `tax_monthly_results` (is_final = True).
-
-    Ako je period finalizovan → baca FinalizedPeriodModificationError.
-
-    Ovu helper funkciju pozivaju SQLAlchemy event hook-ovi prije update/delete
-    na modelima CashEntry, Invoice i InputInvoice. Time se osigurava da se nakon
-    finalize rezultata za dati mjesec ne može više mijenjati niti brisati
-    osnovni podatak koji ulazi u poreski obračun za taj period.
-    """
     if date_value is None:
         return
 
@@ -558,65 +568,35 @@ def _ensure_month_not_finalized(obj: object, date_value: date | None) -> None:
 
 @event.listens_for(Invoice, "before_update")
 def _invoice_before_update(mapper, connection, target: Invoice) -> None:
-    """
-    Globalni business lock za Invoice prije izmjene.
-
-    Svaki pokušaj izmjene fakture (npr. promjena datuma, iznosa, kupca...)
-    provjerava da li je mjesec `issue_date` finalizovan. Ako jeste → zabrana.
-    """
     if target.issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
 
 
 @event.listens_for(Invoice, "before_delete")
 def _invoice_before_delete(mapper, connection, target: Invoice) -> None:
-    """
-    Globalni business lock za Invoice prije brisanja.
-
-    Ako faktura pripada finalizovanom mjesecu (po `issue_date`), brisanje
-    se blokira.
-    """
     if target.issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
 
 
 @event.listens_for(CashEntry, "before_update")
 def _cash_entry_before_update(mapper, connection, target: CashEntry) -> None:
-    """
-    Globalni business lock za CashEntry prije izmjene.
-
-    Ako je porezni period (year/month po `entry_date`) već finalizovan
-    u `tax_monthly_results`, izmjena zapisa se blokira.
-    """
     if target.entry_date:
         _ensure_month_not_finalized(target, target.entry_date)
 
 
 @event.listens_for(CashEntry, "before_delete")
 def _cash_entry_before_delete(mapper, connection, target: CashEntry) -> None:
-    """
-    Globalni business lock za CashEntry prije brisanja.
-    """
     if target.entry_date:
         _ensure_month_not_finalized(target, target.entry_date)
 
 
 @event.listens_for(InputInvoice, "before_update")
 def _input_invoice_before_update(mapper, connection, target: InputInvoice) -> None:
-    """
-    Globalni business lock za InputInvoice prije izmjene.
-
-    Ako je porezni period (year/month po `issue_date`) već finalizovan
-    u `tax_monthly_results`, izmjena zapisa se blokira.
-    """
     if target.issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
 
 
 @event.listens_for(InputInvoice, "before_delete")
 def _input_invoice_before_delete(mapper, connection, target: InputInvoice) -> None:
-    """
-    Globalni business lock za InputInvoice prije brisanja.
-    """
     if target.issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
