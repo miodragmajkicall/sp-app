@@ -17,6 +17,7 @@ import InputInvoiceDetailPage from "./pages/InputInvoiceDetailPage";
 import TaxPage from "./pages/TaxPage";
 import KprPage from "./pages/KprPage";
 import PrometPage from "./pages/PrometPage";
+import ReportsPage from "./pages/ReportsPage";
 
 function App() {
   const linkBaseClasses =
@@ -189,12 +190,20 @@ function App() {
                 <span>Porezi i doprinosi</span>
               </NavLink>
 
-              <div className="flex items-center rounded-md px-3 py-2 text-slate-500 cursor-default">
+              <NavLink
+                to="/reports"
+                className={({ isActive }) =>
+                  [
+                    linkBaseClasses,
+                    isActive ? linkActiveClasses : linkInactiveClasses,
+                  ].join(" ")
+                }
+              >
                 <span className="mr-2" aria-hidden="true">
                   📈
                 </span>
-                <span>Izvještaji (uskoro)</span>
-              </div>
+                <span>Izvještaji</span>
+              </NavLink>
             </div>
 
             {/* DODATNE EVIDENCIJE */}
@@ -294,6 +303,9 @@ function App() {
 
               {/* Porezi */}
               <Route path="/tax" element={<TaxPage />} />
+
+              {/* Izvještaji */}
+              <Route path="/reports" element={<ReportsPage />} />
 
               <Route
                 path="*"
