@@ -21,10 +21,27 @@ export type MonthlyTaxSummaryRead = {
   currency: string;
 };
 
+export type YearlyTaxSummaryRead = {
+  year: number;
+  tenant_code: string;
+  months_included: number;
+
+  total_income: string;
+  total_expense: string;
+  taxable_base: string;
+  income_tax: string;
+  contributions_total: string;
+  total_due: string;
+
+  currency: string;
+};
+
 export type TaxMonthlyParams = {
   year: number;
   month: number;
 };
+
+export type TaxYearlyMode = "pausal" | "two_percent";
 
 /**
  * GET /tax/monthly/auto
@@ -83,5 +100,32 @@ export async function fetchTaxMonthlyHistory(params: {
   const res = await apiClient.get<MonthlyTaxSummaryRead[]>("/tax/monthly/history", {
     params: { year: params.year },
   });
+  return res.data;
+}
+
+/**
+ * GET /tax/yearly/preview
+ */
+export async function fetchTaxYearlyPreview(params: {
+  year: number;
+}): Promise<YearlyTaxSummaryRead> {
+  const res = await apiClient.get<YearlyTaxSummaryRead>("/tax/yearly/preview", {
+    params: { year: params.year },
+  });
+  return res.data;
+}
+
+/**
+ * POST /tax/yearly/finalize
+ * VAŽNO: backend uzima year kao Query parametar.
+ */
+export async function finalizeTaxYearly(params: {
+  year: number;
+}): Promise<YearlyTaxSummaryRead> {
+  const res = await apiClient.post<YearlyTaxSummaryRead>(
+    "/tax/yearly/finalize",
+    null,
+    { params: { year: params.year } },
+  );
   return res.data;
 }
