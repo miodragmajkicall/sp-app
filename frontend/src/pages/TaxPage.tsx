@@ -1,22 +1,12 @@
-// frontend/src/pages/TaxPage.tsx
+// /home/miso/dev/sp-app/sp-app/frontend/src/pages/TaxPage.tsx
 import { useEffect, useMemo, useState } from "react";
-
-type MonthlyTaxSummary = {
-  year: number;
-  month: number;
-  tenant_code: string;
-  total_income: string;
-  total_expense: string;
-  taxable_base: string;
-  income_tax: string;
-  contributions_total: string;
-  total_due: string;
-  is_final: boolean;
-  currency: string;
-};
-
-const API_BASE_URL = "http://127.0.0.1:8000";
-const DEMO_TENANT = "t-demo";
+import { getApiBaseUrl } from "../services/apiClient";
+import {
+  MonthlyTaxSummaryRead,
+  fetchTaxMonthlyAuto,
+  fetchTaxMonthlyHistory,
+  finalizeTaxMonthly,
+} from "../services/taxApi";
 
 export default function TaxPage() {
   const today = useMemo(() => new Date(), []);
@@ -25,42 +15,30 @@ export default function TaxPage() {
 
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [summary, setSummary] = useState<MonthlyTaxSummary | null>(null);
+  const [summary, setSummary] = useState<MonthlyTaxSummaryRead | null>(null);
   const [rawJson, setRawJson] = useState<string>("");
 
   const [finalizing, setFinalizing] = useState(false);
   const [finalizeError, setFinalizeError] = useState<string | null>(null);
 
-  const [history, setHistory] = useState<MonthlyTaxSummary[]>([]);
+  const [history, setHistory] = useState<MonthlyTaxSummaryRead[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
+
+  const apiBaseUrl = useMemo(() => getApiBaseUrl(), []);
+
+  const monthName = useMemo(() => {
+    return new Date(year, month - 1, 1).toLocaleDateString("sr-Latn-BA", {
+      month: "long",
+    });
+  }, [year, month]);
 
   async function fetchAutoMonthly() {
     setLoading(true);
     setErrorMsg(null);
 
     try {
-      const url = new URL("/tax/monthly/auto", API_BASE_URL);
-      url.searchParams.set("year", String(year));
-      url.searchParams.set("month", String(month));
-
-      const res = await fetch(url.toString(), {
-        method: "GET",
-        headers: {
-          "X-Tenant-Code": DEMO_TENANT,
-        },
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(
-          `Request failed with status code ${res.status}${
-            text ? ` – ${text}` : ""
-          }`,
-        );
-      }
-
-      const data = (await res.json()) as MonthlyTaxSummary;
+      const data = await fetchTaxMonthlyAuto({ year, month });
       setSummary(data);
       setRawJson(JSON.stringify(data, null, 2));
     } catch (err: any) {
@@ -68,7 +46,7 @@ export default function TaxPage() {
       setSummary(null);
       setRawJson("");
       setErrorMsg(
-        err?.message ?? "Greška pri učitavanju mjesečnog preview-a.",
+        err?.message ?? "Greška pri učitavanju mjesečnog auto obračuna.",
       );
     } finally {
       setLoading(false);
@@ -79,7 +57,7 @@ export default function TaxPage() {
     if (
       !window.confirm(
         `Da li sigurno želiš FINALIZOVATI obračun za ${monthName} ${year}.?\n\n` +
-          "Nakon finalizacije, mjesec se smatra zaključenim i backend može blokirati izmjene povezanih dokumenata.",
+          "Nakon finalizacije, mjesec se smatra zaključenim i backend blokira izmjene povezanih dokumenata.",
       )
     ) {
       return;
@@ -89,34 +67,12 @@ export default function TaxPage() {
     setFinalizing(true);
 
     try {
-      const url = new URL("/tax/monthly/finalize", API_BASE_URL);
-
-      const res = await fetch(url.toString(), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "X-Tenant-Code": DEMO_TENANT,
-        },
-        body: JSON.stringify({
-          year,
-          month,
-        }),
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(
-          `Finalize failed with status code ${res.status}${
-            text ? ` – ${text}` : ""
-          }`,
-        );
-      }
-
-      const data = (await res.json()) as MonthlyTaxSummary;
-
-      // osvježi glavni sažetak + raw JSON
+      const data = await finalizeTaxMonthly({ year, month });
       setSummary(data);
       setRawJson(JSON.stringify(data, null, 2));
+
+      // nakon finalize, ima smisla osvježiti i istoriju za godinu
+      fetchHistoryForYear().catch(() => {});
     } catch (err: any) {
       console.error("Failed to finalize monthly tax:", err);
       setFinalizeError(
@@ -132,35 +88,7 @@ export default function TaxPage() {
     setHistoryError(null);
 
     try {
-      const url = new URL("/tax/monthly/history", API_BASE_URL);
-      url.searchParams.set("year", String(year));
-
-      const res = await fetch(url.toString(), {
-        method: "GET",
-        headers: {
-          "X-Tenant-Code": DEMO_TENANT,
-        },
-      });
-
-      if (!res.ok) {
-        const text = await res.text();
-        throw new Error(
-          `History request failed with status code ${res.status}${
-            text ? ` – ${text}` : ""
-          }`,
-        );
-      }
-
-      const data = (await res.json()) as MonthlyTaxSummary[] | {
-        items?: MonthlyTaxSummary[];
-      };
-
-      const list = Array.isArray(data)
-        ? data
-        : Array.isArray((data as any).items)
-        ? ((data as any).items as MonthlyTaxSummary[])
-        : [];
-
+      const list = await fetchTaxMonthlyHistory({ year });
       setHistory(list);
     } catch (err: any) {
       console.error("Failed to load tax history:", err);
@@ -173,28 +101,21 @@ export default function TaxPage() {
     }
   }
 
-  // Učitaj odmah za trenutni mjesec (auto preview)
   useEffect(() => {
     fetchAutoMonthly().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const monthName = useMemo(() => {
-    return new Date(year, month - 1, 1).toLocaleDateString("sr-Latn-BA", {
-      month: "long",
-    });
-  }, [year, month]);
-
   function formatAmount(value: string | null | undefined) {
     if (value == null) return "-";
     const num = Number(value);
-    if (!Number.isFinite(num)) return value;
+    if (!Number.isFinite(num)) return String(value);
     return `${num.toFixed(2)} ${summary?.currency ?? "BAM"}`;
   }
 
   function formatHistoryAmount(
-    item: MonthlyTaxSummary,
-    field: keyof MonthlyTaxSummary,
+    item: MonthlyTaxSummaryRead,
+    field: keyof MonthlyTaxSummaryRead,
   ) {
     const raw = item[field];
     if (typeof raw !== "string") return "-";
@@ -223,8 +144,8 @@ export default function TaxPage() {
   }
 
   function getMonthlyFieldAsNumber(
-    item: MonthlyTaxSummary,
-    field: keyof MonthlyTaxSummary,
+    item: MonthlyTaxSummaryRead,
+    field: keyof MonthlyTaxSummaryRead,
   ): number {
     return toNumberSafe(item[field]);
   }
@@ -248,51 +169,46 @@ export default function TaxPage() {
     });
   }, [sortedHistory]);
 
-  const {
-    yearTotalDue,
-    yearTaxTotal,
-    yearContribTotal,
-    maxMonth,
-    minMonthNonZero,
-  } = useMemo(() => {
-    let totalDue = 0;
-    let totalTax = 0;
-    let totalContrib = 0;
+  const { yearTotalDue, yearTaxTotal, yearContribTotal, maxMonth, minMonthNonZero } =
+    useMemo(() => {
+      let totalDue = 0;
+      let totalTax = 0;
+      let totalContrib = 0;
 
-    let maxVal = 0;
-    let maxItem: MonthlyTaxSummary | null = null;
+      let maxVal = 0;
+      let maxItem: MonthlyTaxSummaryRead | null = null;
 
-    let minValNonZero: number | null = null;
-    let minItemNonZero: MonthlyTaxSummary | null = null;
+      let minValNonZero: number | null = null;
+      let minItemNonZero: MonthlyTaxSummaryRead | null = null;
 
-    for (const item of history) {
-      const due = getMonthlyFieldAsNumber(item, "total_due");
-      const tax = getMonthlyFieldAsNumber(item, "income_tax");
-      const contrib = getMonthlyFieldAsNumber(item, "contributions_total");
+      for (const item of history) {
+        const due = getMonthlyFieldAsNumber(item, "total_due");
+        const tax = getMonthlyFieldAsNumber(item, "income_tax");
+        const contrib = getMonthlyFieldAsNumber(item, "contributions_total");
 
-      totalDue += due;
-      totalTax += tax;
-      totalContrib += contrib;
+        totalDue += due;
+        totalTax += tax;
+        totalContrib += contrib;
 
-      if (due > maxVal) {
-        maxVal = due;
-        maxItem = item;
+        if (due > maxVal) {
+          maxVal = due;
+          maxItem = item;
+        }
+
+        if (due > 0 && (minValNonZero === null || due < minValNonZero)) {
+          minValNonZero = due;
+          minItemNonZero = item;
+        }
       }
 
-      if (due > 0 && (minValNonZero === null || due < minValNonZero)) {
-        minValNonZero = due;
-        minItemNonZero = item;
-      }
-    }
-
-    return {
-      yearTotalDue: totalDue,
-      yearTaxTotal: totalTax,
-      yearContribTotal: totalContrib,
-      maxMonth: maxItem,
-      minMonthNonZero: minItemNonZero,
-    };
-  }, [history]);
+      return {
+        yearTotalDue: totalDue,
+        yearTaxTotal: totalTax,
+        yearContribTotal: totalContrib,
+        maxMonth: maxItem,
+        minMonthNonZero: minItemNonZero,
+      };
+    }, [history]);
 
   const maxChartValue = useMemo(() => {
     const vals = monthlyChartData.map((m) => m.totalDue);
@@ -300,15 +216,12 @@ export default function TaxPage() {
     return max > 0 ? max : 0;
   }, [monthlyChartData]);
 
-  function formatYearAmount(
-    value: number,
-    currency: string | undefined = "BAM",
-  ) {
+  function formatYearAmount(value: number, currency: string | undefined = "BAM") {
     if (!Number.isFinite(value)) return "-";
     return `${value.toFixed(2)} ${currency}`;
   }
 
-  function formatMonthLabel(item: MonthlyTaxSummary | null) {
+  function formatMonthLabel(item: MonthlyTaxSummaryRead | null) {
     if (!item) return "-";
     const d = new Date(item.year, item.month - 1, 1);
     if (Number.isNaN(d.getTime())) return `${item.year}-${item.month}`;
@@ -326,8 +239,8 @@ export default function TaxPage() {
           Porezi &amp; doprinosi – mjesečni pregled
         </h2>
         <p className="text-xs text-slate-500 mt-1">
-          Tenant <span className="font-mono">{DEMO_TENANT}</span> · backend TAX
-          modul (dummy logika u ovoj fazi).
+          Demo režim (1 tenant) · API{" "}
+          <span className="font-mono">{apiBaseUrl}</span>
         </p>
       </div>
 
@@ -335,7 +248,7 @@ export default function TaxPage() {
       {errorMsg && (
         <div className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-700">
           <p className="font-semibold mb-1">
-            Greška pri učitavanju mjesečnog preview-a
+            Greška pri učitavanju mjesečnog auto obračuna
           </p>
           <p className="text-xs">{errorMsg}</p>
         </div>
@@ -420,14 +333,13 @@ export default function TaxPage() {
             {summary
               ? summary.is_final
                 ? "Zaključan (finalizovan obračun)"
-                : "Još nije finalizovan (DUMMY obračun)"
+                : "Još nije finalizovan"
               : loading
               ? "Čeka učitavanje..."
               : "-"}
           </p>
           <p className="text-[11px] text-slate-400">
-            Ovaj status dolazi iz polja{" "}
-            <span className="font-mono">is_final</span>.
+            Status dolazi iz polja <span className="font-mono">is_final</span>.
           </p>
         </div>
 
@@ -463,9 +375,7 @@ export default function TaxPage() {
           <p className="text-lg font-semibold text-slate-800">
             {summary ? formatAmount(summary.taxable_base) : "-"}
           </p>
-          <p className="text-[11px] text-slate-400">
-            Računato po DUMMY formuli u backend-u.
-          </p>
+          <p className="text-[11px] text-slate-400">Računato u backend-u.</p>
         </div>
       </div>
 
@@ -491,7 +401,7 @@ export default function TaxPage() {
             {summary ? formatAmount(summary.contributions_total) : "-"}
           </p>
           <p className="text-[11px] text-slate-400">
-            Zbir PIO + zdravstveno + nezaposlenost (dummy).
+            Zbir doprinosa (backend stope).
           </p>
         </div>
 
@@ -503,8 +413,7 @@ export default function TaxPage() {
             {summary ? formatAmount(summary.total_due) : "-"}
           </p>
           <p className="text-[11px] text-slate-400">
-            Polje <span className="font-mono">total_due</span> (porez +
-            doprinosi).
+            Polje <span className="font-mono">total_due</span>.
           </p>
         </div>
       </div>
@@ -517,7 +426,7 @@ export default function TaxPage() {
         <p className="text-xs text-slate-600">
           Poziva <span className="font-mono">GET /tax/monthly/auto</span> sa
           parametrima <span className="font-mono">year</span> i{" "}
-          <span className="font-mono">month</span>, te osvježava preview.
+          <span className="font-mono">month</span>.
         </p>
         <div className="mt-3 flex justify-end">
           <button
@@ -539,17 +448,14 @@ export default function TaxPage() {
               Zaključavanje (finalizacija) mjeseca
             </p>
             <p className="text-xs text-slate-600">
-              Finalizacija zaključava obračun za odabrani mjesec. Backend može
-              koristiti ovaj status da blokira naknadne izmjene dokumenata koji
-              utiču na obračun.
+              Finalizacija zaključava obračun za odabrani mjesec i backend blokira
+              izmjene podataka koji utiču na obračun (business protection).
             </p>
           </div>
           <button
             type="button"
             onClick={finalizeMonthly}
-            disabled={
-              finalizing || loading || (summary ? summary.is_final : false)
-            }
+            disabled={finalizing || loading || (summary ? summary.is_final : false)}
             className="btn-primary h-9 px-4 text-xs disabled:opacity-60"
           >
             {finalizing
@@ -563,21 +469,16 @@ export default function TaxPage() {
         {finalizeError && (
           <p className="text-[11px] text-red-600">{finalizeError}</p>
         )}
-
-        <p className="text-[11px] text-slate-400">
-          Poslije finalizacije, očekuje se da izmjene faktura / kase za ovaj
-          period budu onemogućene ili posebno kontrolisane (logika na backend-u).
-        </p>
       </div>
 
       {/* Raw JSON debug */}
       <div className="bg-white border rounded-lg p-4 space-y-2">
         <div className="flex items-center justify-between">
           <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
-            Raw rezultat (debug) – /tax/monthly/auto
+            Raw rezultat (debug)
           </p>
           <p className="text-[11px] text-slate-400">
-            Korisno da uvijek vidiš tačan ugovor backend ↔ frontend.
+            Ugovor backend ↔ frontend
           </p>
         </div>
 
@@ -594,8 +495,7 @@ export default function TaxPage() {
               Istorija mjesečnih obračuna
             </p>
             <p className="text-xs text-slate-600">
-              Pregled svih mjeseci za odabranu godinu. Podaci dolaze sa{" "}
-              <span className="font-mono">GET /tax/monthly/history</span>.
+              Podaci dolaze sa <span className="font-mono">GET /tax/monthly/history</span>.
             </p>
           </div>
           <button
@@ -608,14 +508,11 @@ export default function TaxPage() {
           </button>
         </div>
 
-        {historyError && (
-          <p className="text-[11px] text-red-600">{historyError}</p>
-        )}
+        {historyError && <p className="text-[11px] text-red-600">{historyError}</p>}
 
         <div className="text-[11px] text-slate-500">
           <p>
-            Godina: <span className="font-semibold">{year}.</span> · broj
-            zapisa:{" "}
+            Godina: <span className="font-semibold">{year}.</span> · broj zapisa:{" "}
             <span className="font-semibold">{history.length || 0}</span>
           </p>
         </div>
@@ -626,24 +523,16 @@ export default function TaxPage() {
               <tr>
                 <th className="px-2 py-1 text-left font-semibold">Mjesec</th>
                 <th className="px-2 py-1 text-left font-semibold">Status</th>
-                <th className="px-2 py-1 text-right font-semibold">
-                  Ukupno za uplatu
-                </th>
+                <th className="px-2 py-1 text-right font-semibold">Ukupno za uplatu</th>
                 <th className="px-2 py-1 text-right font-semibold">Porez</th>
-                <th className="px-2 py-1 text-right font-semibold">
-                  Doprinosi
-                </th>
+                <th className="px-2 py-1 text-right font-semibold">Doprinosi</th>
               </tr>
             </thead>
             <tbody>
               {history.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={5}
-                    className="px-2 py-3 text-center text-slate-400"
-                  >
-                    Nema zapisa za prikaz – učitaj istoriju ili nema obračuna za
-                    ovu godinu.
+                  <td colSpan={5} className="px-2 py-3 text-center text-slate-400">
+                    Nema zapisa za prikaz – učitaj istoriju ili nema obračuna za ovu godinu.
                   </td>
                 </tr>
               ) : (
@@ -653,13 +542,10 @@ export default function TaxPage() {
                     className="border-t border-slate-100"
                   >
                     <td className="px-2 py-1">
-                      {formatHistoryMonth(item.year, item.month)} (
-                      {item.month})
+                      {formatHistoryMonth(item.year, item.month)} ({item.month})
                     </td>
                     <td className="px-2 py-1">
-                      {item.is_final
-                        ? "Finalizovan (zaključan)"
-                        : "Draft / nije finalizovan"}
+                      {item.is_final ? "Finalizovan (zaključan)" : "Draft / nije finalizovan"}
                     </td>
                     <td className="px-2 py-1 text-right">
                       {formatHistoryAmount(item, "total_due")}
@@ -676,67 +562,46 @@ export default function TaxPage() {
             </tbody>
           </table>
         </div>
-
-        <p className="text-[11px] text-slate-400 mt-1">
-          Ovaj blok će kasnije biti baza za SAM pregled (12 mjeseci grafikon +
-          sumarni box).
-        </p>
       </div>
 
       {/* SAM pregled – godišnji zbir + grafikon 12 mjeseci */}
       <div className="bg-white border rounded-lg p-4 space-y-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
-              SAM pregled – porezi + doprinosi za {year}.
-            </p>
-            <p className="text-xs text-slate-600">
-              Na osnovu istorije mjesečnih obračuna izračunavamo godišnji zbir i
-              prikazujemo trend za 12 mjeseci.
-            </p>
-          </div>
+        <div>
+          <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
+            SAM pregled – porezi + doprinosi za {year}.
+          </p>
+          <p className="text-xs text-slate-600">
+            Na osnovu istorije mjesečnih obračuna izračunavamo godišnji zbir i prikazujemo trend.
+          </p>
         </div>
 
-        {/* Summary box */}
         <div className="grid gap-3 md:grid-cols-4 text-[11px]">
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-1">
             <p className="font-semibold text-slate-600">
               Godišnji zbir – ukupno za uplatu
             </p>
             <p className="text-sm font-bold text-slate-900">
-              {formatYearAmount(
-                yearTotalDue,
-                history[0]?.currency ?? "BAM",
-              )}
+              {formatYearAmount(yearTotalDue, history[0]?.currency ?? "BAM")}
             </p>
             <p className="text-slate-500">
-              Zbir svih polja <span className="font-mono">total_due</span> za
-              ovu godinu.
+              Zbir <span className="font-mono">total_due</span> za ovu godinu.
             </p>
           </div>
 
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-1">
             <p className="font-semibold text-slate-600">Godišnji porez</p>
             <p className="text-sm font-bold text-slate-900">
-              {formatYearAmount(
-                yearTaxTotal,
-                history[0]?.currency ?? "BAM",
-              )}
+              {formatYearAmount(yearTaxTotal, history[0]?.currency ?? "BAM")}
             </p>
             <p className="text-slate-500">
-              Zbir <span className="font-mono">income_tax</span> svih mjeseci.
+              Zbir <span className="font-mono">income_tax</span>.
             </p>
           </div>
 
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-1">
-            <p className="font-semibold text-slate-600">
-              Godišnji doprinosi (PIO, zdravstvo itd.)
-            </p>
+            <p className="font-semibold text-slate-600">Godišnji doprinosi</p>
             <p className="text-sm font-bold text-slate-900">
-              {formatYearAmount(
-                yearContribTotal,
-                history[0]?.currency ?? "BAM",
-              )}
+              {formatYearAmount(yearContribTotal, history[0]?.currency ?? "BAM")}
             </p>
             <p className="text-slate-500">
               Zbir <span className="font-mono">contributions_total</span>.
@@ -746,25 +611,18 @@ export default function TaxPage() {
           <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-1">
             <p className="font-semibold text-slate-600">Najveći / najmanji mjesec</p>
             <p className="text-xs text-slate-700">
-              Najveći:{" "}
-              <span className="font-semibold">
-                {formatMonthLabel(maxMonth)}
-              </span>
+              Najveći: <span className="font-semibold">{formatMonthLabel(maxMonth)}</span>
             </p>
             <p className="text-xs text-slate-700">
               Najmanji (≠ 0):{" "}
-              <span className="font-semibold">
-                {formatMonthLabel(minMonthNonZero)}
-              </span>
+              <span className="font-semibold">{formatMonthLabel(minMonthNonZero)}</span>
             </p>
             <p className="text-slate-500">
-              Poredi se polje{" "}
-              <span className="font-mono">total_due</span> po mjesecima.
+              Poredi se <span className="font-mono">total_due</span>.
             </p>
           </div>
         </div>
 
-        {/* Jednostavan bar grafikon za 12 mjeseci */}
         <div className="space-y-2">
           <p className="text-[11px] font-semibold text-slate-600">
             Trend obaveza po mjesecima (total_due)
@@ -774,7 +632,7 @@ export default function TaxPage() {
               const heightPercent =
                 maxChartValue > 0
                   ? Math.max(5, (item.totalDue / maxChartValue) * 100)
-                  : 0; // min 5% da se nešto vidi
+                  : 0;
 
               return (
                 <div
@@ -782,21 +640,17 @@ export default function TaxPage() {
                   className="flex-1 flex flex-col items-center justify-end gap-1"
                   title={`Mjesec ${item.month} – ${item.totalDue.toFixed(
                     2,
-                  )} ${item.currency}${
-                    item.isFinal ? " (finalizovan)" : ""
-                  }`}
+                  )} ${item.currency}${item.isFinal ? " (finalizovan)" : ""}`}
                 >
                   <div
                     className={
                       "w-3 rounded-t-md " +
-                      (item.isFinal
-                        ? "bg-emerald-500"
-                        : "bg-slate-400 opacity-80")
+                      (item.isFinal ? "bg-emerald-500" : "bg-slate-400 opacity-80")
                     }
                     style={{
                       height: maxChartValue > 0 ? `${heightPercent}%` : "0%",
                     }}
-                  ></div>
+                  />
                   <span className="text-[9px] text-slate-600">
                     {String(item.month).padStart(2, "0")}
                   </span>
@@ -805,8 +659,7 @@ export default function TaxPage() {
             })}
           </div>
           <p className="text-[10px] text-slate-500">
-            Zeleni stubići označavaju finalizovane mjesece, sivi su nacrti /
-            mjeseci bez finalizacije. Visina je proporcionalna iznosu{" "}
+            Zeleni stubići = finalizovan mjesec. Visina je proporcionalna iznosu{" "}
             <span className="font-mono">total_due</span>.
           </p>
         </div>

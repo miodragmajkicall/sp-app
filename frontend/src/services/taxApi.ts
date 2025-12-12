@@ -2,107 +2,86 @@
 import { apiClient } from "./apiClient";
 
 /**
- * Minimalni model za mjesečni TAX rezultat.
- * Ovo je generički tip – backend može vraćati i dodatna polja.
+ * Usklađeno sa backend response_model=MonthlyTaxSummaryRead
+ * (Decimal polja obično dolaze kao string iz JSON-a).
  */
-export interface TaxMonthlyPreviewResult {
+export type MonthlyTaxSummaryRead = {
   year: number;
   month: number;
   tenant_code: string;
 
-  // osnovni agregati (nazivi su prilagođeni tipičnoj strukturi)
-  total_income?: number | null;
-  total_expenses?: number | null;
-  taxable_base?: number | null;
-  tax_amount?: number | null;
-  contributions_amount?: number | null;
-  total_due?: number | null;
+  total_income: string;
+  total_expense: string;
+  taxable_base: string;
+  income_tax: string;
+  contributions_total: string;
+  total_due: string;
 
-  // status/info
-  status?: string | null;
-  is_finalized?: boolean | null;
+  is_final: boolean;
+  currency: string;
+};
 
-  // fallback polje za sve ostalo što backend šalje
-  [key: string]: unknown;
-}
-
-export interface TaxMonthlyParams {
+export type TaxMonthlyParams = {
   year: number;
   month: number;
-}
+};
 
 /**
- * GET /tax/monthly/preview
- * Vraća preview obračuna poreza i doprinosa za zadani mjesec.
+ * GET /tax/monthly/auto
  */
-export async function fetchTaxMonthlyPreview(
+export async function fetchTaxMonthlyAuto(
   params: TaxMonthlyParams,
-): Promise<TaxMonthlyPreviewResult> {
-  const res = await apiClient.get<TaxMonthlyPreviewResult>(
-    "/tax/monthly/preview",
-    {
-      params: {
-        year: params.year,
-        month: params.month,
-      },
-    },
-  );
+): Promise<MonthlyTaxSummaryRead> {
+  const res = await apiClient.get<MonthlyTaxSummaryRead>("/tax/monthly/auto", {
+    params: { year: params.year, month: params.month },
+  });
   return res.data;
 }
 
 /**
- * GET /tax/monthly/auto
- * Pokreće automatski obračun (dummy logika u ovoj fazi) i vraća rezultat.
- * Usklađeno sa TaxPage ekranom koji koristi GET /tax/monthly/auto.
+ * GET /tax/monthly/preview
+ * (ručni preview kroz query parametre total_income i total_expense)
  */
-export async function runTaxMonthlyAuto(
-  params: TaxMonthlyParams,
-): Promise<TaxMonthlyPreviewResult> {
-  const res = await apiClient.get<TaxMonthlyPreviewResult>(
-    "/tax/monthly/auto",
-    {
-      params: {
-        year: params.year,
-        month: params.month,
-      },
+export async function fetchTaxMonthlyPreview(params: {
+  year: number;
+  month: number;
+  total_income: string | number;
+  total_expense?: string | number;
+}): Promise<MonthlyTaxSummaryRead> {
+  const res = await apiClient.get<MonthlyTaxSummaryRead>("/tax/monthly/preview", {
+    params: {
+      year: params.year,
+      month: params.month,
+      total_income: params.total_income,
+      total_expense: params.total_expense ?? 0,
     },
-  );
+  });
   return res.data;
 }
 
 /**
  * POST /tax/monthly/finalize
- * Finalizuje obračun za zadani mjesec i vraća rezultat (zaključan mjesec).
+ * VAŽNO: backend uzima year/month kao Query parametre, ne iz body-ja.
  */
 export async function finalizeTaxMonthly(
   params: TaxMonthlyParams,
-): Promise<TaxMonthlyPreviewResult> {
-  const res = await apiClient.post<TaxMonthlyPreviewResult>(
+): Promise<MonthlyTaxSummaryRead> {
+  const res = await apiClient.post<MonthlyTaxSummaryRead>(
     "/tax/monthly/finalize",
-    {
-      year: params.year,
-      month: params.month,
-    },
+    null,
+    { params: { year: params.year, month: params.month } },
   );
   return res.data;
 }
 
 /**
  * GET /tax/monthly/history
- * Vraća istoriju mjesečnih obračuna (npr. za cijelu godinu).
- *
- * Backend može vraćati direktno listu ili objekat sa poljem `items`.
- * Ovdje vraćamo ono što API vrati (lista), a konkretno mapiranje se
- * može raditi u komponenti.
  */
-export async function fetchTaxMonthlyHistory(
-  params: { year?: number } = {},
-): Promise<TaxMonthlyPreviewResult[]> {
-  const res = await apiClient.get<TaxMonthlyPreviewResult[]>(
-    "/tax/monthly/history",
-    {
-      params: params.year ? { year: params.year } : undefined,
-    },
-  );
+export async function fetchTaxMonthlyHistory(params: {
+  year: number;
+}): Promise<MonthlyTaxSummaryRead[]> {
+  const res = await apiClient.get<MonthlyTaxSummaryRead[]>("/tax/monthly/history", {
+    params: { year: params.year },
+  });
   return res.data;
 }
