@@ -18,6 +18,7 @@ import TaxPage from "./pages/TaxPage";
 import KprPage from "./pages/KprPage";
 import PrometPage from "./pages/PrometPage";
 import ReportsPage from "./pages/ReportsPage";
+import ExportInspectionPage from "./pages/ExportInspectionPage";
 
 function App() {
   const linkBaseClasses =
@@ -206,6 +207,28 @@ function App() {
               </NavLink>
             </div>
 
+            {/* ALATI */}
+            <div>
+              <div className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                Alati
+              </div>
+
+              <NavLink
+                to="/export/inspection"
+                className={({ isActive }) =>
+                  [
+                    linkBaseClasses,
+                    isActive ? linkActiveClasses : linkInactiveClasses,
+                  ].join(" ")
+                }
+              >
+                <span className="mr-2" aria-hidden="true">
+                  🧰
+                </span>
+                <span>Izvoz za inspekciju</span>
+              </NavLink>
+            </div>
+
             {/* DODATNE EVIDENCIJE */}
             <div>
               <div className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
@@ -251,8 +274,7 @@ function App() {
 
           <div className="px-4 py-3 border-t border-slate-800 text-xs text-slate-500">
             <p>
-              Tenant:{" "}
-              <span className="font-mono text-slate-300">t-demo</span>
+              Tenant: <span className="font-mono text-slate-300">t-demo</span>
             </p>
           </div>
         </aside>
@@ -306,6 +328,12 @@ function App() {
 
               {/* Izvještaji */}
               <Route path="/reports" element={<ReportsPage />} />
+
+              {/* Izvoz */}
+              <Route
+                path="/export/inspection"
+                element={<ExportInspectionPage />}
+              />
 
               <Route
                 path="*"

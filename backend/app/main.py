@@ -18,6 +18,7 @@ from app.routes import (
     reports,
     kpr,
     promet,
+    export,
 )
 from app.models import FinalizedPeriodModificationError
 
@@ -191,3 +192,6 @@ app.include_router(promet.router)
 
 # Reports (godišnji cashflow, itd.)
 app.include_router(reports.router)
+
+# Export (inspekcija)
+app.include_router(export.router)
