@@ -193,22 +193,13 @@ export default function DashboardPage() {
     DashboardMonthlyResponse,
     Error
   >({
-    queryKey: [
-      "dashboard",
-      "monthly",
-      "previous",
-      data?.year,
-      data?.month,
-    ],
+    queryKey: ["dashboard", "monthly", "previous", data?.year, data?.month],
     enabled: !!data,
     queryFn: async () => {
       if (!data) {
         throw new Error("Missing current month data");
       }
-      const { year, month } = computePreviousYearMonth(
-        data.year,
-        data.month,
-      );
+      const { year, month } = computePreviousYearMonth(data.year, data.month);
       const res = await apiClient.get<DashboardMonthlyResponse>(
         `/dashboard/monthly/${year}/${month}`,
       );
@@ -226,13 +217,7 @@ export default function DashboardPage() {
 
   // 4) Lista ulaznih faktura za TEKUĆI mjesec (za kategorije + top dobavljače + zadnjih 5)
   const { data: inputInvoicesListData } = useQuery({
-    queryKey: [
-      "dashboard",
-      "input-invoices",
-      "current-month",
-      data?.year,
-      data?.month,
-    ],
+    queryKey: ["dashboard", "input-invoices", "current-month", data?.year, data?.month],
     enabled: !!data,
     queryFn: async () => {
       if (!data) {
@@ -249,31 +234,19 @@ export default function DashboardPage() {
   });
 
   // 5) Yearly cash by month – za graf prihoda po mjesecima
-  const { data: yearlyCashByMonth } = useQuery<
-    (DashboardMonthlyResponse | null)[]
-  >({
-    queryKey: [
-      "dashboard",
-      "cash",
-      "yearly-by-month",
-      data?.year,
-    ],
+  const { data: yearlyCashByMonth } = useQuery<(DashboardMonthlyResponse | null)[]>({
+    queryKey: ["dashboard", "cash", "yearly-by-month", data?.year],
     enabled: !!data,
     queryFn: async () => {
       if (!data) {
         throw new Error("Missing dashboard data");
       }
       const year = data.year;
-      const months = Array.from(
-        { length: 12 },
-        (_, idx) => idx + 1,
-      );
+      const months = Array.from({ length: 12 }, (_, idx) => idx + 1);
       const results = await Promise.all(
         months.map((m) =>
           apiClient
-            .get<DashboardMonthlyResponse>(
-              `/dashboard/monthly/${year}/${m}`,
-            )
+            .get<DashboardMonthlyResponse>(`/dashboard/monthly/${year}/${m}`)
             .then((res) => res.data)
             .catch(() => null),
         ),
@@ -309,17 +282,11 @@ export default function DashboardPage() {
   const isSamFinal = data?.sam?.is_final ?? false;
 
   const netClass =
-    cashNet > 0
-      ? "text-emerald-600"
-      : cashNet < 0
-      ? "text-rose-600"
-      : "text-slate-700";
+    cashNet > 0 ? "text-emerald-600" : cashNet < 0 ? "text-rose-600" : "text-slate-700";
 
   // Zadnjih 5 izlaznih i ulaznih faktura
-  const lastOutgoingInvoices =
-    invoicesListData?.items.slice(0, 5) ?? [];
-  const lastInputInvoices =
-    inputInvoicesListData?.items.slice(0, 5) ?? [];
+  const lastOutgoingInvoices = invoicesListData?.items.slice(0, 5) ?? [];
+  const lastInputInvoices = inputInvoicesListData?.items.slice(0, 5) ?? [];
 
   // Neplaćene fakture starije od 30 dana
   const overdueUnpaidCount =
@@ -329,9 +296,7 @@ export default function DashboardPage() {
       const due = new Date(inv.due_date);
       if (Number.isNaN(due.getTime())) return false;
       const today = new Date();
-      const diffDays =
-        (today.getTime() - due.getTime()) /
-        (1000 * 60 * 60 * 24);
+      const diffDays = (today.getTime() - due.getTime()) / (1000 * 60 * 60 * 24);
       return diffDays > 30;
     }).length ?? 0;
 
@@ -347,10 +312,7 @@ export default function DashboardPage() {
       };
     }) ?? [];
 
-  const maxIncomeValue = Math.max(
-    ...incomeSeries.map((i) => Math.abs(i.value)),
-    0,
-  );
+  const maxIncomeValue = Math.max(...incomeSeries.map((i) => Math.abs(i.value)), 0);
 
   // Graf rashoda po "kategorijama" – ovdje koristimo dobavljača kao kategoriju
   const expenseByCategoryMap = new Map<string, number>();
@@ -358,27 +320,16 @@ export default function DashboardPage() {
     for (const inv of inputInvoicesListData.items) {
       const name = inv.supplier_name || "Ostalo";
       const amount = inv.total_amount ?? 0;
-      expenseByCategoryMap.set(
-        name,
-        (expenseByCategoryMap.get(name) ?? 0) + amount,
-      );
+      expenseByCategoryMap.set(name, (expenseByCategoryMap.get(name) ?? 0) + amount);
     }
   }
 
-  const expenseCategories = Array.from(
-    expenseByCategoryMap.entries(),
-  )
-    .map(([name, total]) => ({
-      name,
-      total,
-    }))
+  const expenseCategories = Array.from(expenseByCategoryMap.entries())
+    .map(([name, total]) => ({ name, total }))
     .sort((a, b) => b.total - a.total)
     .slice(0, 6);
 
-  const maxExpenseCategory = Math.max(
-    ...expenseCategories.map((c) => Math.abs(c.total)),
-    0,
-  );
+  const maxExpenseCategory = Math.max(...expenseCategories.map((c) => Math.abs(c.total)), 0);
 
   // Top kupci (po ukupnom prometu)
   const topCustomers = (() => {
@@ -470,16 +421,12 @@ export default function DashboardPage() {
     {
       key: "Neto",
       value: cashNet,
-      colorClass:
-        cashNet >= 0 ? "bg-sky-500" : "bg-slate-700",
+      colorClass: cashNet >= 0 ? "bg-sky-500" : "bg-slate-700",
       hint: "Prihodi - rashodi za mjesec",
     },
   ];
 
-  const maxCashAbs = Math.max(
-    ...cashChartItems.map((i) => Math.abs(i.value)),
-    0,
-  );
+  const maxCashAbs = Math.max(...cashChartItems.map((i) => Math.abs(i.value)), 0);
 
   const aiComment = buildAiComment(data, previousMonthlyData);
 
@@ -487,28 +434,42 @@ export default function DashboardPage() {
     <div className="space-y-6">
       {/* Header */}
       <div className="space-y-2">
-        <h2 className="text-2xl font-semibold text-slate-900 tracking-tight">
-          Kontrolna tabla – mjesečni pregled
-        </h2>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-2xl font-semibold text-slate-900 tracking-tight">
+              Kontrolna tabla – mjesečni pregled
+            </h2>
 
-        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
-          <span>
-            API: <span className="font-mono">{apiUrl}</span>
-          </span>
-
-          {data && (
-            <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1">
-              <span className="text-[10px] uppercase tracking-wide text-slate-500">
-                Period
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mt-2">
+              <span>
+                API: <span className="font-mono">{apiUrl}</span>
               </span>
-              <span className="font-semibold text-slate-700">
-                {monthLabel} • tenant{" "}
-                <span className="font-mono">
-                  {data.tenant_code}
+
+              {data && (
+                <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1">
+                  <span className="text-[10px] uppercase tracking-wide text-slate-500">
+                    Period
+                  </span>
+                  <span className="font-semibold text-slate-700">
+                    {monthLabel} • tenant{" "}
+                    <span className="font-mono">{data.tenant_code}</span>
+                  </span>
                 </span>
-              </span>
-            </span>
-          )}
+              )}
+            </div>
+          </div>
+
+          {/* QUICK ACTIONS */}
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => navigate("/export/inspection")}
+              className="inline-flex items-center justify-center rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
+              title="Kreiraj ZIP paket (PDF-ovi) za inspekciju"
+            >
+              Izvoz za inspekciju
+            </button>
+          </div>
         </div>
       </div>
 
@@ -520,8 +481,7 @@ export default function DashboardPage() {
 
       {isError && (
         <p className="text-sm text-red-600">
-          Greška pri učitavanju kontrolne table:{" "}
-          {error.message}
+          Greška pri učitavanju kontrolne table: {error.message}
         </p>
       )}
 
@@ -533,17 +493,13 @@ export default function DashboardPage() {
           </p>
           <div className="grid gap-4 md:grid-cols-5 text-xs text-slate-700">
             <div>
-              <p className="text-[11px] text-slate-500">
-                Ukupni prihodi
-              </p>
+              <p className="text-[11px] text-slate-500">Ukupni prihodi</p>
               <p className="text-sm font-semibold text-emerald-600">
                 {formatAmount(cashIncome)} KM
               </p>
             </div>
             <div>
-              <p className="text-[11px] text-slate-500">
-                Ukupni rashodi
-              </p>
+              <p className="text-[11px] text-slate-500">Ukupni rashodi</p>
               <p className="text-sm font-semibold text-rose-600">
                 {formatAmount(cashExpense)} KM
               </p>
@@ -557,9 +513,7 @@ export default function DashboardPage() {
               </p>
             </div>
             <div>
-              <p className="text-[11px] text-slate-500">
-                Procijenjeni porez
-              </p>
+              <p className="text-[11px] text-slate-500">Procijenjeni porez</p>
               <p className="text-sm font-semibold text-slate-900">
                 {formatAmount(taxTotal)} KM
               </p>
@@ -568,9 +522,7 @@ export default function DashboardPage() {
               </p>
             </div>
             <div>
-              <p className="text-[11px] text-slate-500">
-                Doprinosi (mjesečno)
-              </p>
+              <p className="text-[11px] text-slate-500">Doprinosi (mjesečno)</p>
               <p className="text-sm font-semibold text-slate-900">
                 {formatAmount(samTotal)} KM
               </p>
@@ -609,9 +561,8 @@ export default function DashboardPage() {
             ))}
           </ul>
           <p className="text-[10px] text-amber-900/80 mt-1">
-            Ova lista se generiše automatski na osnovu stanja
-            kase, faktura i TAX / SAM modula za aktivni
-            mjesec.
+            Ova lista se generiše automatski na osnovu stanja kase, faktura i TAX
+            / SAM modula za aktivni mjesec.
           </p>
         </div>
       )}
@@ -637,14 +588,11 @@ export default function DashboardPage() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
-                Kretanje gotovine –{" "}
-                {monthLabel || `${data.year}-${data.month}`}
+                Kretanje gotovine – {monthLabel || `${data.year}-${data.month}`}
               </p>
               <p className="text-xs text-slate-600">
                 Poređenje ukupnih{" "}
-                <span className="font-semibold">
-                  prihoda, rashoda i neta
-                </span>{" "}
+                <span className="font-semibold">prihoda, rashoda i neta</span>{" "}
                 za aktivni mjesec.
               </p>
             </div>
@@ -653,26 +601,21 @@ export default function DashboardPage() {
           <div className="mt-2 h-40 flex items-end justify-around gap-6 border border-slate-100 rounded-lg bg-slate-50 px-6 py-4">
             {maxCashAbs === 0 ? (
               <p className="text-[11px] text-slate-500">
-                Nema dovoljno podataka za prikaz grafa – provjeri
-                da li postoje zapisi u kasi za ovaj mjesec.
+                Nema dovoljno podataka za prikaz grafa – provjeri da li postoje
+                zapisi u kasi za ovaj mjesec.
               </p>
             ) : (
               cashChartItems.map((item) => {
                 const heightPercent =
                   maxCashAbs > 0
-                    ? Math.max(
-                        8,
-                        (Math.abs(item.value) / maxCashAbs) * 100,
-                      )
+                    ? Math.max(8, (Math.abs(item.value) / maxCashAbs) * 100)
                     : 0;
 
                 return (
                   <div
                     key={item.key}
                     className="flex flex-col items-center justify-end gap-1 h-full"
-                    title={`${item.key}: ${formatAmount(
-                      item.value,
-                    )} KM – ${item.hint}`}
+                    title={`${item.key}: ${formatAmount(item.value)} KM – ${item.hint}`}
                   >
                     <div className="flex flex-col justify-end w-full h-full">
                       <div
@@ -681,10 +624,7 @@ export default function DashboardPage() {
                           item.colorClass
                         }
                         style={{
-                          height:
-                            maxCashAbs > 0
-                              ? `${heightPercent}%`
-                              : "0%",
+                          height: maxCashAbs > 0 ? `${heightPercent}%` : "0%",
                         }}
                       ></div>
                     </div>
@@ -701,9 +641,9 @@ export default function DashboardPage() {
           </div>
 
           <p className="text-[10px] text-slate-500 mt-1">
-            Visina stubića je proporcionalna apsolutnoj
-            vrijednosti (|iznos|). Neto može biti pozitivan ili
-            negativan; boja označava vrstu vrijednosti.
+            Visina stubića je proporcionalna apsolutnoj vrijednosti (|iznos|).
+            Neto može biti pozitivan ili negativan; boja označava vrstu
+            vrijednosti.
           </p>
         </div>
       )}
@@ -730,25 +670,19 @@ export default function DashboardPage() {
               </span>
             </p>
             <p className="text-[11px] text-slate-400 pt-1">
-              Pozitivan neto iznos znači višak u kasi za ovaj
-              mjesec.
+              Pozitivan neto iznos znači višak u kasi za ovaj mjesec.
             </p>
           </div>
 
           {/* Izlazne fakture kartica */}
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col gap-2">
             <p className="text-xs font-medium text-slate-500">
-              Izlazne fakture –{" "}
-              {monthLabel || `${data.year}-${data.month}`}
+              Izlazne fakture – {monthLabel || `${data.year}-${data.month}`}
             </p>
-            <p className="text-2xl font-semibold text-slate-900">
-              {invoicesCount}
-            </p>
+            <p className="text-2xl font-semibold text-slate-900">{invoicesCount}</p>
             <p className="text-xs text-slate-500">
               Ukupan iznos:{" "}
-              <span className="font-semibold">
-                {formatAmount(invoicesTotal)} KM
-              </span>
+              <span className="font-semibold">{formatAmount(invoicesTotal)} KM</span>
             </p>
             <button
               type="button"
@@ -762,8 +696,7 @@ export default function DashboardPage() {
           {/* Porezi kartica */}
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col gap-2">
             <p className="text-xs font-medium text-slate-500">
-              Porezi –{" "}
-              {monthLabel || `${data.year}-${data.month}`}
+              Porezi – {monthLabel || `${data.year}-${data.month}`}
             </p>
             <p className="text-lg font-semibold text-slate-900">
               {formatAmount(taxTotal)} KM
@@ -799,8 +732,7 @@ export default function DashboardPage() {
           {/* SAM kartica */}
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col gap-2">
             <p className="text-xs font-medium text-slate-500">
-              SAM doprinosi –{" "}
-              {monthLabel || `${data.year}-${data.month}`}
+              SAM doprinosi – {monthLabel || `${data.year}-${data.month}`}
             </p>
             <p className="text-lg font-semibold text-slate-900">
               {formatAmount(samTotal)} KM
@@ -825,8 +757,7 @@ export default function DashboardPage() {
               )}
             </p>
             <p className="text-[11px] text-slate-400">
-              Vrijednosti dolaze iz TAX / SAM modula za aktivni
-              mjesec.
+              Vrijednosti dolaze iz TAX / SAM modula za aktivni mjesec.
             </p>
           </div>
         </div>
@@ -852,31 +783,22 @@ export default function DashboardPage() {
                 </p>
               ) : (
                 incomeSeries.map((item) => {
-                  const heightPercent =
-                    (Math.abs(item.value) / maxIncomeValue) *
-                    100;
+                  const heightPercent = (Math.abs(item.value) / maxIncomeValue) * 100;
                   return (
                     <div
                       key={item.month}
                       className="flex flex-col items-center justify-end gap-1 h-full min-w-[18px]"
-                      title={`${item.label}: ${formatAmount(
-                        item.value,
-                      )} KM`}
+                      title={`${item.label}: ${formatAmount(item.value)} KM`}
                     >
                       <div className="flex flex-col justify-end w-full h-full">
                         <div
                           className="w-3 mx-auto rounded-t-md shadow-sm bg-emerald-500"
                           style={{
-                            height: `${Math.max(
-                              6,
-                              heightPercent,
-                            )}%`,
+                            height: `${Math.max(6, heightPercent)}%`,
                           }}
                         ></div>
                       </div>
-                      <span className="text-[10px] text-slate-600">
-                        {item.label}
-                      </span>
+                      <span className="text-[10px] text-slate-600">{item.label}</span>
                     </div>
                   );
                 })
@@ -890,38 +812,29 @@ export default function DashboardPage() {
               Rashodi po kategorijama (dobavljači) – {monthLabel}
             </p>
             <p className="text-xs text-slate-500">
-              Prikaz troškova po dobavljačima za tekući mjesec. Kasnije
-              ovo lako možemo zamijeniti pravim kategorijama (gorivo,
-              zakup, režije…).
+              Prikaz troškova po dobavljačima za tekući mjesec. Kasnije ovo lako
+              možemo zamijeniti pravim kategorijama (gorivo, zakup, režije…).
             </p>
 
             <div className="mt-2 h-40 flex items-end gap-4 border border-slate-100 rounded-lg bg-slate-50 px-4 py-4 overflow-x-auto">
-              {expenseCategories.length === 0 ||
-              maxExpenseCategory === 0 ? (
+              {expenseCategories.length === 0 || maxExpenseCategory === 0 ? (
                 <p className="text-[11px] text-slate-500">
                   Nema dovoljno podataka za prikaz ovog grafa.
                 </p>
               ) : (
                 expenseCategories.map((cat) => {
-                  const heightPercent =
-                    (Math.abs(cat.total) / maxExpenseCategory) *
-                    100;
+                  const heightPercent = (Math.abs(cat.total) / maxExpenseCategory) * 100;
                   return (
                     <div
                       key={cat.name}
                       className="flex flex-col items-center justify-end gap-1 h-full min-w-[40px]"
-                      title={`${cat.name}: ${formatAmount(
-                        cat.total,
-                      )} KM`}
+                      title={`${cat.name}: ${formatAmount(cat.total)} KM`}
                     >
                       <div className="flex flex-col justify-end w-full h-full">
                         <div
                           className="w-6 mx-auto rounded-t-md shadow-sm bg-rose-500"
                           style={{
-                            height: `${Math.max(
-                              8,
-                              heightPercent,
-                            )}%`,
+                            height: `${Math.max(8, heightPercent)}%`,
                           }}
                         ></div>
                       </div>
@@ -962,8 +875,8 @@ export default function DashboardPage() {
 
             {lastOutgoingInvoices.length === 0 ? (
               <p className="text-[11px] text-slate-500">
-                Nema izlaznih faktura za prikaz. Kreiraj prvu
-                fakturu u modulu izlaznih faktura.
+                Nema izlaznih faktura za prikaz. Kreiraj prvu fakturu u modulu
+                izlaznih faktura.
               </p>
             ) : (
               <div className="overflow-x-auto">
@@ -993,9 +906,7 @@ export default function DashboardPage() {
                         </td>
                         <td className="py-1 text-right text-slate-800">
                           {inv.total_amount != null
-                            ? `${formatAmount(
-                                inv.total_amount,
-                              )} KM`
+                            ? `${formatAmount(inv.total_amount)} KM`
                             : "-"}
                           {!inv.is_paid && (
                             <span className="ml-1 inline-flex rounded-full bg-rose-50 px-2 py-[1px] text-[10px] font-medium text-rose-700">
@@ -1033,8 +944,8 @@ export default function DashboardPage() {
 
             {lastInputInvoices.length === 0 ? (
               <p className="text-[11px] text-slate-500">
-                Nema ulaznih računa za prikaz. Dodaj prvi račun u
-                modulu ulaznih faktura.
+                Nema ulaznih računa za prikaz. Dodaj prvi račun u modulu ulaznih
+                faktura.
               </p>
             ) : (
               <div className="overflow-x-auto">
@@ -1064,9 +975,7 @@ export default function DashboardPage() {
                         </td>
                         <td className="py-1 text-right text-slate-800">
                           {inv.total_amount != null
-                            ? `${formatAmount(
-                                inv.total_amount,
-                              )} KM`
+                            ? `${formatAmount(inv.total_amount)} KM`
                             : "-"}
                         </td>
                       </tr>
@@ -1091,16 +1000,12 @@ export default function DashboardPage() {
             </div>
             {topCustomers.length === 0 ? (
               <p className="text-[11px] text-slate-500">
-                Nema dovoljno izlaznih faktura za prikaz top
-                kupaca.
+                Nema dovoljno izlaznih faktura za prikaz top kupaca.
               </p>
             ) : (
               <ul className="space-y-1 text-xs text-slate-700">
                 {topCustomers.map((c, idx) => (
-                  <li
-                    key={c.name}
-                    className="flex items-center justify-between"
-                  >
+                  <li key={c.name} className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <span className="w-5 text-[11px] text-slate-500">
                         #{idx + 1}
@@ -1125,16 +1030,12 @@ export default function DashboardPage() {
             </div>
             {topSuppliers.length === 0 ? (
               <p className="text-[11px] text-slate-500">
-                Nema dovoljno ulaznih računa za prikaz top
-                dobavljača.
+                Nema dovoljno ulaznih računa za prikaz top dobavljača.
               </p>
             ) : (
               <ul className="space-y-1 text-xs text-slate-700">
                 {topSuppliers.map((s, idx) => (
-                  <li
-                    key={s.name}
-                    className="flex items-center justify-between"
-                  >
+                  <li key={s.name} className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
                       <span className="w-5 text-[11px] text-slate-500">
                         #{idx + 1}
