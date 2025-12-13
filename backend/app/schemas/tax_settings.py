@@ -4,17 +4,12 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
-try:
-    # Pydantic v2
-    from pydantic import BaseModel, Field, ConfigDict
-    _V2 = True
-except Exception:  # pragma: no cover
-    # Pydantic v1 fallback
-    from pydantic import BaseModel, Field  # type: ignore
-    _V2 = False
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TaxSettingsRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     tenant_code: str
 
     income_tax_rate: Decimal
@@ -24,12 +19,6 @@ class TaxSettingsRead(BaseModel):
     flat_costs_rate: Decimal
 
     currency: str
-
-    if _V2:
-        model_config = ConfigDict(from_attributes=True)  # type: ignore
-    else:
-        class Config:  # type: ignore
-            orm_mode = True
 
 
 class TaxSettingsUpsert(BaseModel):

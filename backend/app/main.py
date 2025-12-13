@@ -19,6 +19,7 @@ from app.routes import (
     kpr,
     promet,
     export,
+    settings,
 )
 from app.models import FinalizedPeriodModificationError
 
@@ -195,3 +196,6 @@ app.include_router(reports.router)
 
 # Export (inspekcija)
 app.include_router(export.router)
+
+# Settings (core podešavanja korisnika)
+app.include_router(settings.router)

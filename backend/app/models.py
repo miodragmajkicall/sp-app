@@ -600,3 +600,84 @@ def _input_invoice_before_update(mapper, connection, target: InputInvoice) -> No
 def _input_invoice_before_delete(mapper, connection, target: InputInvoice) -> None:
     if target.issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
+
+
+# ======================================================
+#  TENANT PROFILE SETTINGS
+# ======================================================
+class TenantProfileSettings(Base):
+    __tablename__ = "tenant_profile_settings"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    tenant_code = Column(
+        String(64),
+        ForeignKey("tenants.code", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+
+    business_name = Column(String(256), nullable=False)
+    address = Column(String(256), nullable=True)
+    tax_id = Column(String(64), nullable=True)
+
+    logo_attachment_id = Column(
+        BigInteger,
+        ForeignKey("invoice_attachments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+# ======================================================
+#  TENANT TAX PROFILE SETTINGS
+# ======================================================
+class TenantTaxProfileSettings(Base):
+    __tablename__ = "tenant_tax_profile_settings"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    tenant_code = Column(
+        String(64),
+        ForeignKey("tenants.code", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+
+    entity = Column(String(16), nullable=False)  # RS / FBiH / Brcko
+    regime = Column(String(32), nullable=False)  # pausal / two_percent
+
+    has_additional_activity = Column(Boolean, nullable=False, default=False)
+
+    monthly_pension = Column(Numeric(14, 2), nullable=True)
+    monthly_health = Column(Numeric(14, 2), nullable=True)
+    monthly_unemployment = Column(Numeric(14, 2), nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+# ======================================================
+#  TENANT SUBSCRIPTION SETTINGS
+# ======================================================
+class TenantSubscriptionSettings(Base):
+    __tablename__ = "tenant_subscription_settings"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    tenant_code = Column(
+        String(64),
+        ForeignKey("tenants.code", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+
+    plan = Column(String(32), nullable=False)  # Basic / Standard / Premium
+
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
