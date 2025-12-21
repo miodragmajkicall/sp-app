@@ -20,6 +20,7 @@ import PrometPage from "./pages/PrometPage";
 import ReportsPage from "./pages/ReportsPage";
 import ExportInspectionPage from "./pages/ExportInspectionPage";
 import SettingsPage from "./pages/SettingsPage";
+import AdminConstantsPage from "./pages/AdminConstantsPage";
 
 function App() {
   const linkBaseClasses =
@@ -272,6 +273,21 @@ function App() {
                 <span>Postavke</span>
               </NavLink>
 
+              <NavLink
+                to="/admin/constants"
+                className={({ isActive }) =>
+                  [
+                    linkBaseClasses,
+                    isActive ? linkActiveClasses : linkInactiveClasses,
+                  ].join(" ")
+                }
+              >
+                <span className="mr-2" aria-hidden="true">
+                  🧩
+                </span>
+                <span>Admin: konstante</span>
+              </NavLink>
+
               <div className="flex items-center rounded-md px-3 py-2 text-slate-500 cursor-default">
                 <span className="mr-2" aria-hidden="true">
                   ❓
@@ -346,6 +362,9 @@ function App() {
 
               {/* Postavke */}
               <Route path="/settings" element={<SettingsPage />} />
+
+              {/* Admin constants */}
+              <Route path="/admin/constants" element={<AdminConstantsPage />} />
 
               <Route
                 path="*"

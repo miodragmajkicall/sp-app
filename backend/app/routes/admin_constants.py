@@ -1,11 +1,11 @@
 # /home/miso/dev/sp-app/sp-app/backend/app/routes/admin_constants.py
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import Optional, Any
+from datetime import date, datetime, timedelta
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import and_, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
@@ -21,9 +21,6 @@ from app.schemas.constants import (
 router = APIRouter(tags=["admin"])
 
 
-# ======================================================
-#  DB helper
-# ======================================================
 def _get_db() -> Session:
     return SessionLocal()
 
@@ -35,11 +32,7 @@ def _ranges_overlap(
     b_from: date,
     b_to: Optional[date],
 ) -> bool:
-    """
-    Intervali su zatvoreni: [from, to], a None znači "beskonačno".
-    Overlap:
-      a_from <= b_to (ili b_to None) AND b_from <= a_to (ili a_to None)
-    """
+    # Zatvoreni intervali [from, to], None = ∞
     if a_to is not None and b_from > a_to:
         return False
     if b_to is not None and a_from > b_to:
@@ -76,17 +69,7 @@ def _ensure_no_overlap(
             )
 
 
-def _find_current_set(
-    *,
-    db: Session,
-    jurisdiction: str,
-    as_of: date,
-) -> Optional[AppConstantsSet]:
-    """
-    Vraća set koji je aktivan na datum `as_of`:
-      effective_from <= as_of AND (effective_to IS NULL OR effective_to >= as_of)
-    Ako ih ima više (ne bi smjelo), uzima najnoviji po effective_from.
-    """
+def _find_current_set(*, db: Session, jurisdiction: str, as_of: date) -> Optional[AppConstantsSet]:
     stmt = (
         select(AppConstantsSet)
         .where(
@@ -100,9 +83,42 @@ def _find_current_set(
     return db.execute(stmt).scalar_one_or_none()
 
 
-# ======================================================
-#  ADMIN: LIST
-# ======================================================
+def _rollover_close_previous_if_needed(
+    *,
+    db: Session,
+    jurisdiction: str,
+    new_from: date,
+    actor: Optional[str],
+    reason: str,
+) -> None:
+    """
+    Rollover samo za open-ended prethodni set (effective_to IS NULL):
+    - Ako postoji aktivan open-ended set na new_from, zatvori ga na (new_from - 1 dan).
+    - Ako je prethodni set već imao effective_to (zatvoren period), NE diramo ga (overlap ide na 400).
+    """
+    prev = _find_current_set(db=db, jurisdiction=jurisdiction, as_of=new_from)
+    if prev is None:
+        return
+
+    # Ključna promjena: rollover samo ako je prev open-ended
+    if prev.effective_to is not None:
+        return
+
+    if new_from <= prev.effective_from:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Cannot rollover: new effective_from must be AFTER current set's effective_from. "
+                f"Current id={prev.id} starts at {prev.effective_from}, new starts at {new_from}."
+            ),
+        )
+
+    prev.effective_to = new_from - timedelta(days=1)
+    prev.updated_by = actor
+    prev.updated_reason = reason or "rollover"
+    prev.updated_at = datetime.utcnow()
+
+
 @router.get(
     "/admin/constants",
     response_model=AppConstantsSetListResponse,
@@ -129,19 +145,26 @@ def admin_constants_list(
         db.close()
 
 
-# ======================================================
-#  ADMIN: CREATE
-# ======================================================
 @router.post(
     "/admin/constants",
     response_model=AppConstantsSetRead,
-    summary="Admin: kreiraj novi set konstanti (bez overlap-a)",
+    summary="Admin: kreiraj novi set konstanti (rollover zatvara samo open-ended prethodni set)",
     operation_id="admin_constants_create",
     responses={400: {"description": "Validation / overlap error"}},
 )
 def admin_constants_create(payload: AppConstantsSetCreate) -> AppConstantsSetRead:
     db = _get_db()
     try:
+        # 1) Rollover samo ako postoji open-ended set
+        _rollover_close_previous_if_needed(
+            db=db,
+            jurisdiction=payload.jurisdiction,
+            new_from=payload.effective_from,
+            actor=payload.created_by,
+            reason=(payload.created_reason or "rollover"),
+        )
+
+        # 2) Zatim overlap provjera (sad će i dalje baciti 400 za bounded overlap slučajeve)
         _ensure_no_overlap(
             db=db,
             jurisdiction=payload.jurisdiction,
@@ -160,7 +183,7 @@ def admin_constants_create(payload: AppConstantsSetCreate) -> AppConstantsSetRea
             updated_by=None,
             updated_reason=None,
         )
-        # updated_at server_default postoji; ostavljamo na insert.
+
         db.add(row)
         db.commit()
         db.refresh(row)
@@ -169,9 +192,6 @@ def admin_constants_create(payload: AppConstantsSetCreate) -> AppConstantsSetRea
         db.close()
 
 
-# ======================================================
-#  ADMIN: UPDATE
-# ======================================================
 @router.put(
     "/admin/constants/{constants_id}",
     response_model=AppConstantsSetRead,
@@ -218,9 +238,6 @@ def admin_constants_update(constants_id: int, payload: AppConstantsSetUpdate) ->
         db.close()
 
 
-# ======================================================
-#  PUBLIC: CURRENT
-# ======================================================
 @router.get(
     "/constants/current",
     response_model=AppConstantsCurrentResponse,

@@ -122,3 +122,66 @@ def test_admin_constants_update_changes_payload_and_audit():
     assert updated["payload"]["vat"]["standard_rate"] == 0.20
     assert updated["updated_by"] == "tester2"
     assert updated["updated_reason"] == "change rate"
+
+
+def test_admin_constants_create_with_rollover_closes_previous_and_creates_new():
+    _wipe_constants()
+    client = TestClient(app)
+
+    # 1) Open-ended set from 2025-01-01
+    res = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "RS",
+            "effective_from": "2025-01-01",
+            "effective_to": None,
+            "payload": {"tax": {"flat_costs_rate": 0.3}},
+            "created_by": "admin",
+            "created_reason": "init",
+        },
+    )
+    assert res.status_code == 200
+    first = res.json()
+    assert first["effective_from"] == "2025-01-01"
+    assert first["effective_to"] is None
+
+    # 2) New set starting 2025-07-01 with rollover=true
+    res = client.post(
+        "/admin/constants",
+        params={"rollover": "true"},
+        json={
+            "jurisdiction": "RS",
+            "effective_from": "2025-07-01",
+            "effective_to": None,
+            "payload": {"tax": {"flat_costs_rate": 0.25}},
+            "created_by": "admin",
+            "created_reason": "mid-year change",
+        },
+    )
+    assert res.status_code == 200
+    second = res.json()
+    assert second["effective_from"] == "2025-07-01"
+    assert second["effective_to"] is None
+
+    # 3) List -> previous must be closed to 2025-06-30
+    res = client.get("/admin/constants", params={"jurisdiction": "RS"})
+    assert res.status_code == 200
+    items = res.json()["items"]
+    assert len(items) == 2
+
+    # find the first by id
+    by_id = {it["id"]: it for it in items}
+    assert by_id[first["id"]]["effective_to"] == "2025-06-30"
+
+    # 4) current check before/after rollover point
+    res = client.get("/constants/current", params={"jurisdiction": "RS", "as_of": "2025-06-10"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["found"] is True
+    assert body["item"]["id"] == first["id"]
+
+    res = client.get("/constants/current", params={"jurisdiction": "RS", "as_of": "2025-07-10"})
+    assert res.status_code == 200
+    body = res.json()
+    assert body["found"] is True
+    assert body["item"]["id"] == second["id"]
