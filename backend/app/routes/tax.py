@@ -5,12 +5,12 @@ import csv
 import io
 from datetime import date
 from decimal import Decimal
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
@@ -24,6 +24,8 @@ from app.models import (
     TaxSettings,
     TaxMonthlyPayment,
     Tenant,
+    TenantTaxProfileSettings,
+    AppConstantsSet,
 )
 from app.schemas.tax import (
     ErrorResponse,
@@ -58,10 +60,7 @@ def _ensure_tenant_exists(db: Session, tenant_code: str) -> None:
     U testovima se često koristi novi tenant code bez eksplicitnog kreiranja tenanta,
     pa ovdje radimo "auto-create" samo kada je stvarno potrebno (write putanja).
     """
-    exists = db.execute(
-        select(Tenant).where(Tenant.code == tenant_code)
-    ).scalar_one_or_none()
-
+    exists = db.execute(select(Tenant).where(Tenant.code == tenant_code)).scalar_one_or_none()
     if exists is not None:
         return
 
@@ -92,28 +91,150 @@ DEFAULT_TAX_CONFIG = TaxDummyConfig(
 TAX_DUMMY_CONFIG = DEFAULT_TAX_CONFIG
 
 
-def _resolve_tax_config(db: Session, tenant_code: str) -> TaxDummyConfig:
+# ======================================================
+#  APP CONSTANTS (effective-dated) helpers
+# ======================================================
+def _normalize_jurisdiction(entity_value: str) -> str:
     """
-    Vraća konfiguraciju za obračun:
+    Normalizacija vrijednosti iz settings/tax (entity) na jurisdikciju u app_constants_sets.
 
-    - ako postoji red u `tax_settings` za tenant → koristi njega
-    - inače fallback na DEFAULT_TAX_CONFIG (kao do sada)
+    Očekujemo:
+      - RS
+      - FBiH
+      - BD  (Brčko distrikt)
     """
-    row = db.execute(
-        select(TaxSettings).where(TaxSettings.tenant_code == tenant_code)
-    ).scalar_one_or_none()
+    v = (entity_value or "").strip()
+    if not v:
+        return "RS"
 
-    if row is None:
-        return DEFAULT_TAX_CONFIG
+    upper = v.upper()
+
+    if upper in {"RS"}:
+        return "RS"
+    if upper in {"FBIH", "FEDERACIJA", "FEDERACIJA BIH"}:
+        return "FBiH"
+    if upper in {"BD", "BRCKO", "BRČKO", "BRCKO DISTRIKT", "BRČKO DISTRIKT"}:
+        return "BD"
+
+    # Ako dođe nešto neočekivano, držimo se defaulta
+    return "RS"
+
+
+def _find_current_constants_set(*, db: Session, jurisdiction: str, as_of: date) -> Optional[AppConstantsSet]:
+    """
+    Vraća set koji je aktivan na datum `as_of`:
+      effective_from <= as_of AND (effective_to IS NULL OR effective_to >= as_of)
+    Ako ih ima više (ne bi smjelo), uzima najnoviji po effective_from.
+    """
+    stmt = (
+        select(AppConstantsSet)
+        .where(
+            AppConstantsSet.jurisdiction == jurisdiction,
+            AppConstantsSet.effective_from <= as_of,
+            or_(AppConstantsSet.effective_to.is_(None), AppConstantsSet.effective_to >= as_of),
+        )
+        .order_by(AppConstantsSet.effective_from.desc(), AppConstantsSet.id.desc())
+        .limit(1)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def _decimal_from_payload(val: Any) -> Optional[Decimal]:
+    if val is None:
+        return None
+    try:
+        return Decimal(str(val))
+    except Exception:
+        return None
+
+
+def _tax_config_from_constants_payload(payload: dict[str, Any]) -> Optional[TaxDummyConfig]:
+    """
+    Izvlači TAX stope iz JSON payload-a u app_constants_sets.
+
+    Podržani oblici:
+      A) root keys:
+         {
+           "income_tax_rate": 0.10,
+           "pension_contribution_rate": 0.18,
+           ...
+           "currency": "BAM"
+         }
+
+      B) nested under "tax":
+         { "tax": { ... isti ključevi ... } }
+
+    Ako payload nema ništa relevantno → vrati None.
+    """
+    if not isinstance(payload, dict):
+        return None
+
+    src = payload
+    if isinstance(payload.get("tax"), dict):
+        src = payload["tax"]
+
+    interesting_keys = {
+        "income_tax_rate",
+        "pension_contribution_rate",
+        "health_contribution_rate",
+        "unemployment_contribution_rate",
+        "flat_costs_rate",
+        "currency",
+    }
+    if not any(k in src for k in interesting_keys):
+        return None
+
+    inc = _decimal_from_payload(src.get("income_tax_rate"))
+    pen = _decimal_from_payload(src.get("pension_contribution_rate"))
+    hea = _decimal_from_payload(src.get("health_contribution_rate"))
+    une = _decimal_from_payload(src.get("unemployment_contribution_rate"))
+    flat = _decimal_from_payload(src.get("flat_costs_rate"))
+    cur = src.get("currency")
 
     return TaxDummyConfig(
-        income_tax_rate=Decimal(str(row.income_tax_rate)),
-        pension_contribution_rate=Decimal(str(row.pension_contribution_rate)),
-        health_contribution_rate=Decimal(str(row.health_contribution_rate)),
-        unemployment_contribution_rate=Decimal(str(row.unemployment_contribution_rate)),
-        flat_costs_rate=Decimal(str(row.flat_costs_rate)),
-        currency=row.currency or DEFAULT_TAX_CONFIG.currency,
+        income_tax_rate=inc if inc is not None else DEFAULT_TAX_CONFIG.income_tax_rate,
+        pension_contribution_rate=pen if pen is not None else DEFAULT_TAX_CONFIG.pension_contribution_rate,
+        health_contribution_rate=hea if hea is not None else DEFAULT_TAX_CONFIG.health_contribution_rate,
+        unemployment_contribution_rate=une if une is not None else DEFAULT_TAX_CONFIG.unemployment_contribution_rate,
+        flat_costs_rate=flat if flat is not None else DEFAULT_TAX_CONFIG.flat_costs_rate,
+        currency=str(cur) if cur is not None else DEFAULT_TAX_CONFIG.currency,
     )
+
+
+def _resolve_tax_config(db: Session, tenant_code: str, as_of: date) -> TaxDummyConfig:
+    """
+    Hijerarhija izvora konfiguracije (prioritet):
+      1) tax_settings (tenant override)
+      2) app_constants_sets (effective-dated po jurisdikciji)  **samo ako tenant ima /settings/tax profil**
+      3) DEFAULT_TAX_CONFIG (fallback)
+    """
+    # 1) tenant override
+    row = db.execute(select(TaxSettings).where(TaxSettings.tenant_code == tenant_code)).scalar_one_or_none()
+    if row is not None:
+        return TaxDummyConfig(
+            income_tax_rate=Decimal(str(row.income_tax_rate)),
+            pension_contribution_rate=Decimal(str(row.pension_contribution_rate)),
+            health_contribution_rate=Decimal(str(row.health_contribution_rate)),
+            unemployment_contribution_rate=Decimal(str(row.unemployment_contribution_rate)),
+            flat_costs_rate=Decimal(str(row.flat_costs_rate)),
+            currency=row.currency or DEFAULT_TAX_CONFIG.currency,
+        )
+
+    # 2) constants set koristimo samo ako tenant eksplicitno ima tax profil (settings/tax)
+    prof = db.execute(
+        select(TenantTaxProfileSettings).where(TenantTaxProfileSettings.tenant_code == tenant_code)
+    ).scalar_one_or_none()
+
+    if prof is not None and (prof.entity or "").strip():
+        jurisdiction = _normalize_jurisdiction(prof.entity)
+        cs = _find_current_constants_set(db=db, jurisdiction=jurisdiction, as_of=as_of)
+        if cs is not None:
+            cfg = _tax_config_from_constants_payload(cs.payload or {})
+            if cfg is not None:
+                return cfg
+
+    # 3) fallback
+    return DEFAULT_TAX_CONFIG
 
 
 # ======================================================
@@ -136,10 +257,7 @@ def get_tax_settings(
 ) -> TaxSettingsRead:
     tenant = _require_tenant(x_tenant_code)
 
-    row = db.execute(
-        select(TaxSettings).where(TaxSettings.tenant_code == tenant)
-    ).scalar_one_or_none()
-
+    row = db.execute(select(TaxSettings).where(TaxSettings.tenant_code == tenant)).scalar_one_or_none()
     if row is None:
         cfg = DEFAULT_TAX_CONFIG
         return TaxSettingsRead(
@@ -173,9 +291,10 @@ def upsert_tax_settings(
 ) -> TaxSettingsRead:
     tenant = _require_tenant(x_tenant_code)
 
-    row = db.execute(
-        select(TaxSettings).where(TaxSettings.tenant_code == tenant)
-    ).scalar_one_or_none()
+    # FK safety: tax_settings.tenant_code -> tenants.code
+    _ensure_tenant_exists(db, tenant)
+
+    row = db.execute(select(TaxSettings).where(TaxSettings.tenant_code == tenant)).scalar_one_or_none()
 
     if row is None:
         cfg = DEFAULT_TAX_CONFIG
@@ -240,9 +359,7 @@ def _compute_monthly_summary(
     income_tax = taxable_base * cfg.income_tax_rate
 
     contributions_rate_sum = (
-        cfg.pension_contribution_rate
-        + cfg.health_contribution_rate
-        + cfg.unemployment_contribution_rate
+        cfg.pension_contribution_rate + cfg.health_contribution_rate + cfg.unemployment_contribution_rate
     )
     contributions_total = taxable_base * contributions_rate_sum
 
@@ -272,9 +389,7 @@ def _aggregate_monthly_income_and_expense(
 ) -> Tuple[Decimal, Decimal]:
     month_start, month_end = _month_bounds(year, month)
 
-    stmt_invoices = select(
-        func.coalesce(func.sum(Invoice.total_amount), 0).label("invoice_income")
-    ).where(
+    stmt_invoices = select(func.coalesce(func.sum(Invoice.total_amount), 0).label("invoice_income")).where(
         Invoice.tenant_code == tenant_code,
         Invoice.issue_date >= month_start,
         Invoice.issue_date < month_end,
@@ -283,29 +398,16 @@ def _aggregate_monthly_income_and_expense(
     invoice_income = invoice_row.invoice_income or Decimal("0.00")
 
     income_expr = func.coalesce(
-        func.sum(
-            case(
-                (CashEntry.kind == "income", CashEntry.amount),
-                else_=0,
-            )
-        ),
+        func.sum(case((CashEntry.kind == "income", CashEntry.amount), else_=0)),
         0,
     )
 
     expense_expr = func.coalesce(
-        func.sum(
-            case(
-                (CashEntry.kind == "expense", CashEntry.amount),
-                else_=0,
-            )
-        ),
+        func.sum(case((CashEntry.kind == "expense", CashEntry.amount), else_=0)),
         0,
     )
 
-    stmt_cash = select(
-        income_expr.label("cash_income"),
-        expense_expr.label("cash_expense"),
-    ).where(
+    stmt_cash = select(income_expr.label("cash_income"), expense_expr.label("cash_expense")).where(
         CashEntry.tenant_code == tenant_code,
         CashEntry.entry_date >= month_start,
         CashEntry.entry_date < month_end,
@@ -315,9 +417,7 @@ def _aggregate_monthly_income_and_expense(
     cash_income = cash_row.cash_income or Decimal("0.00")
     cash_expense = cash_row.cash_expense or Decimal("0.00")
 
-    stmt_input_invoices = select(
-        func.coalesce(func.sum(InputInvoice.total_amount), 0).label("input_expense")
-    ).where(
+    stmt_input_invoices = select(func.coalesce(func.sum(InputInvoice.total_amount), 0).label("input_expense")).where(
         InputInvoice.tenant_code == tenant_code,
         InputInvoice.issue_date >= month_start,
         InputInvoice.issue_date < month_end,
@@ -347,6 +447,61 @@ def _compute_monthly_components_from_base(
     return income_tax, pension, health, unemployment
 
 
+def _get_monthly_summary_any(
+    *,
+    year: int,
+    month: int,
+    tenant_code: str,
+    db: Session,
+) -> MonthlyTaxSummaryRead:
+    """
+    Vraća summary za mjesec:
+      - ako postoji finalizovan zapis u tax_monthly_results → vrati ga
+      - inače izračunaj iz invoices + cash + input_invoices koristeći cfg za taj mjesec (as_of = 1. dan mjeseca)
+    """
+    existing = db.execute(
+        select(TaxMonthlyResult).where(
+            TaxMonthlyResult.tenant_code == tenant_code,
+            TaxMonthlyResult.year == year,
+            TaxMonthlyResult.month == month,
+        )
+    ).scalar_one_or_none()
+
+    if existing is not None:
+        return MonthlyTaxSummaryRead(
+            year=existing.year,
+            month=existing.month,
+            tenant_code=existing.tenant_code,
+            total_income=existing.total_income,
+            total_expense=existing.total_expense,
+            taxable_base=existing.taxable_base,
+            income_tax=existing.income_tax,
+            contributions_total=existing.contributions_total,
+            total_due=existing.total_due,
+            is_final=existing.is_final,
+            currency=existing.currency,
+        )
+
+    as_of = date(year, month, 1)
+    cfg = _resolve_tax_config(db, tenant_code, as_of=as_of)
+
+    total_income, total_expense = _aggregate_monthly_income_and_expense(
+        year=year,
+        month=month,
+        tenant_code=tenant_code,
+        db=db,
+    )
+
+    return _compute_monthly_summary(
+        year=year,
+        month=month,
+        tenant_code=tenant_code,
+        total_income=total_income,
+        total_expense=total_expense,
+        cfg=cfg,
+    )
+
+
 # ======================================================
 #  10.1 /tax/monthly – mjesečni pregled (12 mjeseci)
 # ======================================================
@@ -363,7 +518,6 @@ def tax_monthly_overview(
     db: Session = Depends(_get_session_dep),
 ) -> TaxMonthlyOverviewResponse:
     tenant = _require_tenant(x_tenant_code)
-    cfg = _resolve_tax_config(db, tenant)
 
     payments = (
         db.execute(
@@ -379,9 +533,9 @@ def tax_monthly_overview(
 
     items: list[TaxMonthlyOverviewItem] = []
     for m in range(1, 13):
-        summary = auto_monthly_tax(
-            year=year, month=m, x_tenant_code=x_tenant_code, db=db
-        )
+        summary = _get_monthly_summary_any(year=year, month=m, tenant_code=tenant, db=db)
+
+        cfg = _resolve_tax_config(db, tenant, as_of=date(year, m, 1))
         income_tax, pension, health, unemployment = _compute_monthly_components_from_base(
             taxable_base=Decimal(str(summary.taxable_base)),
             cfg=cfg,
@@ -435,8 +589,6 @@ def upsert_monthly_payment(
     # FK safety: tax_monthly_payments.tenant_code -> tenants.code
     _ensure_tenant_exists(db, tenant)
 
-    cfg = _resolve_tax_config(db, tenant)
-
     row = db.execute(
         select(TaxMonthlyPayment).where(
             TaxMonthlyPayment.tenant_code == tenant,
@@ -464,9 +616,11 @@ def upsert_monthly_payment(
     db.commit()
     db.refresh(row)
 
-    summary = auto_monthly_tax(
-        year=year, month=month, x_tenant_code=x_tenant_code, db=db
-    )
+    as_of = date(year, month, 1)
+    cfg = _resolve_tax_config(db, tenant, as_of=as_of)
+
+    summary = _get_monthly_summary_any(year=year, month=month, tenant_code=tenant, db=db)
+
     income_tax, pension, health, unemployment = _compute_monthly_components_from_base(
         taxable_base=Decimal(str(summary.taxable_base)),
         cfg=cfg,
@@ -506,7 +660,7 @@ def preview_monthly_tax(
     db: Session = Depends(_get_session_dep),
 ) -> MonthlyTaxSummaryRead:
     tenant = _require_tenant(x_tenant_code)
-    cfg = _resolve_tax_config(db, tenant)
+    cfg = _resolve_tax_config(db, tenant, as_of=date(year, month, 1))
 
     return _compute_monthly_summary(
         year=year,
@@ -535,46 +689,7 @@ def auto_monthly_tax(
     db: Session = Depends(_get_session_dep),
 ) -> MonthlyTaxSummaryRead:
     tenant = _require_tenant(x_tenant_code)
-    cfg = _resolve_tax_config(db, tenant)
-
-    existing = db.execute(
-        select(TaxMonthlyResult).where(
-            TaxMonthlyResult.tenant_code == tenant,
-            TaxMonthlyResult.year == year,
-            TaxMonthlyResult.month == month,
-        )
-    ).scalar_one_or_none()
-
-    if existing is not None:
-        return MonthlyTaxSummaryRead(
-            year=existing.year,
-            month=existing.month,
-            tenant_code=existing.tenant_code,
-            total_income=existing.total_income,
-            total_expense=existing.total_expense,
-            taxable_base=existing.taxable_base,
-            income_tax=existing.income_tax,
-            contributions_total=existing.contributions_total,
-            total_due=existing.total_due,
-            is_final=existing.is_final,
-            currency=existing.currency,
-        )
-
-    total_income, total_expense = _aggregate_monthly_income_and_expense(
-        year=year,
-        month=month,
-        tenant_code=tenant,
-        db=db,
-    )
-
-    return _compute_monthly_summary(
-        year=year,
-        month=month,
-        tenant_code=tenant,
-        total_income=total_income,
-        total_expense=total_expense,
-        cfg=cfg,
-    )
+    return _get_monthly_summary_any(year=year, month=month, tenant_code=tenant, db=db)
 
 
 # ======================================================
@@ -594,7 +709,7 @@ def finalize_monthly_tax(
     db: Session = Depends(_get_session_dep),
 ) -> MonthlyTaxSummaryRead:
     tenant = _require_tenant(x_tenant_code)
-    cfg = _resolve_tax_config(db, tenant)
+    cfg = _resolve_tax_config(db, tenant, as_of=date(year, month, 1))
 
     existing = db.execute(
         select(TaxMonthlyResult).where(

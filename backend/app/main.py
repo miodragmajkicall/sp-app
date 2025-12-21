@@ -20,6 +20,7 @@ from app.routes import (
     promet,
     export,
     settings,
+    admin_constants,
 )
 from app.models import FinalizedPeriodModificationError
 
@@ -72,6 +73,10 @@ tags_metadata = [
     {
         "name": "reports",
         "description": "Finansijski izvještaji i pregledi (cashflow, P&L, itd.).",
+    },
+    {
+        "name": "admin",
+        "description": "Admin rute (globalne konstante/parametri sistema).",
     },
     {
         "name": "meta",
@@ -199,3 +204,6 @@ app.include_router(export.router)
 
 # Settings (core podešavanja korisnika)
 app.include_router(settings.router)
+
+# Admin constants (globalni parametri)
+app.include_router(admin_constants.router)

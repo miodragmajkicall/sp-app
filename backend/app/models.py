@@ -21,6 +21,7 @@ from sqlalchemy import (
     func,
     event,
 )
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base, relationship, object_session
 
 Base = declarative_base()
@@ -600,6 +601,48 @@ def _input_invoice_before_update(mapper, connection, target: InputInvoice) -> No
 def _input_invoice_before_delete(mapper, connection, target: InputInvoice) -> None:
     if target.issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
+
+
+# ======================================================
+#  ZAKONSKE KONSTANTE / PARAMETRI (GLOBALNO, PO ENTITETU)
+# ======================================================
+class AppConstantsSet(Base):
+    """
+    Effective-dated set zakonskih konstanti za jednu jurisdikciju (RS/FBiH/BD).
+
+    Ovo je CENTRALNI izvor istine za:
+    - stope doprinosa
+    - osnovice i prosjeke
+    - porezne režime i pragove
+    - PDV pragove/logiku upozorenja
+    - uplatnice (računi javnih prihoda, vrste prihoda, modeli, pozivi na broj)
+    """
+
+    __tablename__ = "app_constants_sets"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    jurisdiction = Column(String(16), nullable=False)  # RS / FBiH / BD
+    effective_from = Column(Date, nullable=False)
+    effective_to = Column(Date, nullable=True)
+
+    payload = Column(JSONB, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    created_by = Column(String(128), nullable=True)
+    created_reason = Column(Text, nullable=True)
+
+    updated_by = Column(String(128), nullable=True)
+    updated_reason = Column(Text, nullable=True)
+
+    __table_args__ = (
+        CheckConstraint(
+            "(effective_to is null) OR (effective_to >= effective_from)",
+            name="ck_app_constants_sets_effective_range",
+        ),
+    )
 
 
 # ======================================================
