@@ -10,10 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 BaseConfig = ConfigDict(from_attributes=True)
 
 # Central catalog (backend validation)
+# V1 scenario katalog po tehničkim zahtjevima:
+# RS: osnovna + dopunska
+# FBiH: obrt + slobodna zanimanja
+# BD: samostalna djelatnost
 ALLOWED_SCENARIOS: dict[str, set[str]] = {
-    "RS": {"rs_pausal", "rs_knjige"},
-    "FBiH": {"fbih_knjige"},
-    "BD": {"bd_knjige"},
+    "RS": {"rs_primary", "rs_supplementary"},
+    "FBiH": {"fbih_obrt", "fbih_slobodna"},
+    "BD": {"bd_samostalna"},
 }
 
 
@@ -58,7 +62,7 @@ class AppConstantsSetCreate(BaseModel):
     """
 
     jurisdiction: str = Field(..., min_length=1, max_length=16, examples=["RS"])
-    scenario_key: str = Field(..., min_length=1, max_length=64, examples=["rs_pausal"])
+    scenario_key: str = Field(..., min_length=1, max_length=64, examples=["rs_primary"])
     effective_from: date
     effective_to: Optional[date] = None
 
@@ -84,7 +88,7 @@ class AppConstantsSetUpdate(BaseModel):
     """
 
     jurisdiction: Optional[str] = Field(None, min_length=1, max_length=16, examples=["RS"])
-    scenario_key: Optional[str] = Field(None, min_length=1, max_length=64, examples=["rs_pausal"])
+    scenario_key: Optional[str] = Field(None, min_length=1, max_length=64, examples=["rs_primary"])
     effective_from: Optional[date] = None
     effective_to: Optional[date] = None
 

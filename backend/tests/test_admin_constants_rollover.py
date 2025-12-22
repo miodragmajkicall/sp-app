@@ -27,10 +27,10 @@ def test_admin_constants_create_rollover_closes_previous_open_ended_only_same_sc
         "/admin/constants",
         json={
             "jurisdiction": "RS",
-            "scenario_key": "rs_pausal",
+            "scenario_key": "rs_primary",
             "effective_from": "2025-01-01",
             "effective_to": None,
-            "payload": {"scenario_key": "rs_pausal", "vat": {"standard_rate": 0.17}},
+            "payload": {"scenario_key": "rs_primary", "vat": {"standard_rate": 0.17}},
             "created_by": "admin",
             "created_reason": "init",
         },
@@ -45,10 +45,10 @@ def test_admin_constants_create_rollover_closes_previous_open_ended_only_same_sc
         "/admin/constants",
         json={
             "jurisdiction": "RS",
-            "scenario_key": "rs_pausal",
+            "scenario_key": "rs_primary",
             "effective_from": "2025-07-01",
             "effective_to": None,
-            "payload": {"scenario_key": "rs_pausal", "meta": {"v": 2}},
+            "payload": {"scenario_key": "rs_primary", "meta": {"v": 2}},
             "created_by": "admin",
             "created_reason": "update mid-year",
         },
@@ -56,7 +56,7 @@ def test_admin_constants_create_rollover_closes_previous_open_ended_only_same_sc
     assert r2.status_code == 200, r2.text
 
     # 3) lista
-    rlist = client.get("/admin/constants", params={"jurisdiction": "RS", "scenario_key": "rs_pausal"})
+    rlist = client.get("/admin/constants", params={"jurisdiction": "RS", "scenario_key": "rs_primary"})
     assert rlist.status_code == 200, rlist.text
     items = rlist.json()["items"]
     assert len(items) >= 2
@@ -75,10 +75,10 @@ def test_admin_constants_rollover_does_not_modify_bounded_sets_and_overlap_is_re
         "/admin/constants",
         json={
             "jurisdiction": "FBiH",
-            "scenario_key": "fbih_knjige",
+            "scenario_key": "fbih_obrt",
             "effective_from": "2025-01-01",
             "effective_to": "2025-12-31",
-            "payload": {"scenario_key": "fbih_knjige"},
+            "payload": {"scenario_key": "fbih_obrt"},
             "created_by": "admin",
             "created_reason": "init",
         },
@@ -90,10 +90,10 @@ def test_admin_constants_rollover_does_not_modify_bounded_sets_and_overlap_is_re
         "/admin/constants",
         json={
             "jurisdiction": "FBiH",
-            "scenario_key": "fbih_knjige",
+            "scenario_key": "fbih_obrt",
             "effective_from": "2025-06-01",
             "effective_to": None,
-            "payload": {"scenario_key": "fbih_knjige", "meta": {"v": 2}},
+            "payload": {"scenario_key": "fbih_obrt", "meta": {"v": 2}},
             "created_by": "admin",
             "created_reason": "overlap attempt",
         },

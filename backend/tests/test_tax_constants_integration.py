@@ -33,15 +33,16 @@ def test_tax_preview_uses_app_constants_set_when_no_tax_settings_override():
 
     tenant = "t-const-1"
 
-    # 1) Kreiraj constants set za RS (2025)
+    # 1) Kreiraj constants set za RS (2025) - V1 scenario: RS primary
     res = client.post(
         "/admin/constants",
         json={
             "jurisdiction": "RS",
-            "scenario_key": "rs_pausal",
+            "scenario_key": "rs_primary",
             "effective_from": "2025-01-01",
             "effective_to": None,
             "payload": {
+                # može ostati minimalno za test; backend će (ako treba) dopuniti payload.scenario_key
                 "tax": {
                     "income_tax_rate": 0.20,
                     "pension_contribution_rate": 0.10,
@@ -58,13 +59,14 @@ def test_tax_preview_uses_app_constants_set_when_no_tax_settings_override():
     assert res.status_code == 200, res.text
 
     # 2) Postavi tenant tax profile -> RS (ovo ujedno kreira tenant record preko ensure_tenant_exists u settings)
+    # has_additional_activity=False treba mapirati na RS primary scenario u lookup-u konstanti
     res = client.put(
         "/settings/tax",
         headers={"X-Tenant-Code": tenant},
         json={
             "entity": "RS",
             "regime": "pausal",
-            "has_additional_activity": False,
+            "has_additional_activity": False,  # -> rs_primary
             "monthly_pension": None,
             "monthly_health": None,
             "monthly_unemployment": None,
@@ -106,12 +108,12 @@ def test_tax_settings_override_beats_app_constants_set():
 
     tenant = "t-const-2"
 
-    # constants set: income_tax_rate=0.20
+    # constants set: income_tax_rate=0.20 (RS primary)
     res = client.post(
         "/admin/constants",
         json={
             "jurisdiction": "RS",
-            "scenario_key": "rs_pausal",
+            "scenario_key": "rs_primary",
             "effective_from": "2025-01-01",
             "effective_to": None,
             "payload": {
@@ -137,7 +139,7 @@ def test_tax_settings_override_beats_app_constants_set():
         json={
             "entity": "RS",
             "regime": "pausal",
-            "has_additional_activity": False,
+            "has_additional_activity": False,  # -> rs_primary
             "monthly_pension": None,
             "monthly_health": None,
             "monthly_unemployment": None,

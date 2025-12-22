@@ -23,10 +23,10 @@ def test_admin_constants_create_and_current():
         "/admin/constants",
         json={
             "jurisdiction": "RS",
-            "scenario_key": "rs_pausal",
+            "scenario_key": "rs_primary",
             "effective_from": "2025-01-01",
             "effective_to": "2025-12-31",
-            "payload": {"scenario_key": "rs_pausal", "vat": {"standard_rate": 0.17}},
+            "payload": {"scenario_key": "rs_primary", "vat": {"standard_rate": 0.17}},
             "created_by": "tester",
             "created_reason": "init RS 2025",
         },
@@ -34,7 +34,7 @@ def test_admin_constants_create_and_current():
     assert res.status_code == 200
     created = res.json()
     assert created["jurisdiction"] == "RS"
-    assert created["scenario_key"] == "rs_pausal"
+    assert created["scenario_key"] == "rs_primary"
     assert created["effective_from"] == "2025-01-01"
     assert created["effective_to"] == "2025-12-31"
     assert created["payload"]["vat"]["standard_rate"] == 0.17
@@ -42,12 +42,12 @@ def test_admin_constants_create_and_current():
     # current in mid-2025 -> found
     res = client.get(
         "/constants/current",
-        params={"jurisdiction": "RS", "scenario_key": "rs_pausal", "as_of": "2025-06-10"},
+        params={"jurisdiction": "RS", "scenario_key": "rs_primary", "as_of": "2025-06-10"},
     )
     assert res.status_code == 200
     body = res.json()
     assert body["jurisdiction"] == "RS"
-    assert body["scenario_key"] == "rs_pausal"
+    assert body["scenario_key"] == "rs_primary"
     assert body["as_of"] == "2025-06-10"
     assert body["found"] is True
     assert body["item"]["id"] == created["id"]
@@ -55,7 +55,7 @@ def test_admin_constants_create_and_current():
     # current before 2025 -> not found
     res = client.get(
         "/constants/current",
-        params={"jurisdiction": "RS", "scenario_key": "rs_pausal", "as_of": "2024-12-31"},
+        params={"jurisdiction": "RS", "scenario_key": "rs_primary", "as_of": "2024-12-31"},
     )
     assert res.status_code == 200
     body = res.json()
@@ -71,10 +71,10 @@ def test_admin_constants_overlap_rejected_within_same_scenario():
         "/admin/constants",
         json={
             "jurisdiction": "RS",
-            "scenario_key": "rs_pausal",
+            "scenario_key": "rs_primary",
             "effective_from": "2025-01-01",
             "effective_to": "2025-12-31",
-            "payload": {"scenario_key": "rs_pausal", "x": 1},
+            "payload": {"scenario_key": "rs_primary", "x": 1},
             "created_by": "tester",
             "created_reason": "init RS 2025",
         },
@@ -86,10 +86,10 @@ def test_admin_constants_overlap_rejected_within_same_scenario():
         "/admin/constants",
         json={
             "jurisdiction": "RS",
-            "scenario_key": "rs_pausal",
+            "scenario_key": "rs_primary",
             "effective_from": "2025-06-01",
             "effective_to": "2026-01-01",
-            "payload": {"scenario_key": "rs_pausal", "x": 2},
+            "payload": {"scenario_key": "rs_primary", "x": 2},
             "created_by": "tester",
             "created_reason": "overlap attempt",
         },
@@ -106,12 +106,12 @@ def test_admin_constants_overlap_allowed_across_different_scenarios():
         "/admin/constants",
         json={
             "jurisdiction": "RS",
-            "scenario_key": "rs_pausal",
+            "scenario_key": "rs_primary",
             "effective_from": "2025-01-01",
             "effective_to": "2025-12-31",
-            "payload": {"scenario_key": "rs_pausal", "x": 1},
+            "payload": {"scenario_key": "rs_primary", "x": 1},
             "created_by": "tester",
-            "created_reason": "init pausal",
+            "created_reason": "init primary",
         },
     )
     assert r1.status_code == 200, r1.text
@@ -121,12 +121,12 @@ def test_admin_constants_overlap_allowed_across_different_scenarios():
         "/admin/constants",
         json={
             "jurisdiction": "RS",
-            "scenario_key": "rs_knjige",
+            "scenario_key": "rs_supplementary",
             "effective_from": "2025-01-01",
             "effective_to": "2025-12-31",
-            "payload": {"scenario_key": "rs_knjige", "x": 2},
+            "payload": {"scenario_key": "rs_supplementary", "x": 2},
             "created_by": "tester",
-            "created_reason": "init knjige",
+            "created_reason": "init supplementary",
         },
     )
     assert r2.status_code == 200, r2.text
@@ -140,10 +140,10 @@ def test_admin_constants_update_changes_payload_and_audit():
         "/admin/constants",
         json={
             "jurisdiction": "RS",
-            "scenario_key": "rs_pausal",
+            "scenario_key": "rs_primary",
             "effective_from": "2025-01-01",
             "effective_to": None,
-            "payload": {"scenario_key": "rs_pausal", "vat": {"standard_rate": 0.17}},
+            "payload": {"scenario_key": "rs_primary", "vat": {"standard_rate": 0.17}},
             "created_by": "tester",
             "created_reason": "init RS open-ended",
         },
@@ -155,7 +155,7 @@ def test_admin_constants_update_changes_payload_and_audit():
     res = client.put(
         f"/admin/constants/{cid}",
         json={
-            "payload": {"scenario_key": "rs_pausal", "vat": {"standard_rate": 0.20}},
+            "payload": {"scenario_key": "rs_primary", "vat": {"standard_rate": 0.20}},
             "updated_by": "tester2",
             "updated_reason": "change rate",
         },
@@ -177,10 +177,10 @@ def test_admin_constants_create_with_rollover_closes_previous_and_creates_new_sa
         "/admin/constants",
         json={
             "jurisdiction": "RS",
-            "scenario_key": "rs_pausal",
+            "scenario_key": "rs_primary",
             "effective_from": "2025-01-01",
             "effective_to": None,
-            "payload": {"scenario_key": "rs_pausal", "tax": {"flat_costs_rate": 0.3}},
+            "payload": {"scenario_key": "rs_primary", "tax": {"flat_costs_rate": 0.3}},
             "created_by": "admin",
             "created_reason": "init",
         },
@@ -196,10 +196,10 @@ def test_admin_constants_create_with_rollover_closes_previous_and_creates_new_sa
         params={"rollover": "true"},  # ignored by backend; kept for back-compat
         json={
             "jurisdiction": "RS",
-            "scenario_key": "rs_pausal",
+            "scenario_key": "rs_primary",
             "effective_from": "2025-07-01",
             "effective_to": None,
-            "payload": {"scenario_key": "rs_pausal", "tax": {"flat_costs_rate": 0.25}},
+            "payload": {"scenario_key": "rs_primary", "tax": {"flat_costs_rate": 0.25}},
             "created_by": "admin",
             "created_reason": "mid-year change",
         },
@@ -210,7 +210,7 @@ def test_admin_constants_create_with_rollover_closes_previous_and_creates_new_sa
     assert second["effective_to"] is None
 
     # 3) List -> previous must be closed to 2025-06-30
-    res = client.get("/admin/constants", params={"jurisdiction": "RS", "scenario_key": "rs_pausal"})
+    res = client.get("/admin/constants", params={"jurisdiction": "RS", "scenario_key": "rs_primary"})
     assert res.status_code == 200
     items = res.json()["items"]
     assert len(items) == 2
@@ -221,7 +221,7 @@ def test_admin_constants_create_with_rollover_closes_previous_and_creates_new_sa
     # 4) current check before/after rollover point
     res = client.get(
         "/constants/current",
-        params={"jurisdiction": "RS", "scenario_key": "rs_pausal", "as_of": "2025-06-10"},
+        params={"jurisdiction": "RS", "scenario_key": "rs_primary", "as_of": "2025-06-10"},
     )
     assert res.status_code == 200
     body = res.json()
@@ -230,7 +230,7 @@ def test_admin_constants_create_with_rollover_closes_previous_and_creates_new_sa
 
     res = client.get(
         "/constants/current",
-        params={"jurisdiction": "RS", "scenario_key": "rs_pausal", "as_of": "2025-07-10"},
+        params={"jurisdiction": "RS", "scenario_key": "rs_primary", "as_of": "2025-07-10"},
     )
     assert res.status_code == 200
     body = res.json()
