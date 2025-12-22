@@ -616,6 +616,10 @@ class AppConstantsSet(Base):
     - porezne režime i pragove
     - PDV pragove/logiku upozorenja
     - uplatnice (računi javnih prihoda, vrste prihoda, modeli, pozivi na broj)
+
+    scenario_key:
+    - identifikuje scenarij/šemu unutar jurisdikcije (npr. RS paušal vs RS knjige)
+    - overlap/rollover se računa po (jurisdiction + scenario_key)
     """
 
     __tablename__ = "app_constants_sets"
@@ -623,6 +627,8 @@ class AppConstantsSet(Base):
     id = Column(BigInteger, primary_key=True, autoincrement=True)
 
     jurisdiction = Column(String(16), nullable=False)  # RS / FBiH / BD
+    scenario_key = Column(String(64), nullable=False)  # npr. rs_pausal, rs_knjige, fbih_knjige, bd_knjige
+
     effective_from = Column(Date, nullable=False)
     effective_to = Column(Date, nullable=True)
 

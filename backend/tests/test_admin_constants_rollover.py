@@ -18,15 +18,16 @@ def _wipe_constants() -> None:
         db.close()
 
 
-def test_admin_constants_create_rollover_closes_previous_open_ended_only():
+def test_admin_constants_create_rollover_closes_previous_open_ended_only_same_scenario():
     _wipe_constants()
     client = TestClient(app)
 
-    # 1) Kreiraj open-ended set od 2025-01-01
+    # 1) open-ended set od 2025-01-01
     r1 = client.post(
         "/admin/constants",
         json={
             "jurisdiction": "RS",
+            "scenario_key": "rs_pausal",
             "effective_from": "2025-01-01",
             "effective_to": None,
             "payload": {"scenario_key": "rs_pausal", "vat": {"standard_rate": 0.17}},
@@ -39,11 +40,12 @@ def test_admin_constants_create_rollover_closes_previous_open_ended_only():
     assert first["effective_from"] == "2025-01-01"
     assert first["effective_to"] is None
 
-    # 2) Kreiraj novi open-ended set od 2025-07-01 -> treba zatvoriti prvi na 2025-06-30
+    # 2) novi open-ended set od 2025-07-01 -> zatvara prvi na 2025-06-30
     r2 = client.post(
         "/admin/constants",
         json={
             "jurisdiction": "RS",
+            "scenario_key": "rs_pausal",
             "effective_from": "2025-07-01",
             "effective_to": None,
             "payload": {"scenario_key": "rs_pausal", "meta": {"v": 2}},
@@ -53,8 +55,8 @@ def test_admin_constants_create_rollover_closes_previous_open_ended_only():
     )
     assert r2.status_code == 200, r2.text
 
-    # 3) Provjera liste
-    rlist = client.get("/admin/constants", params={"jurisdiction": "RS"})
+    # 3) lista
+    rlist = client.get("/admin/constants", params={"jurisdiction": "RS", "scenario_key": "rs_pausal"})
     assert rlist.status_code == 200, rlist.text
     items = rlist.json()["items"]
     assert len(items) >= 2
@@ -64,7 +66,7 @@ def test_admin_constants_create_rollover_closes_previous_open_ended_only():
     assert by_from["2025-07-01"]["effective_to"] is None
 
 
-def test_admin_constants_rollover_does_not_modify_bounded_sets_and_overlap_is_rejected():
+def test_admin_constants_rollover_does_not_modify_bounded_sets_and_overlap_is_rejected_same_scenario():
     _wipe_constants()
     client = TestClient(app)
 
@@ -73,6 +75,7 @@ def test_admin_constants_rollover_does_not_modify_bounded_sets_and_overlap_is_re
         "/admin/constants",
         json={
             "jurisdiction": "FBiH",
+            "scenario_key": "fbih_knjige",
             "effective_from": "2025-01-01",
             "effective_to": "2025-12-31",
             "payload": {"scenario_key": "fbih_knjige"},
@@ -82,11 +85,12 @@ def test_admin_constants_rollover_does_not_modify_bounded_sets_and_overlap_is_re
     )
     assert r1.status_code == 200, r1.text
 
-    # 2) pokušaj overlap -> mora biti 400 (jer prethodni nije open-ended)
+    # 2) overlap -> mora biti 400 (prethodni nije open-ended)
     r2 = client.post(
         "/admin/constants",
         json={
             "jurisdiction": "FBiH",
+            "scenario_key": "fbih_knjige",
             "effective_from": "2025-06-01",
             "effective_to": None,
             "payload": {"scenario_key": "fbih_knjige", "meta": {"v": 2}},

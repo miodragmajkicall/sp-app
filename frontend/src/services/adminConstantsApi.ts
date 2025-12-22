@@ -11,6 +11,7 @@ import type {
 
 export async function adminConstantsList(params?: {
   jurisdiction?: string;
+  scenario_key?: string;
 }): Promise<AppConstantsSetListResponse> {
   const res = await apiClient.get<AppConstantsSetListResponse>(
     "/admin/constants",
@@ -42,6 +43,7 @@ export async function adminConstantsUpdate(
 
 export async function constantsCurrent(params: {
   jurisdiction: string;
+  scenario_key: string;
   as_of: string; // YYYY-MM-DD
 }): Promise<AppConstantsCurrentResponse> {
   const res = await apiClient.get<AppConstantsCurrentResponse>(

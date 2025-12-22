@@ -16,6 +16,7 @@ from app.schemas.constants import (
     AppConstantsSetUpdate,
     AppConstantsSetListResponse,
     AppConstantsCurrentResponse,
+    ALLOWED_SCENARIOS,
 )
 
 router = APIRouter(tags=["admin"])
@@ -23,6 +24,20 @@ router = APIRouter(tags=["admin"])
 
 def _get_db() -> Session:
     return SessionLocal()
+
+
+def _validate_scenario(jurisdiction: str, scenario_key: str) -> None:
+    allowed = ALLOWED_SCENARIOS.get(jurisdiction)
+    if not allowed:
+        raise HTTPException(status_code=400, detail=f"Unsupported jurisdiction: {jurisdiction}")
+    if scenario_key not in allowed:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Invalid scenario_key '{scenario_key}' for jurisdiction '{jurisdiction}'. "
+                f"Allowed: {sorted(list(allowed))}"
+            ),
+        )
 
 
 def _ranges_overlap(
@@ -44,11 +59,15 @@ def _ensure_no_overlap(
     *,
     db: Session,
     jurisdiction: str,
+    scenario_key: str,
     effective_from: date,
     effective_to: Optional[date],
     exclude_id: Optional[int] = None,
 ) -> None:
-    stmt = select(AppConstantsSet).where(AppConstantsSet.jurisdiction == jurisdiction)
+    stmt = select(AppConstantsSet).where(
+        AppConstantsSet.jurisdiction == jurisdiction,
+        AppConstantsSet.scenario_key == scenario_key,
+    )
     if exclude_id is not None:
         stmt = stmt.where(AppConstantsSet.id != exclude_id)
 
@@ -63,17 +82,24 @@ def _ensure_no_overlap(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    "Overlapping effective date range for this jurisdiction. "
+                    "Overlapping effective date range for this jurisdiction+scenario. "
                     f"Conflicts with id={row.id} [{row.effective_from}..{row.effective_to}]"
                 ),
             )
 
 
-def _find_current_set(*, db: Session, jurisdiction: str, as_of: date) -> Optional[AppConstantsSet]:
+def _find_current_set(
+    *,
+    db: Session,
+    jurisdiction: str,
+    scenario_key: str,
+    as_of: date,
+) -> Optional[AppConstantsSet]:
     stmt = (
         select(AppConstantsSet)
         .where(
             AppConstantsSet.jurisdiction == jurisdiction,
+            AppConstantsSet.scenario_key == scenario_key,
             AppConstantsSet.effective_from <= as_of,
             or_(AppConstantsSet.effective_to.is_(None), AppConstantsSet.effective_to >= as_of),
         )
@@ -87,20 +113,20 @@ def _rollover_close_previous_if_needed(
     *,
     db: Session,
     jurisdiction: str,
+    scenario_key: str,
     new_from: date,
     actor: Optional[str],
     reason: str,
 ) -> None:
     """
-    Rollover samo za open-ended prethodni set (effective_to IS NULL):
+    Rollover samo za open-ended prethodni set (effective_to IS NULL), u okviru (jurisdiction+scenario_key):
     - Ako postoji aktivan open-ended set na new_from, zatvori ga na (new_from - 1 dan).
     - Ako je prethodni set već imao effective_to (zatvoren period), NE diramo ga (overlap ide na 400).
     """
-    prev = _find_current_set(db=db, jurisdiction=jurisdiction, as_of=new_from)
+    prev = _find_current_set(db=db, jurisdiction=jurisdiction, scenario_key=scenario_key, as_of=new_from)
     if prev is None:
         return
 
-    # Ključna promjena: rollover samo ako je prev open-ended
     if prev.effective_to is not None:
         return
 
@@ -122,21 +148,25 @@ def _rollover_close_previous_if_needed(
 @router.get(
     "/admin/constants",
     response_model=AppConstantsSetListResponse,
-    summary="Admin: list setova zakonskih konstanti (effective-dated) po jurisdikciji",
+    summary="Admin: list setova zakonskih konstanti (effective-dated) po jurisdikciji i scenariju",
     operation_id="admin_constants_list",
 )
 def admin_constants_list(
     jurisdiction: Optional[str] = Query(None, description="RS / FBiH / BD"),
+    scenario_key: Optional[str] = Query(None, description="scenario_key (npr. rs_pausal)"),
 ) -> AppConstantsSetListResponse:
     db = _get_db()
     try:
         stmt = select(AppConstantsSet).order_by(
             AppConstantsSet.jurisdiction.asc(),
+            AppConstantsSet.scenario_key.asc(),
             AppConstantsSet.effective_from.desc(),
             AppConstantsSet.id.desc(),
         )
         if jurisdiction:
             stmt = stmt.where(AppConstantsSet.jurisdiction == jurisdiction)
+        if scenario_key:
+            stmt = stmt.where(AppConstantsSet.scenario_key == scenario_key)
 
         rows = db.execute(stmt).scalars().all()
         items = [AppConstantsSetRead.model_validate(r) for r in rows]
@@ -148,26 +178,44 @@ def admin_constants_list(
 @router.post(
     "/admin/constants",
     response_model=AppConstantsSetRead,
-    summary="Admin: kreiraj novi set konstanti (rollover zatvara samo open-ended prethodni set)",
+    summary="Admin: kreiraj novi set konstanti (rollover zatvara samo open-ended prethodni set u okviru scenario_key)",
     operation_id="admin_constants_create",
     responses={400: {"description": "Validation / overlap error"}},
 )
 def admin_constants_create(payload: AppConstantsSetCreate) -> AppConstantsSetRead:
     db = _get_db()
     try:
-        # 1) Rollover samo ako postoji open-ended set
+        _validate_scenario(payload.jurisdiction, payload.scenario_key)
+
+        # Ensure payload contains scenario_key for transparency/back-compat
+        if isinstance(payload.payload, dict):
+            p_scn = payload.payload.get("scenario_key")
+            if p_scn is None:
+                payload.payload["scenario_key"] = payload.scenario_key
+            elif isinstance(p_scn, str) and p_scn != payload.scenario_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "payload.scenario_key must match scenario_key field. "
+                        f"payload={p_scn}, scenario_key={payload.scenario_key}"
+                    ),
+                )
+
+        # 1) Rollover only within same (jurisdiction+scenario)
         _rollover_close_previous_if_needed(
             db=db,
             jurisdiction=payload.jurisdiction,
+            scenario_key=payload.scenario_key,
             new_from=payload.effective_from,
             actor=payload.created_by,
             reason=(payload.created_reason or "rollover"),
         )
 
-        # 2) Zatim overlap provjera (sad će i dalje baciti 400 za bounded overlap slučajeve)
+        # 2) overlap check within same (jurisdiction+scenario)
         _ensure_no_overlap(
             db=db,
             jurisdiction=payload.jurisdiction,
+            scenario_key=payload.scenario_key,
             effective_from=payload.effective_from,
             effective_to=payload.effective_to,
             exclude_id=None,
@@ -175,6 +223,7 @@ def admin_constants_create(payload: AppConstantsSetCreate) -> AppConstantsSetRea
 
         row = AppConstantsSet(
             jurisdiction=payload.jurisdiction,
+            scenario_key=payload.scenario_key,
             effective_from=payload.effective_from,
             effective_to=payload.effective_to,
             payload=payload.payload,
@@ -195,7 +244,7 @@ def admin_constants_create(payload: AppConstantsSetCreate) -> AppConstantsSetRea
 @router.put(
     "/admin/constants/{constants_id}",
     response_model=AppConstantsSetRead,
-    summary="Admin: update postojećeg seta (bez overlap-a)",
+    summary="Admin: update postojećeg seta (bez overlap-a) u okviru scenario_key",
     operation_id="admin_constants_update",
     responses={400: {"description": "Validation / overlap error"}},
 )
@@ -207,12 +256,16 @@ def admin_constants_update(constants_id: int, payload: AppConstantsSetUpdate) ->
             raise HTTPException(status_code=404, detail="Constants set not found")
 
         new_j = payload.jurisdiction if payload.jurisdiction is not None else row.jurisdiction
+        new_s = payload.scenario_key if payload.scenario_key is not None else row.scenario_key
         new_from = payload.effective_from if payload.effective_from is not None else row.effective_from
         new_to = payload.effective_to if payload.effective_to is not None else row.effective_to
+
+        _validate_scenario(new_j, new_s)
 
         _ensure_no_overlap(
             db=db,
             jurisdiction=new_j,
+            scenario_key=new_s,
             effective_from=new_from,
             effective_to=new_to,
             exclude_id=row.id,
@@ -220,11 +273,26 @@ def admin_constants_update(constants_id: int, payload: AppConstantsSetUpdate) ->
 
         if payload.jurisdiction is not None:
             row.jurisdiction = payload.jurisdiction
+        if payload.scenario_key is not None:
+            row.scenario_key = payload.scenario_key
         if payload.effective_from is not None:
             row.effective_from = payload.effective_from
         if payload.effective_to is not None:
             row.effective_to = payload.effective_to
         if payload.payload is not None:
+            # keep scenario_key consistent
+            if isinstance(payload.payload, dict):
+                p_scn = payload.payload.get("scenario_key")
+                if p_scn is None:
+                    payload.payload["scenario_key"] = row.scenario_key
+                elif isinstance(p_scn, str) and p_scn != row.scenario_key:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "payload.scenario_key must match row.scenario_key. "
+                            f"payload={p_scn}, row={row.scenario_key}"
+                        ),
+                    )
             row.payload = payload.payload
 
         row.updated_by = payload.updated_by
@@ -241,25 +309,29 @@ def admin_constants_update(constants_id: int, payload: AppConstantsSetUpdate) ->
 @router.get(
     "/constants/current",
     response_model=AppConstantsCurrentResponse,
-    summary="Vraća trenutno važeći set konstanti za jurisdikciju i datum",
+    summary="Vraća trenutno važeći set konstanti za jurisdikciju, scenario i datum",
     operation_id="constants_current",
 )
 def constants_current(
     jurisdiction: str = Query(..., description="RS / FBiH / BD"),
+    scenario_key: str = Query(..., description="scenario_key (npr. rs_pausal)"),
     as_of: date = Query(..., description="Datum za koji tražimo važeći set (YYYY-MM-DD)"),
 ) -> AppConstantsCurrentResponse:
     db = _get_db()
     try:
-        row = _find_current_set(db=db, jurisdiction=jurisdiction, as_of=as_of)
+        _validate_scenario(jurisdiction, scenario_key)
+        row = _find_current_set(db=db, jurisdiction=jurisdiction, scenario_key=scenario_key, as_of=as_of)
         if row is None:
             return AppConstantsCurrentResponse(
                 jurisdiction=jurisdiction,
+                scenario_key=scenario_key,
                 as_of=as_of,
                 found=False,
                 item=None,
             )
         return AppConstantsCurrentResponse(
             jurisdiction=jurisdiction,
+            scenario_key=scenario_key,
             as_of=as_of,
             found=True,
             item=AppConstantsSetRead.model_validate(row),

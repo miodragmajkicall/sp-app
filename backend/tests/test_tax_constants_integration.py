@@ -38,6 +38,7 @@ def test_tax_preview_uses_app_constants_set_when_no_tax_settings_override():
         "/admin/constants",
         json={
             "jurisdiction": "RS",
+            "scenario_key": "rs_pausal",
             "effective_from": "2025-01-01",
             "effective_to": None,
             "payload": {
@@ -54,7 +55,7 @@ def test_tax_preview_uses_app_constants_set_when_no_tax_settings_override():
             "created_reason": "RS tax constants 2025+",
         },
     )
-    assert res.status_code == 200
+    assert res.status_code == 200, res.text
 
     # 2) Postavi tenant tax profile -> RS (ovo ujedno kreira tenant record preko ensure_tenant_exists u settings)
     res = client.put(
@@ -69,9 +70,9 @@ def test_tax_preview_uses_app_constants_set_when_no_tax_settings_override():
             "monthly_unemployment": None,
         },
     )
-    assert res.status_code == 200
+    assert res.status_code == 200, res.text
 
-    # 3) Preview za Jan 2025: total_income=1000, total_expense=0, flat_costs=0
+    # 3) Preview za Jan 2025: total_income=1000, total_expense=0
     res = client.get(
         "/tax/monthly/preview",
         headers={"X-Tenant-Code": tenant},
@@ -82,7 +83,7 @@ def test_tax_preview_uses_app_constants_set_when_no_tax_settings_override():
             "total_expense": "0.00",
         },
     )
-    assert res.status_code == 200
+    assert res.status_code == 200, res.text
     body = res.json()
 
     # taxable_base = 1000
@@ -110,6 +111,7 @@ def test_tax_settings_override_beats_app_constants_set():
         "/admin/constants",
         json={
             "jurisdiction": "RS",
+            "scenario_key": "rs_pausal",
             "effective_from": "2025-01-01",
             "effective_to": None,
             "payload": {
@@ -126,7 +128,7 @@ def test_tax_settings_override_beats_app_constants_set():
             "created_reason": "RS tax constants 2025+",
         },
     )
-    assert res.status_code == 200
+    assert res.status_code == 200, res.text
 
     # settings/tax -> RS (kreira tenant)
     res = client.put(
@@ -141,7 +143,7 @@ def test_tax_settings_override_beats_app_constants_set():
             "monthly_unemployment": None,
         },
     )
-    assert res.status_code == 200
+    assert res.status_code == 200, res.text
 
     # upsert /tax/settings override: income_tax_rate=0.10 (pregazi constants)
     res = client.put(
@@ -156,7 +158,7 @@ def test_tax_settings_override_beats_app_constants_set():
             "currency": "BAM",
         },
     )
-    assert res.status_code == 200
+    assert res.status_code == 200, res.text
 
     # preview: taxable_base=1000, income_tax=100 (ne 200)
     res = client.get(
@@ -169,7 +171,7 @@ def test_tax_settings_override_beats_app_constants_set():
             "total_expense": "0.00",
         },
     )
-    assert res.status_code == 200
+    assert res.status_code == 200, res.text
     body = res.json()
 
     assert _d(body["taxable_base"]) == Decimal("1000.00")

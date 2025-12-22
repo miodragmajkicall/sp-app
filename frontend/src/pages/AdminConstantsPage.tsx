@@ -198,28 +198,32 @@ function Section({
   );
 }
 
-const SCENARIOS: Array<{ key: string; label: string; hint: string }> = [
-  { key: "rs_pausal", label: "RS – Paušal", hint: "Paušalni režim (parametri se kasnije fino mapiraju u obračun)." },
-  { key: "rs_knjige", label: "RS – Knjige (stvarni rashodi)", hint: "Vođenje evidencija + obračun po osnovici." },
-  { key: "fbih_knjige", label: "FBiH – Knjige", hint: "FBiH samostalna djelatnost (detalji kasnije)." },
-  { key: "bd_knjige", label: "BD – Knjige", hint: "Brčko distrikt (detalji kasnije)." },
+const SCENARIOS: Array<{ key: string; label: string; hint: string; jurisdiction: Jurisdiction }> = [
+  { key: "rs_pausal", label: "RS – Paušal", hint: "Paušalni režim (parametri se kasnije fino mapiraju u obračun).", jurisdiction: "RS" },
+  { key: "rs_knjige", label: "RS – Knjige (stvarni rashodi)", hint: "Vođenje evidencija + obračun po osnovici.", jurisdiction: "RS" },
+  { key: "fbih_knjige", label: "FBiH – Knjige", hint: "FBiH samostalna djelatnost (detalji kasnije).", jurisdiction: "FBiH" },
+  { key: "bd_knjige", label: "BD – Knjige", hint: "Brčko distrikt (detalji kasnije).", jurisdiction: "BD" },
 ];
 
 function ScenarioSelect({
+  jurisdiction,
   value,
   onChange,
   id,
 }: {
+  jurisdiction: Jurisdiction;
   value: string;
   onChange: (v: string) => void;
   id?: string;
 }) {
-  const selected = SCENARIOS.find((s) => s.key === value);
+  const options = SCENARIOS.filter((s) => s.jurisdiction === jurisdiction);
+  const selected = options.find((s) => s.key === value);
+
   return (
     <div>
       <FieldLabel
         label="Scenario / šema (scenario_key)"
-        hint={selected ? selected.hint : "Izaberi režim obračuna koji će korisnik birati u Settings."}
+        hint={selected ? selected.hint : "Izaberi šemu za ovu jurisdikciju."}
       />
       <select
         id={id}
@@ -227,7 +231,7 @@ function ScenarioSelect({
         onChange={(e) => onChange(e.target.value)}
         className="w-full border border-slate-300 rounded-md px-2 py-1 text-sm bg-white"
       >
-        {SCENARIOS.map((s) => (
+        {options.map((s) => (
           <option key={s.key} value={s.key}>
             {s.label}
           </option>
@@ -336,6 +340,7 @@ function Tabs({
 }
 
 function FriendlyPayloadEditor({
+  jurisdiction,
   form,
   setForm,
   derivedPayload,
@@ -344,6 +349,7 @@ function FriendlyPayloadEditor({
   raw,
   setRaw,
 }: {
+  jurisdiction: Jurisdiction;
   form: ConstantsForm;
   setForm: (next: ConstantsForm) => void;
   derivedPayload: string;
@@ -372,6 +378,7 @@ function FriendlyPayloadEditor({
         <>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
             <ScenarioSelect
+              jurisdiction={jurisdiction}
               value={form.scenario_key}
               onChange={(v) => setForm({ ...form, scenario_key: v })}
             />
@@ -517,12 +524,11 @@ function FriendlyPayloadEditor({
 }
 
 function explainOverlap(detail: string): string {
-  // Backend poruka je OK, ali je korisniku bolje objasniti šta znači.
   if ((detail ?? "").toLowerCase().includes("overlapping")) {
     return (
-      "Ne može snimiti jer postoji set sa preklapajućim datumima. " +
-      "Za rollover koristi: novi set treba biti open-ended (Effective to prazno), " +
-      "i Effective from mora biti POSLIJE trenutnog active seta. " +
+      "Ne može snimiti jer postoji set sa preklapajućim datumima za isti scenario. " +
+      "Za rollover: novi set treba biti open-ended (Effective to prazno), " +
+      "i Effective from mora biti POSLIJE trenutnog active seta u istom scenario-u. " +
       `Detalj: ${detail}`
     );
   }
@@ -532,7 +538,16 @@ function explainOverlap(detail: string): string {
 export default function AdminConstantsPage() {
   const [activeTab, setActiveTab] = useState<Jurisdiction>("RS");
 
-  // history list (per tab)
+  // scenario selection (per tab)
+  const [scenarioByTab, setScenarioByTab] = useState<Record<Jurisdiction, string>>({
+    RS: "rs_pausal",
+    FBiH: "fbih_knjige",
+    BD: "bd_knjige",
+  });
+
+  const activeScenario = scenarioByTab[activeTab] || defaultScenarioForJurisdiction(activeTab);
+
+  // history list (per tab+scenario)
   const [items, setItems] = useState<AppConstantsSetRead[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -541,7 +556,7 @@ export default function AdminConstantsPage() {
   const [curItem, setCurItem] = useState<AppConstantsSetRead | null>(null);
   const [curLoading, setCurLoading] = useState(false);
 
-  // editor (this is THE screen: edit "current" then save -> creates new set -> rollover)
+  // editor
   const [effectiveFrom, setEffectiveFrom] = useState<string>(todayYmd());
   const [createdBy, setCreatedBy] = useState<string>("admin");
   const [createdReason, setCreatedReason] = useState<string>("update constants");
@@ -556,11 +571,11 @@ export default function AdminConstantsPage() {
     return JSON.stringify(payload, null, 2);
   }, [form]);
 
-  async function refreshHistory(j: Jurisdiction) {
+  async function refreshHistory(j: Jurisdiction, scenario_key: string) {
     setLoading(true);
     setErr(null);
     try {
-      const data = await adminConstantsList({ jurisdiction: j });
+      const data = await adminConstantsList({ jurisdiction: j, scenario_key });
       setItems(data.items);
     } catch (e: any) {
       setErr(e?.response?.data?.detail ?? e?.message ?? "Failed to load constants history.");
@@ -569,43 +584,58 @@ export default function AdminConstantsPage() {
     }
   }
 
-  async function refreshCurrent(j: Jurisdiction) {
+  async function refreshCurrent(j: Jurisdiction, scenario_key: string) {
     setCurLoading(true);
     try {
-      const res = await constantsCurrent({ jurisdiction: j, as_of: todayYmd() });
+      const res = await constantsCurrent({ jurisdiction: j, scenario_key, as_of: todayYmd() });
       if (res?.found && res?.item) {
         setCurItem(res.item);
-        // prefill form from active payload (this is what user wants to see in the tab)
         setForm(hydrateFormFromPayload(j, res.item.payload ?? {}));
+        // align UI scenario with loaded row
+        setScenarioByTab((prev) => ({ ...prev, [j]: res.item!.scenario_key }));
       } else {
         setCurItem(null);
-        setForm(defaultForm(j));
+        setForm({ ...defaultForm(j), scenario_key });
       }
     } catch {
-      // if current endpoint fails, keep UX usable
       setCurItem(null);
-      setForm(defaultForm(j));
+      setForm({ ...defaultForm(j), scenario_key });
     } finally {
       setCurLoading(false);
     }
   }
 
-  async function refreshAll(j: Jurisdiction) {
-    await Promise.all([refreshHistory(j), refreshCurrent(j)]);
+  async function refreshAll(j: Jurisdiction, scenario_key: string) {
+    await Promise.all([refreshHistory(j, scenario_key), refreshCurrent(j, scenario_key)]);
   }
 
+  // on tab change
   useEffect(() => {
-    // on tab change: switch to that region, load last active, show history
     setErr(null);
     setAdvanced(false);
     setPayloadRaw("");
     setEffectiveFrom(todayYmd());
     setCreatedReason("update constants");
-    setForm(defaultForm(activeTab));
 
-    refreshAll(activeTab);
+    const scn = scenarioByTab[activeTab] || defaultScenarioForJurisdiction(activeTab);
+    setForm({ ...defaultForm(activeTab), scenario_key: scn });
+
+    refreshAll(activeTab, scn);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
+
+  // on scenario change within tab
+  useEffect(() => {
+    setErr(null);
+    setAdvanced(false);
+    setPayloadRaw("");
+    setEffectiveFrom(todayYmd());
+    setCreatedReason("update constants");
+
+    setForm((prev) => ({ ...prev, scenario_key: activeScenario }));
+    refreshAll(activeTab, activeScenario);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeScenario]);
 
   function validateSave(): string | null {
     if (!effectiveFrom) return "Effective from je obavezan.";
@@ -633,11 +663,9 @@ export default function AdminConstantsPage() {
       payloadObj = buildPayloadFromForm(form);
     }
 
-    // Rollover semantics:
-    // - we create a NEW open-ended set (effective_to = null)
-    // - backend closes previous open-ended set automatically
     const body: AppConstantsSetCreate = {
       jurisdiction: activeTab,
+      scenario_key: form.scenario_key,
       effective_from: effectiveFrom,
       effective_to: null,
       payload: payloadObj,
@@ -649,7 +677,7 @@ export default function AdminConstantsPage() {
     setErr(null);
     try {
       await adminConstantsCreate(body);
-      await refreshAll(activeTab);
+      await refreshAll(activeTab, form.scenario_key);
     } catch (e: any) {
       const detail = e?.response?.data?.detail ?? e?.message ?? "Save failed.";
       setErr(explainOverlap(detail));
@@ -666,17 +694,24 @@ export default function AdminConstantsPage() {
         <div>
           <h2 className="text-lg font-semibold text-slate-900">Admin: Zakonske konstante</h2>
           <p className="text-sm text-slate-600">
-            Tabovi po entitetu (RS / FBiH / BD). Snimanje radi “rollover”: novi set postaje aktivan od datuma, a prethodni se automatski zatvara (audit ostaje).
+            Tabovi po entitetu (RS / FBiH / BD) i scenario unutar taba. Snimanje radi “rollover”: novi set postaje aktivan od datuma, a prethodni (open-ended) se automatski zatvara za isti scenario.
           </p>
 
-          <div className="mt-3">
+          <div className="mt-3 flex flex-wrap items-center gap-3">
             <Tabs value={activeTab} onChange={setActiveTab} />
+            <div className="min-w-[280px]">
+              <ScenarioSelect
+                jurisdiction={activeTab}
+                value={activeScenario}
+                onChange={(v) => setScenarioByTab((prev) => ({ ...prev, [activeTab]: v }))}
+              />
+            </div>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
           <button
-            onClick={() => refreshAll(activeTab)}
+            onClick={() => refreshAll(activeTab, activeScenario)}
             className="px-3 py-1.5 rounded-md bg-slate-900 text-white text-sm hover:bg-slate-800 disabled:opacity-50"
             disabled={loading || curLoading}
           >
@@ -691,10 +726,9 @@ export default function AdminConstantsPage() {
         </div>
       )}
 
-      {/* Active info + editor */}
       <Section
-        title={`Aktivna podešavanja (${activeTab})`}
-        subtitle="Ovdje vidiš trenutno važeći set (za današnji datum) i možeš odmah unijeti izmjene. Snimi = kreira novi set (open-ended) i backend zatvara prethodni."
+        title={`Aktivna podešavanja (${activeTab} / ${activeScenario})`}
+        subtitle="Ovdje vidiš trenutno važeći set (za današnji datum) za izabrani scenario i možeš odmah unijeti izmjene. Snimi = kreira novi set i backend zatvara prethodni open-ended set u istom scenario-u."
       >
         <div className="flex flex-wrap items-start gap-3">
           <div className="flex-1 min-w-[280px]">
@@ -707,6 +741,9 @@ export default function AdminConstantsPage() {
                     Aktivno: id={curItem.id} [{curItem.effective_from}..{curItem.effective_to ?? "∞"}]
                   </div>
                   <div className="text-xs text-slate-600 mt-1">
+                    Scenario: <span className="font-mono">{curItem.scenario_key}</span>
+                  </div>
+                  <div className="text-xs text-slate-600 mt-1">
                     Audit: created {curItem.created_by ?? "-"} / {curItem.created_reason ?? "-"}
                   </div>
                   <div className="text-xs text-slate-600">
@@ -715,7 +752,7 @@ export default function AdminConstantsPage() {
                 </div>
               ) : (
                 <div className="text-sm text-slate-700">
-                  Nema aktivnog seta za današnji datum. Snimi prvi set za ovaj entitet.
+                  Nema aktivnog seta za današnji datum (u ovom scenario-u). Snimi prvi set.
                 </div>
               )}
             </div>
@@ -745,7 +782,8 @@ export default function AdminConstantsPage() {
             </div>
 
             <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-              Snimi će kreirati novi <b>open-ended</b> set (Effective to = prazno). Ako postoji prethodni open-ended set, backend će ga automatski zatvoriti na <b>(Effective from - 1 dan)</b>.
+              Snimi će kreirati novi <b>open-ended</b> set (Effective to = prazno) za isti <b>scenario</b>.
+              Ako postoji prethodni open-ended set u tom scenario-u, backend će ga automatski zatvoriti na <b>(Effective from - 1 dan)</b>.
             </div>
 
             <div className="mt-3 flex items-center justify-end">
@@ -762,6 +800,7 @@ export default function AdminConstantsPage() {
 
         <div className="mt-4">
           <FriendlyPayloadEditor
+            jurisdiction={activeTab}
             form={form}
             setForm={setForm}
             derivedPayload={derivedPayload}
@@ -773,13 +812,14 @@ export default function AdminConstantsPage() {
         </div>
       </Section>
 
-      {/* History list */}
       <div className="rounded-lg border border-slate-200 bg-white overflow-hidden">
         <div className="px-4 py-3 border-b border-slate-200 flex items-center justify-between">
           <div>
-            <h3 className="text-sm font-semibold text-slate-900">Istorija setova ({activeTab})</h3>
+            <h3 className="text-sm font-semibold text-slate-900">
+              Istorija setova ({activeTab} / {activeScenario})
+            </h3>
             <p className="text-xs text-slate-500">
-              Ovo su svi setovi za odabrani entitet. Aktivni je onaj koji pokriva današnji datum.
+              Ovo su svi setovi za odabrani entitet i scenario. Aktivni je onaj koji pokriva današnji datum.
             </p>
           </div>
           <div className="text-xs text-slate-500">
@@ -798,31 +838,25 @@ export default function AdminConstantsPage() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-200">
-              {activeHistory.map((row) => {
-                const scenarioKey =
-                  (row.payload as any)?.scenario_key ??
-                  (row.payload as any)?.scenario ??
-                  "";
-                return (
-                  <tr key={row.id} className="hover:bg-slate-50">
-                    <td className="px-4 py-2 font-mono text-xs text-slate-700">{row.id}</td>
-                    <td className="px-4 py-2 font-mono text-xs">
-                      {row.effective_from}..{row.effective_to ?? "∞"}
-                    </td>
-                    <td className="px-4 py-2 font-mono text-xs text-slate-700">
-                      {scenarioKey || "-"}
-                    </td>
-                    <td className="px-4 py-2 text-xs text-slate-600">
-                      <div>
-                        created: {row.created_by ?? "-"} / {row.created_reason ?? "-"}
-                      </div>
-                      <div>
-                        updated: {row.updated_by ?? "-"} / {row.updated_reason ?? "-"}
-                      </div>
-                    </td>
-                  </tr>
-                );
-              })}
+              {activeHistory.map((row) => (
+                <tr key={row.id} className="hover:bg-slate-50">
+                  <td className="px-4 py-2 font-mono text-xs text-slate-700">{row.id}</td>
+                  <td className="px-4 py-2 font-mono text-xs">
+                    {row.effective_from}..{row.effective_to ?? "∞"}
+                  </td>
+                  <td className="px-4 py-2 font-mono text-xs text-slate-700">
+                    {row.scenario_key || "-"}
+                  </td>
+                  <td className="px-4 py-2 text-xs text-slate-600">
+                    <div>
+                      created: {row.created_by ?? "-"} / {row.created_reason ?? "-"}
+                    </div>
+                    <div>
+                      updated: {row.updated_by ?? "-"} / {row.updated_reason ?? "-"}
+                    </div>
+                  </td>
+                </tr>
+              ))}
               {activeHistory.length === 0 && (
                 <tr>
                   <td className="px-4 py-4 text-slate-500" colSpan={4}>
