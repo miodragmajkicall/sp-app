@@ -2,11 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { AppConstantsSetCreate, AppConstantsSetRead } from "../types/constants";
-import {
-  adminConstantsCreate,
-  adminConstantsList,
-  constantsCurrent,
-} from "../services/adminConstantsApi";
+import { adminConstantsCreate, adminConstantsList, constantsCurrent } from "../services/adminConstantsApi";
 
 type Jurisdiction = "RS" | "FBiH" | "BD";
 
@@ -89,11 +85,15 @@ function rateDecimalToPercentStr(rate: any): string {
   if (rate === null || rate === undefined) return "";
   const n = typeof rate === "number" ? rate : Number(rate);
   if (!Number.isFinite(n)) return "";
-  // convert 0.17 -> 17 ; keep simple formatting
+
+  // 0.17 -> 17
   const p = n * 100;
-  // trim trailing zeros (e.g., 1.5 stays 1.5)
-  const s = String(p);
-  return s;
+
+  // Avoid float tails; keep up to 6 decimals, trim zeros.
+  // Examples: 0.015 -> 1.5 ; 0.1 -> 10 ; 0.175 -> 17.5
+  const fixed = p.toFixed(6);
+  const trimmed = fixed.replace(/\.?0+$/, "");
+  return trimmed;
 }
 
 function numToStr(x: any): string {
@@ -150,9 +150,9 @@ function defaultScenarioForJurisdiction(j: Jurisdiction): string {
   return "bd_samostalna";
 }
 
-function defaultForm(j: Jurisdiction): ConstantsForm {
+function defaultForm(j: Jurisdiction, scenario_key?: string): ConstantsForm {
   return {
-    scenario_key: defaultScenarioForJurisdiction(j),
+    scenario_key: scenario_key ?? defaultScenarioForJurisdiction(j),
 
     currency: "BAM",
 
@@ -181,10 +181,7 @@ function defaultForm(j: Jurisdiction): ConstantsForm {
   };
 }
 
-function computeCalculatedBaseBam(
-  avgGrossStr: string,
-  basePercentStr: string
-): number | null {
+function computeCalculatedBaseBam(avgGrossStr: string, basePercentStr: string): number | null {
   const avg = toNumOrNull(avgGrossStr);
   const p = toNumOrNull(basePercentStr);
   if (avg === null || p === null) return null;
@@ -199,9 +196,10 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
   const healthRate = percentStrToRateDecimal(form.health_rate_percent);
   const unempRate = percentStrToRateDecimal(form.unemployment_rate_percent);
 
-  const calculatedBase = (j === "RS" || j === "BD")
-    ? computeCalculatedBaseBam(form.avg_gross_wage_prev_year_bam, form.contrib_base_percent_of_avg_gross)
-    : null;
+  const calculatedBase =
+    j === "RS" || j === "BD"
+      ? computeCalculatedBaseBam(form.avg_gross_wage_prev_year_bam, form.contrib_base_percent_of_avg_gross)
+      : null;
 
   const payload: any = {
     // keep scenario_key in payload for transparency/back-compat
@@ -516,9 +514,10 @@ function FriendlyPayloadEditor({
   const isFBiH = jurisdiction === "FBiH";
   const isBD = jurisdiction === "BD";
 
-  const calculatedBase = (isRS || isBD)
-    ? computeCalculatedBaseBam(form.avg_gross_wage_prev_year_bam, form.contrib_base_percent_of_avg_gross)
-    : null;
+  const calculatedBase =
+    isRS || isBD
+      ? computeCalculatedBaseBam(form.avg_gross_wage_prev_year_bam, form.contrib_base_percent_of_avg_gross)
+      : null;
 
   return (
     <div className="space-y-3">
@@ -539,10 +538,12 @@ function FriendlyPayloadEditor({
       {!advanced ? (
         <>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-            <ScenarioSelect
-              jurisdiction={jurisdiction}
+            <TextInput
+              label="Scenario / šema (read-only)"
+              hint="Scenario se bira iznad (u headeru). Promjena scenarija automatski učitava aktivni set."
               value={form.scenario_key}
-              onChange={(v) => setForm({ ...form, scenario_key: v })}
+              onChange={() => {}}
+              readOnly
             />
 
             <TextInput
@@ -555,7 +556,11 @@ function FriendlyPayloadEditor({
 
             {isRS || isBD ? (
               <TextInput
-                label={isRS ? "Prosječna bruto plata (prethodna godina) (KM)" : "Prosječna bruto plata (BD) – prethodna godina (KM)"}
+                label={
+                  isRS
+                    ? "Prosječna bruto plata (prethodna godina) (KM)"
+                    : "Prosječna bruto plata (BD) – prethodna godina (KM)"
+                }
                 hint="Unos admin-a. Decimal (npr. 2000.00)."
                 value={form.avg_gross_wage_prev_year_bam}
                 onChange={(v) => setForm({ ...form, avg_gross_wage_prev_year_bam: v })}
@@ -566,11 +571,14 @@ function FriendlyPayloadEditor({
             )}
           </div>
 
-          {/* RS/BD: percent base + calculated */}
           {(isRS || isBD) && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <TextInput
-                label={isRS ? "Osnovica doprinosa = % prosječne bruto plate" : "Procenat prosječne bruto plate za osnovicu (%)"}
+                label={
+                  isRS
+                    ? "Osnovica doprinosa = % prosječne bruto plate"
+                    : "Procenat prosječne bruto plate za osnovicu (%)"
+                }
                 hint="Unos u procentima (npr. 80 znači 80%)."
                 value={form.contrib_base_percent_of_avg_gross}
                 onChange={(v) => setForm({ ...form, contrib_base_percent_of_avg_gross: v })}
@@ -579,7 +587,7 @@ function FriendlyPayloadEditor({
               <TextInput
                 label="Izračunata osnovica doprinosa (KM)"
                 hint="Read-only: avg_gross * (percent/100)."
-                value={calculatedBase === null ? "" : String(calculatedBase)}
+                value={calculatedBase === null ? "" : calculatedBase.toFixed(2)}
                 onChange={() => {}}
                 readOnly
                 placeholder="automatski izračun"
@@ -588,7 +596,6 @@ function FriendlyPayloadEditor({
             </div>
           )}
 
-          {/* FBiH: monthly base */}
           {isFBiH && (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
               <TextInput
@@ -603,7 +610,6 @@ function FriendlyPayloadEditor({
             </div>
           )}
 
-          {/* VAT */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
             <TextInput
               label="PDV stopa (%)"
@@ -622,7 +628,6 @@ function FriendlyPayloadEditor({
             <div />
           </div>
 
-          {/* Tax */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
             <TextInput
               label="Porez na dohodak (%)"
@@ -641,7 +646,6 @@ function FriendlyPayloadEditor({
             <div />
           </div>
 
-          {/* Contributions */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
             <TextInput
               label="Doprinos PIO (%)"
@@ -666,7 +670,6 @@ function FriendlyPayloadEditor({
             />
           </div>
 
-          {/* Optional min base (max base is intentionally not shown; RS spec explicitly says remove/hide max) */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
             <TextInput
               label="Min osnovica doprinosa (KM)"
@@ -788,14 +791,13 @@ export default function AdminConstantsPage() {
       if (res?.found && res?.item) {
         setCurItem(res.item);
         setForm(hydrateFormFromPayload(j, res.item.payload ?? {}));
-        setScenarioByTab((prev) => ({ ...prev, [j]: res.item!.scenario_key }));
       } else {
         setCurItem(null);
-        setForm({ ...defaultForm(j), scenario_key });
+        setForm(defaultForm(j, scenario_key));
       }
     } catch {
       setCurItem(null);
-      setForm({ ...defaultForm(j), scenario_key });
+      setForm(defaultForm(j, scenario_key));
     } finally {
       setCurLoading(false);
     }
@@ -814,7 +816,10 @@ export default function AdminConstantsPage() {
     setCreatedReason("update constants");
 
     const scn = scenarioByTab[activeTab] || defaultScenarioForJurisdiction(activeTab);
-    setForm({ ...defaultForm(activeTab), scenario_key: scn });
+
+    // Critical: reset immediately to avoid leaking unsaved values between tabs/scenarios
+    setForm(defaultForm(activeTab, scn));
+    setCurItem(null);
 
     refreshAll(activeTab, scn);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -828,7 +833,10 @@ export default function AdminConstantsPage() {
     setEffectiveFrom(todayYmd());
     setCreatedReason("update constants");
 
-    setForm((prev) => ({ ...prev, scenario_key: activeScenario }));
+    // Critical: reset immediately to avoid leaking unsaved values between scenarios
+    setForm(defaultForm(activeTab, activeScenario));
+    setCurItem(null);
+
     refreshAll(activeTab, activeScenario);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeScenario]);
@@ -856,7 +864,7 @@ export default function AdminConstantsPage() {
 
     for (const f of percentFields) {
       const n = toNumOrNull(f.value);
-      if (n === null) continue; // empty allowed (some are optional)
+      if (n === null) continue;
       if (n < 0 || n > 100) return `${f.name} mora biti u rasponu 0–100.`;
     }
 
@@ -918,9 +926,8 @@ export default function AdminConstantsPage() {
         <div>
           <h2 className="text-lg font-semibold text-slate-900">Admin: Zakonske konstante</h2>
           <p className="text-sm text-slate-600">
-            Tabovi po entitetu (RS / FBiH / BD) i scenariji unutar taba (V1 specifikacija).
-            Snimanje radi “rollover”: novi set postaje aktivan od datuma, a prethodni (open-ended)
-            se automatski zatvara za isti scenario.
+            Tabovi po entitetu (RS / FBiH / BD) i scenariji unutar taba (V1 specifikacija). Snimanje radi “rollover”:
+            novi set postaje aktivan od datuma, a prethodni (open-ended) se automatski zatvara za isti scenario.
           </p>
 
           <div className="mt-3 flex flex-wrap items-center gap-3">
@@ -947,9 +954,7 @@ export default function AdminConstantsPage() {
       </div>
 
       {err && (
-        <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-          {err}
-        </div>
+        <div className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{err}</div>
       )}
 
       <Section
@@ -993,12 +998,7 @@ export default function AdminConstantsPage() {
                 value={effectiveFrom}
                 onChange={setEffectiveFrom}
               />
-              <TextInput
-                label="created_by"
-                value={createdBy}
-                onChange={setCreatedBy}
-                placeholder="admin"
-              />
+              <TextInput label="created_by" value={createdBy} onChange={setCreatedBy} placeholder="admin" />
               <TextInput
                 label="created_reason (obavezno)"
                 value={createdReason}
@@ -1008,8 +1008,8 @@ export default function AdminConstantsPage() {
             </div>
 
             <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-              Snimi će kreirati novi <b>open-ended</b> set (Effective to = prazno) za isti <b>scenario</b>.
-              Ako postoji prethodni open-ended set u tom scenario-u, backend će ga automatski zatvoriti na <b>(Effective from - 1 dan)</b>.
+              Snimi će kreirati novi <b>open-ended</b> set (Effective to = prazno) za isti <b>scenario</b>. Ako postoji
+              prethodni open-ended set u tom scenario-u, backend će ga automatski zatvoriti na <b>(Effective from - 1 dan)</b>.
             </div>
 
             <div className="mt-3 flex items-center justify-end">
@@ -1048,9 +1048,7 @@ export default function AdminConstantsPage() {
               Ovo su svi setovi za odabrani entitet i scenario. Aktivni je onaj koji pokriva današnji datum.
             </p>
           </div>
-          <div className="text-xs text-slate-500">
-            {loading ? "Učitavanje..." : `${activeHistory.length} item(s)`}
-          </div>
+          <div className="text-xs text-slate-500">{loading ? "Učitavanje..." : `${activeHistory.length} item(s)`}</div>
         </div>
 
         <div className="overflow-auto">
@@ -1070,9 +1068,7 @@ export default function AdminConstantsPage() {
                   <td className="px-4 py-2 font-mono text-xs">
                     {row.effective_from}..{row.effective_to ?? "∞"}
                   </td>
-                  <td className="px-4 py-2 font-mono text-xs text-slate-700">
-                    {row.scenario_key || "-"}
-                  </td>
+                  <td className="px-4 py-2 font-mono text-xs text-slate-700">{row.scenario_key || "-"}</td>
                   <td className="px-4 py-2 text-xs text-slate-600">
                     <div>
                       created: {row.created_by ?? "-"} / {row.created_reason ?? "-"}

@@ -236,3 +236,129 @@ def test_admin_constants_create_with_rollover_closes_previous_and_creates_new_sa
     body = res.json()
     assert body["found"] is True
     assert body["item"]["id"] == second["id"]
+
+
+# -----------------------------
+# New semantic validation tests
+# -----------------------------
+
+
+def test_admin_constants_rejects_rate_out_of_bounds():
+    _wipe_constants()
+    client = TestClient(app)
+
+    # vat.standard_rate must be 0..1
+    res = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+            "effective_from": "2025-01-01",
+            "effective_to": None,
+            "payload": {"scenario_key": "rs_primary", "vat": {"standard_rate": 1.70}},
+            "created_by": "tester",
+            "created_reason": "invalid vat rate",
+        },
+    )
+    assert res.status_code == 400, res.text
+    assert "vat.standard_rate" in res.json()["detail"]
+
+
+def test_admin_constants_rejects_negative_rate():
+    _wipe_constants()
+    client = TestClient(app)
+
+    # tax.income_tax_rate must be 0..1
+    res = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+            "effective_from": "2025-01-01",
+            "effective_to": None,
+            "payload": {"scenario_key": "rs_primary", "tax": {"income_tax_rate": -0.10}},
+            "created_by": "tester",
+            "created_reason": "invalid income tax rate",
+        },
+    )
+    assert res.status_code == 400, res.text
+    assert "tax.income_tax_rate" in res.json()["detail"]
+
+
+def test_admin_constants_rs_base_calculation_mismatch_rejected():
+    _wipe_constants()
+    client = TestClient(app)
+
+    # RS: calculated_contrib_base_bam must match avg * (percent/100) if all present
+    res = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+            "effective_from": "2025-01-01",
+            "effective_to": None,
+            "payload": {
+                "scenario_key": "rs_primary",
+                "base": {
+                    "avg_gross_wage_prev_year_bam": 2000.0,
+                    "contrib_base_percent_of_avg_gross": 80.0,
+                    "calculated_contrib_base_bam": 1000.0,  # should be 1600.0
+                },
+                "vat": {"standard_rate": 0.17},
+            },
+            "created_by": "tester",
+            "created_reason": "rs base mismatch",
+        },
+    )
+    assert res.status_code == 400, res.text
+    assert "calculated_contrib_base_bam mismatch" in res.json()["detail"]
+
+
+def test_admin_constants_fbih_monthly_base_must_be_positive():
+    _wipe_constants()
+    client = TestClient(app)
+
+    res = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "FBiH",
+            "scenario_key": "fbih_obrt",
+            "effective_from": "2025-01-01",
+            "effective_to": None,
+            "payload": {
+                "scenario_key": "fbih_obrt",
+                "base": {"monthly_contrib_base_bam": 0},
+            },
+            "created_by": "tester",
+            "created_reason": "fbih base invalid",
+        },
+    )
+    assert res.status_code == 400, res.text
+    assert "base.monthly_contrib_base_bam" in res.json()["detail"]
+
+
+def test_admin_constants_bd_percent_bounds_rejected():
+    _wipe_constants()
+    client = TestClient(app)
+
+    res = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "BD",
+            "scenario_key": "bd_samostalna",
+            "effective_from": "2025-01-01",
+            "effective_to": None,
+            "payload": {
+                "scenario_key": "bd_samostalna",
+                "base": {
+                    "avg_gross_prev_year_bam": 2000.0,
+                    "base_percent_of_avg_gross": 120.0,  # invalid (>100)
+                    "calculated_contrib_base_bam": 2400.0,
+                },
+            },
+            "created_by": "tester",
+            "created_reason": "bd percent invalid",
+        },
+    )
+    assert res.status_code == 400, res.text
+    assert "base.base_percent_of_avg_gross" in res.json()["detail"]
