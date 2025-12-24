@@ -1,4 +1,5 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/App.tsx
+import React, { useEffect, useMemo, useState } from "react";
 import {
   BrowserRouter,
   NavLink,
@@ -20,6 +21,8 @@ import {
   Briefcase,
   Settings,
   Puzzle,
+  Building2,
+  Image as ImageIcon,
 } from "lucide-react";
 
 import DashboardPage from "./pages/DashboardPage";
@@ -38,6 +41,12 @@ import ExportInspectionPage from "./pages/ExportInspectionPage";
 import SettingsPage from "./pages/SettingsPage";
 import AdminConstantsPage from "./pages/AdminConstantsPage";
 
+import { getProfileSettings } from "./services/settingsApi";
+import type { ProfileSettingsRead } from "./types/settings";
+
+// Ovaj logo je “svijetli” (svijetao tekst) i treba tamnu pozadinu — idealno za deep-navy sidebar.
+import EvidentLogoOnDark from "./assets/evident-logo-horizontal.svg";
+
 type NavItem = {
   to: string;
   label: string;
@@ -49,8 +58,8 @@ function App() {
   const linkBase =
     "grid grid-cols-[20px_1fr] items-center gap-3 rounded-md px-3 py-2 transition-colors";
   const linkInactive =
-    "text-slate-300 hover:bg-slate-800 hover:text-slate-50";
-  const linkActive = "bg-slate-800 text-slate-50";
+    "text-slate-300 hover:bg-slate-800/60 hover:text-white";
+  const linkActive = "bg-slate-800/80 text-white";
 
   const iconCls = "h-5 w-5 shrink-0";
 
@@ -151,20 +160,59 @@ function App() {
     );
   }
 
+  // =========================
+  // Profile (firma/preduzetnik) — header block
+  // =========================
+  const [profile, setProfile] = useState<ProfileSettingsRead | null>(null);
+  const [profileErr, setProfileErr] = useState<string | null>(null);
+  const [logoFailed, setLogoFailed] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const p = await getProfileSettings();
+        if (!alive) return;
+        setProfile(p);
+        setProfileErr(null);
+      } catch (e: any) {
+        if (!alive) return;
+        setProfile(null);
+        setProfileErr("Profil firme nije dostupan.");
+      }
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const businessName = (profile?.business_name ?? "").trim();
+  const displayBusinessName = businessName ? businessName : `SP ${tenant}`;
+
+  const logoUrl = useMemo(() => {
+    const id = profile?.logo_attachment_id ?? null;
+    if (!id) return null;
+    return buildLogoUrl(id);
+  }, [profile?.logo_attachment_id]);
+
   return (
     <BrowserRouter>
       <div className="min-h-screen bg-slate-100 flex">
         {/* Sidebar */}
-        <aside className="w-64 bg-slate-900 text-slate-100 flex flex-col">
-          <div className="px-6 py-4 border-b border-slate-800">
-            <h1 className="text-lg font-semibold tracking-tight">SP App</h1>
-            <p className="text-xs text-slate-400">
-              Kontrolna tabla za SP preduzetnike
+        <aside className="w-64 text-slate-100 flex flex-col bg-gradient-to-b from-slate-950 to-slate-900">
+          {/* BRAND: bez bijele kapsule */}
+          <div className="px-5 py-4 border-b border-slate-800/70">
+            <img
+              src={EvidentLogoOnDark}
+              alt="Evident"
+              className="h-12 w-auto"
+            />
+            <p className="text-[13px] text-slate-400 mt-1 whitespace-nowrap">
+              Poslovanje • Knjigovodstvo • Porezi
             </p>
           </div>
 
           <nav className="flex-1 px-3 py-4 space-y-6 text-sm">
-            {/* Glavna stavka – Kontrolna tabla */}
             <NavLink
               to="/dashboard"
               className={({ isActive }) =>
@@ -175,7 +223,6 @@ function App() {
               <span className="min-w-0 truncate">Kontrolna tabla</span>
             </NavLink>
 
-            {/* POSLOVANJE */}
             <div className="space-y-1">
               <div className={sectionTitleCls}>Poslovanje</div>
               {navPoslovanje.map((item) => (
@@ -183,7 +230,6 @@ function App() {
               ))}
             </div>
 
-            {/* KNJIGOVODSTVO */}
             <div className="space-y-1">
               <div className={sectionTitleCls}>Knjigovodstvo</div>
               {navKnjigovodstvo.map((item) => (
@@ -191,7 +237,6 @@ function App() {
               ))}
             </div>
 
-            {/* ALATI */}
             <div className="space-y-1">
               <div className={sectionTitleCls}>Alati</div>
               {navAlati.map((item) => (
@@ -199,7 +244,6 @@ function App() {
               ))}
             </div>
 
-            {/* SISTEM */}
             <div className="space-y-1">
               <div className={sectionTitleCls}>Sistem</div>
               {navSistem.map((item) => (
@@ -207,14 +251,16 @@ function App() {
               ))}
 
               <div className="grid grid-cols-[20px_1fr] items-center gap-3 rounded-md px-3 py-2 text-slate-500 cursor-default">
-                {/* placeholder icon (monochrome) */}
-                <span className="h-5 w-5 rounded border border-slate-700" aria-hidden="true" />
+                <span
+                  className="h-5 w-5 rounded border border-slate-700"
+                  aria-hidden="true"
+                />
                 <span className="min-w-0 truncate">Pomoć (uskoro)</span>
               </div>
             </div>
           </nav>
 
-          <div className="px-4 py-3 border-t border-slate-800 text-xs text-slate-500">
+          <div className="px-4 py-3 border-t border-slate-800/70 text-xs text-slate-500">
             <p className="min-w-0 truncate" title={`Tenant: ${tenant}`}>
               Tenant: <span className="font-mono text-slate-300">{tenant}</span>
             </p>
@@ -225,14 +271,48 @@ function App() {
         <div className="flex-1 flex flex-col">
           <header className="h-14 border-b border-slate-200 bg-white flex items-center justify-between px-6">
             <div className="min-w-0">
-              <p className="text-sm font-medium text-slate-800 truncate">
-                SP App – kontrolna tabla
+              <p className="text-sm font-semibold text-slate-900 truncate">
+                Evident
               </p>
               <p className="text-xs text-slate-500 truncate">
-                Backend V1 (bez auth) • demo tenant{" "}
+                V1 • demo okruženje • tenant{" "}
                 <span className="font-mono">{tenant}</span>
               </p>
             </div>
+
+            <NavLink
+              to="/settings"
+              className="flex items-center gap-3 rounded-md px-2 py-1 hover:bg-slate-50 transition-colors"
+              title="Postavke firme"
+            >
+              <div className="text-right leading-tight min-w-0">
+                <p className="text-sm font-semibold text-slate-900 truncate max-w-[360px]">
+                  {profileErr ? "SP (nije dostupno)" : displayBusinessName}
+                </p>
+                <p className="text-xs text-slate-500 truncate max-w-[360px]">
+                  Postavke profila i logotipa
+                </p>
+              </div>
+
+              <div className="h-9 w-9 rounded-md border border-slate-200 bg-white grid place-items-center overflow-hidden shrink-0">
+                {logoUrl && !logoFailed ? (
+                  <img
+                    src={logoUrl}
+                    alt="Logo firme"
+                    className="h-full w-full object-contain"
+                    onError={() => setLogoFailed(true)}
+                  />
+                ) : (
+                  <div className="h-full w-full grid place-items-center bg-slate-50">
+                    {logoUrl && logoFailed ? (
+                      <ImageIcon className="h-5 w-5 text-slate-400" />
+                    ) : (
+                      <Building2 className="h-5 w-5 text-slate-400" />
+                    )}
+                  </div>
+                )}
+              </div>
+            </NavLink>
           </header>
 
           <main className="flex-1 p-6">
@@ -240,38 +320,30 @@ function App() {
               <Route path="/" element={<Navigate to="/dashboard" replace />} />
               <Route path="/dashboard" element={<DashboardPage />} />
 
-              {/* Izlazne fakture */}
               <Route path="/invoices" element={<InvoicesListPage />} />
               <Route path="/invoices/new" element={<InvoiceCreatePage />} />
               <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
 
-              {/* Ulazne fakture */}
               <Route path="/input-invoices" element={<InputInvoicesPage />} />
-              <Route path="/input-invoices/new" element={<InputInvoiceCreatePage />} />
-              <Route path="/input-invoices/:id" element={<InputInvoiceDetailPage />} />
+              <Route
+                path="/input-invoices/new"
+                element={<InputInvoiceCreatePage />}
+              />
+              <Route
+                path="/input-invoices/:id"
+                element={<InputInvoiceDetailPage />}
+              />
 
-              {/* Kasa */}
               <Route path="/cash" element={<CashPage />} />
-
-              {/* KPR */}
               <Route path="/kpr" element={<KprPage />} />
-
-              {/* Promet */}
               <Route path="/promet" element={<PrometPage />} />
-
-              {/* Porezi */}
               <Route path="/tax" element={<TaxPage />} />
-
-              {/* Izvještaji */}
               <Route path="/reports" element={<ReportsPage />} />
-
-              {/* Izvoz */}
-              <Route path="/export/inspection" element={<ExportInspectionPage />} />
-
-              {/* Postavke */}
+              <Route
+                path="/export/inspection"
+                element={<ExportInspectionPage />}
+              />
               <Route path="/settings" element={<SettingsPage />} />
-
-              {/* Admin constants */}
               <Route path="/admin/constants" element={<AdminConstantsPage />} />
 
               <Route
@@ -288,6 +360,10 @@ function App() {
       </div>
     </BrowserRouter>
   );
+}
+
+function buildLogoUrl(attachmentId: number): string {
+  return `/attachments/${attachmentId}`;
 }
 
 export default App;
