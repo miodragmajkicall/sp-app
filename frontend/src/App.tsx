@@ -6,6 +6,22 @@ import {
   Route,
   Routes,
 } from "react-router-dom";
+
+import {
+  LayoutDashboard,
+  FileText,
+  Plus,
+  Inbox,
+  Wallet,
+  BookOpen,
+  Receipt,
+  Landmark,
+  BarChart3,
+  Briefcase,
+  Settings,
+  Puzzle,
+} from "lucide-react";
+
 import DashboardPage from "./pages/DashboardPage";
 import InvoicesListPage from "./pages/InvoicesListPage";
 import CashPage from "./pages/CashPage";
@@ -22,12 +38,118 @@ import ExportInspectionPage from "./pages/ExportInspectionPage";
 import SettingsPage from "./pages/SettingsPage";
 import AdminConstantsPage from "./pages/AdminConstantsPage";
 
+type NavItem = {
+  to: string;
+  label: string;
+  icon: React.ReactNode;
+  indent?: boolean;
+};
+
 function App() {
-  const linkBaseClasses =
-    "flex items-center rounded-md px-3 py-2 transition-colors";
-  const linkInactiveClasses =
+  const linkBase =
+    "grid grid-cols-[20px_1fr] items-center gap-3 rounded-md px-3 py-2 transition-colors";
+  const linkInactive =
     "text-slate-300 hover:bg-slate-800 hover:text-slate-50";
-  const linkActiveClasses = "bg-slate-800 text-slate-50";
+  const linkActive = "bg-slate-800 text-slate-50";
+
+  const iconCls = "h-5 w-5 shrink-0";
+
+  const sectionTitleCls =
+    "px-3 mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500";
+
+  const tenant = "t-demo";
+
+  const navPoslovanje: NavItem[] = [
+    {
+      to: "/invoices",
+      label: "Izlazne fakture",
+      icon: <FileText className={iconCls} aria-hidden="true" />,
+    },
+    {
+      to: "/invoices/new",
+      label: "Nova izlazna faktura",
+      icon: <Plus className={iconCls} aria-hidden="true" />,
+      indent: true,
+    },
+    {
+      to: "/input-invoices",
+      label: "Ulazne fakture",
+      icon: <Inbox className={iconCls} aria-hidden="true" />,
+    },
+    {
+      to: "/input-invoices/new",
+      label: "Nova ulazna faktura",
+      icon: <Plus className={iconCls} aria-hidden="true" />,
+      indent: true,
+    },
+    {
+      to: "/cash",
+      label: "Kasa",
+      icon: <Wallet className={iconCls} aria-hidden="true" />,
+    },
+  ];
+
+  const navKnjigovodstvo: NavItem[] = [
+    {
+      to: "/kpr",
+      label: "KPR",
+      icon: <BookOpen className={iconCls} aria-hidden="true" />,
+    },
+    {
+      to: "/promet",
+      label: "Knjiga prometa",
+      icon: <Receipt className={iconCls} aria-hidden="true" />,
+    },
+    {
+      to: "/tax",
+      label: "Porezi i doprinosi",
+      icon: <Landmark className={iconCls} aria-hidden="true" />,
+    },
+    {
+      to: "/reports",
+      label: "Izvještaji",
+      icon: <BarChart3 className={iconCls} aria-hidden="true" />,
+    },
+  ];
+
+  const navAlati: NavItem[] = [
+    {
+      to: "/export/inspection",
+      label: "Izvoz za inspekciju",
+      icon: <Briefcase className={iconCls} aria-hidden="true" />,
+    },
+  ];
+
+  const navSistem: NavItem[] = [
+    {
+      to: "/settings",
+      label: "Postavke",
+      icon: <Settings className={iconCls} aria-hidden="true" />,
+    },
+    {
+      to: "/admin/constants",
+      label: "Admin: konstante",
+      icon: <Puzzle className={iconCls} aria-hidden="true" />,
+    },
+  ];
+
+  function NavItemLink({ item }: { item: NavItem }) {
+    return (
+      <NavLink
+        to={item.to}
+        className={({ isActive }) =>
+          [
+            item.indent ? "ml-6" : "",
+            linkBase,
+            isActive ? linkActive : linkInactive,
+          ].join(" ")
+        }
+      >
+        {item.icon}
+        <span className="min-w-0 truncate">{item.label}</span>
+      </NavLink>
+    );
+  }
 
   return (
     <BrowserRouter>
@@ -41,265 +163,60 @@ function App() {
             </p>
           </div>
 
-          <nav className="flex-1 px-3 py-4 space-y-4 text-sm">
+          <nav className="flex-1 px-3 py-4 space-y-6 text-sm">
             {/* Glavna stavka – Kontrolna tabla */}
             <NavLink
               to="/dashboard"
               className={({ isActive }) =>
-                [
-                  linkBaseClasses,
-                  isActive ? linkActiveClasses : linkInactiveClasses,
-                ].join(" ")
+                [linkBase, isActive ? linkActive : linkInactive].join(" ")
               }
             >
-              <span className="mr-2" aria-hidden="true">
-                📊
-              </span>
-              <span>Kontrolna tabla</span>
+              <LayoutDashboard className={iconCls} aria-hidden="true" />
+              <span className="min-w-0 truncate">Kontrolna tabla</span>
             </NavLink>
 
             {/* POSLOVANJE */}
-            <div>
-              <div className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                Poslovanje
-              </div>
-
-              <NavLink
-                to="/invoices"
-                className={({ isActive }) =>
-                  [
-                    linkBaseClasses,
-                    isActive ? linkActiveClasses : linkInactiveClasses,
-                  ].join(" ")
-                }
-              >
-                <span className="mr-2" aria-hidden="true">
-                  📄
-                </span>
-                <span>Izlazne fakture</span>
-              </NavLink>
-
-              <NavLink
-                to="/invoices/new"
-                className={({ isActive }) =>
-                  [
-                    "ml-6 mt-1",
-                    linkBaseClasses,
-                    isActive ? linkActiveClasses : linkInactiveClasses,
-                  ].join(" ")
-                }
-              >
-                <span className="mr-2" aria-hidden="true">
-                  ➕
-                </span>
-                <span>Nova izlazna faktura</span>
-              </NavLink>
-
-              <NavLink
-                to="/input-invoices"
-                className={({ isActive }) =>
-                  [
-                    linkBaseClasses,
-                    isActive ? linkActiveClasses : linkInactiveClasses,
-                  ].join(" ")
-                }
-              >
-                <span className="mr-2" aria-hidden="true">
-                  📥
-                </span>
-                <span>Ulazne fakture</span>
-              </NavLink>
-
-              <NavLink
-                to="/input-invoices/new"
-                className={({ isActive }) =>
-                  [
-                    "ml-6 mt-1",
-                    linkBaseClasses,
-                    isActive ? linkActiveClasses : linkInactiveClasses,
-                  ].join(" ")
-                }
-              >
-                <span className="mr-2" aria-hidden="true">
-                  ➕
-                </span>
-                <span>Nova ulazna faktura</span>
-              </NavLink>
-
-              <NavLink
-                to="/cash"
-                className={({ isActive }) =>
-                  [
-                    linkBaseClasses,
-                    isActive ? linkActiveClasses : linkInactiveClasses,
-                  ].join(" ")
-                }
-              >
-                <span className="mr-2" aria-hidden="true">
-                  💰
-                </span>
-                <span>Kasa</span>
-              </NavLink>
+            <div className="space-y-1">
+              <div className={sectionTitleCls}>Poslovanje</div>
+              {navPoslovanje.map((item) => (
+                <NavItemLink key={item.to} item={item} />
+              ))}
             </div>
 
             {/* KNJIGOVODSTVO */}
-            <div>
-              <div className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                Knjigovodstvo
-              </div>
-
-              <NavLink
-                to="/kpr"
-                className={({ isActive }) =>
-                  [
-                    linkBaseClasses,
-                    isActive ? linkActiveClasses : linkInactiveClasses,
-                  ].join(" ")
-                }
-              >
-                <span className="mr-2" aria-hidden="true">
-                  📘
-                </span>
-                <span>KPR</span>
-              </NavLink>
-
-              <NavLink
-                to="/promet"
-                className={({ isActive }) =>
-                  [
-                    linkBaseClasses,
-                    isActive ? linkActiveClasses : linkInactiveClasses,
-                  ].join(" ")
-                }
-              >
-                <span className="mr-2" aria-hidden="true">
-                  🧾
-                </span>
-                <span>Knjiga prometa</span>
-              </NavLink>
-
-              <NavLink
-                to="/tax"
-                className={({ isActive }) =>
-                  [
-                    linkBaseClasses,
-                    isActive ? linkActiveClasses : linkInactiveClasses,
-                  ].join(" ")
-                }
-              >
-                <span className="mr-2" aria-hidden="true">
-                  📑
-                </span>
-                <span>Porezi i doprinosi</span>
-              </NavLink>
-
-              <NavLink
-                to="/reports"
-                className={({ isActive }) =>
-                  [
-                    linkBaseClasses,
-                    isActive ? linkActiveClasses : linkInactiveClasses,
-                  ].join(" ")
-                }
-              >
-                <span className="mr-2" aria-hidden="true">
-                  📈
-                </span>
-                <span>Izvještaji</span>
-              </NavLink>
+            <div className="space-y-1">
+              <div className={sectionTitleCls}>Knjigovodstvo</div>
+              {navKnjigovodstvo.map((item) => (
+                <NavItemLink key={item.to} item={item} />
+              ))}
             </div>
 
             {/* ALATI */}
-            <div>
-              <div className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                Alati
-              </div>
-
-              <NavLink
-                to="/export/inspection"
-                className={({ isActive }) =>
-                  [
-                    linkBaseClasses,
-                    isActive ? linkActiveClasses : linkInactiveClasses,
-                  ].join(" ")
-                }
-              >
-                <span className="mr-2" aria-hidden="true">
-                  🧰
-                </span>
-                <span>Izvoz za inspekciju</span>
-              </NavLink>
-            </div>
-
-            {/* DODATNE EVIDENCIJE */}
-            <div>
-              <div className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                Dodatne evidencije
-              </div>
-
-              <div className="flex items-center rounded-md px-3 py-2 text-slate-500 cursor-default">
-                <span className="mr-2" aria-hidden="true">
-                  🧱
-                </span>
-                <span>Osnovna sredstva (uskoro)</span>
-              </div>
-
-              <div className="flex items-center rounded-md px-3 py-2 text-slate-500 cursor-default">
-                <span className="mr-2" aria-hidden="true">
-                  📁
-                </span>
-                <span>Dokumenti (uskoro)</span>
-              </div>
+            <div className="space-y-1">
+              <div className={sectionTitleCls}>Alati</div>
+              {navAlati.map((item) => (
+                <NavItemLink key={item.to} item={item} />
+              ))}
             </div>
 
             {/* SISTEM */}
-            <div>
-              <div className="px-3 mb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                Sistem
-              </div>
+            <div className="space-y-1">
+              <div className={sectionTitleCls}>Sistem</div>
+              {navSistem.map((item) => (
+                <NavItemLink key={item.to} item={item} />
+              ))}
 
-              <NavLink
-                to="/settings"
-                className={({ isActive }) =>
-                  [
-                    linkBaseClasses,
-                    isActive ? linkActiveClasses : linkInactiveClasses,
-                  ].join(" ")
-                }
-              >
-                <span className="mr-2" aria-hidden="true">
-                  ⚙️
-                </span>
-                <span>Postavke</span>
-              </NavLink>
-
-              <NavLink
-                to="/admin/constants"
-                className={({ isActive }) =>
-                  [
-                    linkBaseClasses,
-                    isActive ? linkActiveClasses : linkInactiveClasses,
-                  ].join(" ")
-                }
-              >
-                <span className="mr-2" aria-hidden="true">
-                  🧩
-                </span>
-                <span>Admin: konstante</span>
-              </NavLink>
-
-              <div className="flex items-center rounded-md px-3 py-2 text-slate-500 cursor-default">
-                <span className="mr-2" aria-hidden="true">
-                  ❓
-                </span>
-                <span>Pomoć (uskoro)</span>
+              <div className="grid grid-cols-[20px_1fr] items-center gap-3 rounded-md px-3 py-2 text-slate-500 cursor-default">
+                {/* placeholder icon (monochrome) */}
+                <span className="h-5 w-5 rounded border border-slate-700" aria-hidden="true" />
+                <span className="min-w-0 truncate">Pomoć (uskoro)</span>
               </div>
             </div>
           </nav>
 
           <div className="px-4 py-3 border-t border-slate-800 text-xs text-slate-500">
-            <p>
-              Tenant: <span className="font-mono text-slate-300">t-demo</span>
+            <p className="min-w-0 truncate" title={`Tenant: ${tenant}`}>
+              Tenant: <span className="font-mono text-slate-300">{tenant}</span>
             </p>
           </div>
         </aside>
@@ -307,13 +224,13 @@ function App() {
         {/* Main content */}
         <div className="flex-1 flex flex-col">
           <header className="h-14 border-b border-slate-200 bg-white flex items-center justify-between px-6">
-            <div>
-              <p className="text-sm font-medium text-slate-800">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-slate-800 truncate">
                 SP App – kontrolna tabla
               </p>
-              <p className="text-xs text-slate-500">
+              <p className="text-xs text-slate-500 truncate">
                 Backend V1 (bez auth) • demo tenant{" "}
-                <span className="font-mono">t-demo</span>
+                <span className="font-mono">{tenant}</span>
               </p>
             </div>
           </header>
@@ -330,14 +247,8 @@ function App() {
 
               {/* Ulazne fakture */}
               <Route path="/input-invoices" element={<InputInvoicesPage />} />
-              <Route
-                path="/input-invoices/new"
-                element={<InputInvoiceCreatePage />}
-              />
-              <Route
-                path="/input-invoices/:id"
-                element={<InputInvoiceDetailPage />}
-              />
+              <Route path="/input-invoices/new" element={<InputInvoiceCreatePage />} />
+              <Route path="/input-invoices/:id" element={<InputInvoiceDetailPage />} />
 
               {/* Kasa */}
               <Route path="/cash" element={<CashPage />} />
@@ -355,10 +266,7 @@ function App() {
               <Route path="/reports" element={<ReportsPage />} />
 
               {/* Izvoz */}
-              <Route
-                path="/export/inspection"
-                element={<ExportInspectionPage />}
-              />
+              <Route path="/export/inspection" element={<ExportInspectionPage />} />
 
               {/* Postavke */}
               <Route path="/settings" element={<SettingsPage />} />
