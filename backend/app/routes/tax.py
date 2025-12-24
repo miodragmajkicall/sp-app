@@ -1,12 +1,16 @@
+# /home/miso/dev/sp-app/sp-app/backend/app/routes/tax.py
 from __future__ import annotations
 
+import csv
+import io
 from datetime import date
 from decimal import Decimal
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Any
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import case, func, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
@@ -17,6 +21,11 @@ from app.models import (
     TaxMonthlyResult,
     TaxYearlyResult,
     TaxMonthlyFinalizeHistory,
+    TaxSettings,
+    TaxMonthlyPayment,
+    Tenant,
+    TenantTaxProfileSettings,
+    AppConstantsSet,
 )
 from app.schemas.tax import (
     ErrorResponse,
@@ -24,10 +33,12 @@ from app.schemas.tax import (
     MonthlyTaxSummaryRead,
     TaxDummyConfig,
     YearlyTaxSummaryRead,
+    TaxMonthlyOverviewResponse,
+    TaxMonthlyOverviewItem,
+    TaxMonthlyPaymentUpsert,
 )
+from app.schemas.tax_settings import TaxSettingsRead, TaxSettingsUpsert
 from app.tenant_security import require_tenant_code
-import csv
-import io
 
 router = APIRouter(
     tags=["tax"],
@@ -35,49 +46,292 @@ router = APIRouter(
 
 
 # ======================================================
-#  TENANT HELPER
+#  TENANT HELPERS
 # ======================================================
 def _require_tenant(x_tenant_code: Optional[str]) -> str:
-    """
-    Osigurava da je `X-Tenant-Code` header postavljen.
-
-    - Ako nedostaje ili je prazan → baca HTTP 400 sa porukom
-      `Missing X-Tenant-Code header`.
-    - Ako je postavljen → vraća vrijednost header-a kao string.
-
-    Implementacija delegira na shared helper iz `app.tenant_security`,
-    tako da svi moduli (cash, invoices, tax) imaju identično ponašanje.
-    """
     return require_tenant_code(x_tenant_code)
 
 
-# ======================================================
-#  DUMMY KONFIGURACIJA ZA OBRAČUN
-# ======================================================
+def _ensure_tenant_exists(db: Session, tenant_code: str) -> None:
+    """
+    Osigurava da postoji red u tabeli `tenants` za dati tenant_code.
 
-# DUMMY konfiguracija – koristi se isključivo za razvoj i testiranje.
-# Kasnije se može zamijeniti dinamičkom konfiguracijom po tenantu ili iz baze.
-TAX_DUMMY_CONFIG = TaxDummyConfig(
-    income_tax_rate=Decimal("0.10"),  # 10% poreza na dohodak
-    pension_contribution_rate=Decimal("0.18"),  # 18% PIO
-    health_contribution_rate=Decimal("0.12"),  # 12% zdravstveno
-    unemployment_contribution_rate=Decimal("0.015"),  # 1.5% nezaposlenost
-    flat_costs_rate=Decimal("0.30"),  # 30% priznati paušalni troškovi
+    Potrebno zbog FK relacija u nekim TAX tabelama (npr. tax_monthly_payments -> tenants.code).
+    U testovima se često koristi novi tenant code bez eksplicitnog kreiranja tenanta,
+    pa ovdje radimo "auto-create" samo kada je stvarno potrebno (write putanja).
+    """
+    exists = db.execute(select(Tenant).where(Tenant.code == tenant_code)).scalar_one_or_none()
+    if exists is not None:
+        return
+
+    db.add(
+        Tenant(
+            id=uuid4().hex[:32],
+            code=tenant_code,
+            name=f"Auto-created tenant: {tenant_code}",
+        )
+    )
+    db.commit()
+
+
+# ======================================================
+#  DEFAULT / FALLBACK KONFIGURACIJA (DUMMY)
+# ======================================================
+DEFAULT_TAX_CONFIG = TaxDummyConfig(
+    income_tax_rate=Decimal("0.10"),
+    pension_contribution_rate=Decimal("0.18"),
+    health_contribution_rate=Decimal("0.12"),
+    unemployment_contribution_rate=Decimal("0.015"),
+    flat_costs_rate=Decimal("0.30"),
+    currency="BAM",
 )
+
+# BACKWARD COMPATIBILITY:
+# Postojeći testovi importuju TAX_DUMMY_CONFIG iz app.routes.tax
+TAX_DUMMY_CONFIG = DEFAULT_TAX_CONFIG
+
+
+# ======================================================
+#  APP CONSTANTS (effective-dated) helpers
+# ======================================================
+def _normalize_jurisdiction(entity_value: str) -> str:
+    """
+    Normalizacija vrijednosti iz settings/tax (entity) na jurisdikciju u app_constants_sets.
+
+    Očekujemo:
+      - RS
+      - FBiH
+      - BD  (Brčko distrikt)
+    """
+    v = (entity_value or "").strip()
+    if not v:
+        return "RS"
+
+    upper = v.upper()
+
+    if upper in {"RS"}:
+        return "RS"
+    if upper in {"FBIH", "FEDERACIJA", "FEDERACIJA BIH"}:
+        return "FBiH"
+    if upper in {"BD", "BRCKO", "BRČKO", "BRCKO DISTRIKT", "BRČKO DISTRIKT"}:
+        return "BD"
+
+    # Ako dođe nešto neočekivano, držimo se defaulta
+    return "RS"
+
+
+def _find_current_constants_set(*, db: Session, jurisdiction: str, as_of: date) -> Optional[AppConstantsSet]:
+    """
+    Vraća set koji je aktivan na datum `as_of`:
+      effective_from <= as_of AND (effective_to IS NULL OR effective_to >= as_of)
+    Ako ih ima više (ne bi smjelo), uzima najnoviji po effective_from.
+    """
+    stmt = (
+        select(AppConstantsSet)
+        .where(
+            AppConstantsSet.jurisdiction == jurisdiction,
+            AppConstantsSet.effective_from <= as_of,
+            or_(AppConstantsSet.effective_to.is_(None), AppConstantsSet.effective_to >= as_of),
+        )
+        .order_by(AppConstantsSet.effective_from.desc(), AppConstantsSet.id.desc())
+        .limit(1)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def _decimal_from_payload(val: Any) -> Optional[Decimal]:
+    if val is None:
+        return None
+    try:
+        return Decimal(str(val))
+    except Exception:
+        return None
+
+
+def _tax_config_from_constants_payload(payload: dict[str, Any]) -> Optional[TaxDummyConfig]:
+    """
+    Izvlači TAX stope iz JSON payload-a u app_constants_sets.
+
+    Podržani oblici:
+      A) root keys:
+         {
+           "income_tax_rate": 0.10,
+           "pension_contribution_rate": 0.18,
+           ...
+           "currency": "BAM"
+         }
+
+      B) nested under "tax":
+         { "tax": { ... isti ključevi ... } }
+
+    Ako payload nema ništa relevantno → vrati None.
+    """
+    if not isinstance(payload, dict):
+        return None
+
+    src = payload
+    if isinstance(payload.get("tax"), dict):
+        src = payload["tax"]
+
+    interesting_keys = {
+        "income_tax_rate",
+        "pension_contribution_rate",
+        "health_contribution_rate",
+        "unemployment_contribution_rate",
+        "flat_costs_rate",
+        "currency",
+    }
+    if not any(k in src for k in interesting_keys):
+        return None
+
+    inc = _decimal_from_payload(src.get("income_tax_rate"))
+    pen = _decimal_from_payload(src.get("pension_contribution_rate"))
+    hea = _decimal_from_payload(src.get("health_contribution_rate"))
+    une = _decimal_from_payload(src.get("unemployment_contribution_rate"))
+    flat = _decimal_from_payload(src.get("flat_costs_rate"))
+    cur = src.get("currency")
+
+    return TaxDummyConfig(
+        income_tax_rate=inc if inc is not None else DEFAULT_TAX_CONFIG.income_tax_rate,
+        pension_contribution_rate=pen if pen is not None else DEFAULT_TAX_CONFIG.pension_contribution_rate,
+        health_contribution_rate=hea if hea is not None else DEFAULT_TAX_CONFIG.health_contribution_rate,
+        unemployment_contribution_rate=une if une is not None else DEFAULT_TAX_CONFIG.unemployment_contribution_rate,
+        flat_costs_rate=flat if flat is not None else DEFAULT_TAX_CONFIG.flat_costs_rate,
+        currency=str(cur) if cur is not None else DEFAULT_TAX_CONFIG.currency,
+    )
+
+
+def _resolve_tax_config(db: Session, tenant_code: str, as_of: date) -> TaxDummyConfig:
+    """
+    Hijerarhija izvora konfiguracije (prioritet):
+      1) tax_settings (tenant override)
+      2) app_constants_sets (effective-dated po jurisdikciji)  **samo ako tenant ima /settings/tax profil**
+      3) DEFAULT_TAX_CONFIG (fallback)
+    """
+    # 1) tenant override
+    row = db.execute(select(TaxSettings).where(TaxSettings.tenant_code == tenant_code)).scalar_one_or_none()
+    if row is not None:
+        return TaxDummyConfig(
+            income_tax_rate=Decimal(str(row.income_tax_rate)),
+            pension_contribution_rate=Decimal(str(row.pension_contribution_rate)),
+            health_contribution_rate=Decimal(str(row.health_contribution_rate)),
+            unemployment_contribution_rate=Decimal(str(row.unemployment_contribution_rate)),
+            flat_costs_rate=Decimal(str(row.flat_costs_rate)),
+            currency=row.currency or DEFAULT_TAX_CONFIG.currency,
+        )
+
+    # 2) constants set koristimo samo ako tenant eksplicitno ima tax profil (settings/tax)
+    prof = db.execute(
+        select(TenantTaxProfileSettings).where(TenantTaxProfileSettings.tenant_code == tenant_code)
+    ).scalar_one_or_none()
+
+    if prof is not None and (prof.entity or "").strip():
+        jurisdiction = _normalize_jurisdiction(prof.entity)
+        cs = _find_current_constants_set(db=db, jurisdiction=jurisdiction, as_of=as_of)
+        if cs is not None:
+            cfg = _tax_config_from_constants_payload(cs.payload or {})
+            if cfg is not None:
+                return cfg
+
+    # 3) fallback
+    return DEFAULT_TAX_CONFIG
+
+
+# ======================================================
+#  TAX SETTINGS (GET/PUT)
+# ======================================================
+@router.get(
+    "/tax/settings",
+    response_model=TaxSettingsRead,
+    summary="Učitavanje TAX stopa (settings) za tenant",
+    description=(
+        "Vraća trenutno podešene TAX stope za tenant. "
+        "Ako tenant nema podešavanja u bazi, vraća default vrijednosti "
+        "(i ne kreira red u bazi)."
+    ),
+    operation_id="tax_settings_get",
+)
+def get_tax_settings(
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    db: Session = Depends(_get_session_dep),
+) -> TaxSettingsRead:
+    tenant = _require_tenant(x_tenant_code)
+
+    row = db.execute(select(TaxSettings).where(TaxSettings.tenant_code == tenant)).scalar_one_or_none()
+    if row is None:
+        cfg = DEFAULT_TAX_CONFIG
+        return TaxSettingsRead(
+            tenant_code=tenant,
+            income_tax_rate=cfg.income_tax_rate,
+            pension_contribution_rate=cfg.pension_contribution_rate,
+            health_contribution_rate=cfg.health_contribution_rate,
+            unemployment_contribution_rate=cfg.unemployment_contribution_rate,
+            flat_costs_rate=cfg.flat_costs_rate,
+            currency=cfg.currency,
+        )
+
+    return TaxSettingsRead.model_validate(row)
+
+
+@router.put(
+    "/tax/settings",
+    response_model=TaxSettingsRead,
+    summary="Upsert TAX stopa (settings) za tenant",
+    description=(
+        "Upsert (insert/update) TAX stopa za tenant. "
+        "Sva polja su opciona; ako je nešto izostavljeno, zadržava se postojeća "
+        "vrijednost (ili default ako se red tek kreira)."
+    ),
+    operation_id="tax_settings_put",
+)
+def upsert_tax_settings(
+    payload: TaxSettingsUpsert,
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    db: Session = Depends(_get_session_dep),
+) -> TaxSettingsRead:
+    tenant = _require_tenant(x_tenant_code)
+
+    # FK safety: tax_settings.tenant_code -> tenants.code
+    _ensure_tenant_exists(db, tenant)
+
+    row = db.execute(select(TaxSettings).where(TaxSettings.tenant_code == tenant)).scalar_one_or_none()
+
+    if row is None:
+        cfg = DEFAULT_TAX_CONFIG
+        row = TaxSettings(
+            tenant_code=tenant,
+            income_tax_rate=cfg.income_tax_rate,
+            pension_contribution_rate=cfg.pension_contribution_rate,
+            health_contribution_rate=cfg.health_contribution_rate,
+            unemployment_contribution_rate=cfg.unemployment_contribution_rate,
+            flat_costs_rate=cfg.flat_costs_rate,
+            currency=cfg.currency,
+        )
+        db.add(row)
+
+    if payload.income_tax_rate is not None:
+        row.income_tax_rate = payload.income_tax_rate
+    if payload.pension_contribution_rate is not None:
+        row.pension_contribution_rate = payload.pension_contribution_rate
+    if payload.health_contribution_rate is not None:
+        row.health_contribution_rate = payload.health_contribution_rate
+    if payload.unemployment_contribution_rate is not None:
+        row.unemployment_contribution_rate = payload.unemployment_contribution_rate
+    if payload.flat_costs_rate is not None:
+        row.flat_costs_rate = payload.flat_costs_rate
+    if payload.currency is not None:
+        row.currency = payload.currency
+
+    db.commit()
+    db.refresh(row)
+
+    return TaxSettingsRead.model_validate(row)
 
 
 # ======================================================
 #  INTERNE POMOĆNE FUNKCIJE
 # ======================================================
 def _month_bounds(year: int, month: int) -> tuple[date, date]:
-    """
-    Vraća (start, end) granice mjeseca:
-
-    - `start` = prvi dan mjeseca (uključivo)
-    - `end`   = prvi dan sljedećeg mjeseca (isključivo)
-
-    Ovaj opseg koristimo za filtriranje po datumu u invoices/cash/input_invoices tabelama.
-    """
     if month == 12:
         start = date(year, 12, 1)
         end = date(year + 1, 1, 1)
@@ -96,36 +350,19 @@ def _compute_monthly_summary(
     total_expense: Decimal,
     cfg: TaxDummyConfig,
 ) -> MonthlyTaxSummaryRead:
-    """
-    Zajednička logika obračuna mjesečnog poreza/doprinosa.
-
-    Koriste je i:
-    - `/tax/monthly/preview` (ručni input iz frontenda)
-    - `/tax/monthly/auto` (automatska agregacija iz baze).
-
-    Ovo je **razvojni DUMMY model** – nije pravno tačan obračun.
-    """
-
-    # 1) Paušalni troškovi
     flat_costs = total_income * cfg.flat_costs_rate
 
-    # 2) Osnovica za oporezivanje
     taxable_base = total_income - flat_costs - total_expense
     if taxable_base < Decimal("0"):
         taxable_base = Decimal("0.00")
 
-    # 3) Porez na dohodak
     income_tax = taxable_base * cfg.income_tax_rate
 
-    # 4) Doprinosi (zbirno)
     contributions_rate_sum = (
-        cfg.pension_contribution_rate
-        + cfg.health_contribution_rate
-        + cfg.unemployment_contribution_rate
+        cfg.pension_contribution_rate + cfg.health_contribution_rate + cfg.unemployment_contribution_rate
     )
     contributions_total = taxable_base * contributions_rate_sum
 
-    # 5) Ukupna obaveza
     total_due = income_tax + contributions_total
 
     return MonthlyTaxSummaryRead(
@@ -150,30 +387,9 @@ def _aggregate_monthly_income_and_expense(
     tenant_code: str,
     db: Session,
 ) -> Tuple[Decimal, Decimal]:
-    """
-    Agregira prihode i rashode za zadati mjesec iz:
-
-    **Prihodi:**
-    - `invoices` (kolona `total_amount`, po `issue_date`)
-    - `cash_entries` (kolona `amount` za `kind='income'`, po `entry_date`)
-
-    **Rashodi:**
-    - `cash_entries` (kolona `amount` za `kind='expense'`, po `entry_date`)
-    - `input_invoices` (kolona `total_amount`, po `issue_date`)
-
-    Ovo je centralno mjesto koje kontroliše šta sve ulazi u poreski obračun.
-
-    Napomena:
-    - sada i `InputInvoice` učestvuje u business lock mehanizmu (model-level),
-      tako da se nakon finalizacije mjeseca ne mogu tiho mijenjati ni ulazne
-      fakture koje ulaze u ovaj obračun.
-    """
     month_start, month_end = _month_bounds(year, month)
 
-    # 1) Prihodi iz faktura (Invoice.total_amount)
-    stmt_invoices = select(
-        func.coalesce(func.sum(Invoice.total_amount), 0).label("invoice_income")
-    ).where(
+    stmt_invoices = select(func.coalesce(func.sum(Invoice.total_amount), 0).label("invoice_income")).where(
         Invoice.tenant_code == tenant_code,
         Invoice.issue_date >= month_start,
         Invoice.issue_date < month_end,
@@ -181,31 +397,17 @@ def _aggregate_monthly_income_and_expense(
     invoice_row = db.execute(stmt_invoices).one()
     invoice_income = invoice_row.invoice_income or Decimal("0.00")
 
-    # 2) Prihodi i rashodi iz cash_entries
     income_expr = func.coalesce(
-        func.sum(
-            case(
-                (CashEntry.kind == "income", CashEntry.amount),
-                else_=0,
-            )
-        ),
+        func.sum(case((CashEntry.kind == "income", CashEntry.amount), else_=0)),
         0,
     )
 
     expense_expr = func.coalesce(
-        func.sum(
-            case(
-                (CashEntry.kind == "expense", CashEntry.amount),
-                else_=0,
-            )
-        ),
+        func.sum(case((CashEntry.kind == "expense", CashEntry.amount), else_=0)),
         0,
     )
 
-    stmt_cash = select(
-        income_expr.label("cash_income"),
-        expense_expr.label("cash_expense"),
-    ).where(
+    stmt_cash = select(income_expr.label("cash_income"), expense_expr.label("cash_expense")).where(
         CashEntry.tenant_code == tenant_code,
         CashEntry.entry_date >= month_start,
         CashEntry.entry_date < month_end,
@@ -215,10 +417,7 @@ def _aggregate_monthly_income_and_expense(
     cash_income = cash_row.cash_income or Decimal("0.00")
     cash_expense = cash_row.cash_expense or Decimal("0.00")
 
-    # 3) Rashodi iz input_invoices (ulazne fakture)
-    stmt_input_invoices = select(
-        func.coalesce(func.sum(InputInvoice.total_amount), 0).label("input_expense")
-    ).where(
+    stmt_input_invoices = select(func.coalesce(func.sum(InputInvoice.total_amount), 0).label("input_expense")).where(
         InputInvoice.tenant_code == tenant_code,
         InputInvoice.issue_date >= month_start,
         InputInvoice.issue_date < month_end,
@@ -226,268 +425,43 @@ def _aggregate_monthly_income_and_expense(
     input_row = db.execute(stmt_input_invoices).one()
     input_expense = input_row.input_expense or Decimal("0.00")
 
-    # Kombinacija izvora
     total_income = invoice_income + cash_income
     total_expense = cash_expense + input_expense
 
     return total_income, total_expense
 
 
-# ======================================================
-#  MJESEČNI OBRAČUN – PREVIEW
-# ======================================================
-@router.get(
-    "/tax/monthly/preview",
-    response_model=MonthlyTaxSummaryRead,
-    summary="Mjesečni porezni obračun (preview, ručni unos)",
-    description=(
-        "Vraća **simulaciju** mjesečnog poreznog obračuna za jednog tenenta na osnovu "
-        "ručno proslijeđenih ukupnih prihoda i rashoda za dati mjesec.\n\n"
-        "Tipični scenariji:\n"
-        "- frontend već ima sumirane podatke (npr. iz izvještaja) i želi brzi prikaz "
-        "poreza i doprinosa;\n"
-        "- korisnik testira različite scenarije (što ako promijenim prihod/rashod).\n\n"
-        "Primjer poziva:\n"
-        "`GET /tax/monthly/preview?year=2025&month=1&total_income=5000&total_expense=1500` "
-        "sa headerom `X-Tenant-Code: t-demo`."
-    ),
-    operation_id="tax_monthly_preview",
-    responses={
-        200: {
-            "description": "Uspješna simulacija mjesečnog poreznog obračuna.",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "year": 2025,
-                        "month": 1,
-                        "tenant_code": "t-demo",
-                        "total_income": "5000.00",
-                        "total_expense": "1500.00",
-                        "taxable_base": "2000.00",
-                        "income_tax": "200.00",
-                        "contributions_total": "520.00",
-                        "total_due": "720.00",
-                        "is_final": False,
-                        "currency": "BAM",
-                    }
-                }
-            },
-        },
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
-                "Primjer poruke: `Missing X-Tenant-Code header`."
-            ),
-            "content": {
-                "application/json": {
-                    "example": {"detail": "Missing X-Tenant-Code header"}
-                }
-            },
-        },
-        422: {
-            "description": (
-                "Validation error – npr. godina/mjesec van opsega ili pogrešan format "
-                "brojeva u query parametrima."
-            )
-        },
-    },
-)
-def preview_monthly_tax(
-    year: int = Query(
-        ...,
-        ge=2000,
-        le=2100,
-        description="Godina obračuna (YYYY).",
-        examples=[2025],
-    ),
-    month: int = Query(
-        ...,
-        ge=1,
-        le=12,
-        description="Mjesec obračuna (1-12).",
-        examples=[1],
-    ),
-    total_income: Decimal = Query(
-        ...,
-        ge=0,
-        description=(
-            "Ukupan iznos prihoda za dati period koji ulazi u simulaciju obračuna.\n\n"
-            "U prvoj fazi se ovdje ručno prosleđuje suma prihoda (npr. iz invoices/cash), "
-            "a kasnije će backend sam povlačiti i sumirati podatke iz postojećih modula."
-        ),
-        examples=[Decimal("5000.00")],
-    ),
-    total_expense: Decimal = Query(
-        0,
-        ge=0,
-        description=(
-            "Ukupan iznos rashoda za dati period.\n\n"
-            "Za početak je opciono i služi kao dodatno umanjenje osnovice. "
-            "Kasnije se može povezati sa stvarnim rashodima iz cash modula."
-        ),
-        examples=[Decimal("1500.00")],
-    ),
-    x_tenant_code: Optional[str] = Header(
-        None,
-        alias="X-Tenant-Code",
-        description=(
-            "Šifra tenenta za kojeg radimo simulaciju mjesečnog obračuna.\n"
-            "Primjer: `frizer-mika`, `t-demo`."
-        ),
-    ),
+def _compute_monthly_components_from_base(
+    *,
+    taxable_base: Decimal,
+    cfg: TaxDummyConfig,
+) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    if taxable_base < Decimal("0"):
+        taxable_base = Decimal("0.00")
+
+    income_tax = taxable_base * cfg.income_tax_rate
+    pension = taxable_base * cfg.pension_contribution_rate
+    health = taxable_base * cfg.health_contribution_rate
+    unemployment = taxable_base * cfg.unemployment_contribution_rate
+
+    return income_tax, pension, health, unemployment
+
+
+def _get_monthly_summary_any(
+    *,
+    year: int,
+    month: int,
+    tenant_code: str,
+    db: Session,
 ) -> MonthlyTaxSummaryRead:
     """
-    Vraća **simulaciju** mjesečnog poreznog obračuna za jednog tenenta.
-
-    Trenutna logika (DUMMY, može se mijenjati po potrebi):
-
-    1. Priznati paušalni troškovi = `total_income * flat_costs_rate`
-    2. Oporeziva osnovica = `total_income - priznati_pausalni_troskovi - total_expense`
-       (ako je rezultat < 0, osnovica se svodi na 0)
-    3. Porez na dohodak = `oporeziva_osnovica * income_tax_rate`
-    4. Doprinosi (zbirno) = `oporeziva_osnovica * (PIO + zdravstveno + nezaposlenost)`
-    5. Ukupna obaveza = `porez + doprinosi`
-
-    > **Napomena:** Ovo je razvojni model, nije pravni savjet niti tačan prikaz poreskog sistema.
+    Vraća summary za mjesec:
+      - ako postoji finalizovan zapis u tax_monthly_results → vrati ga
+      - inače izračunaj iz invoices + cash + input_invoices koristeći cfg za taj mjesec (as_of = 1. dan mjeseca)
     """
-    tenant = _require_tenant(x_tenant_code)
-    cfg = TAX_DUMMY_CONFIG
-
-    return _compute_monthly_summary(
-        year=year,
-        month=month,
-        tenant_code=tenant,
-        total_income=total_income,
-        total_expense=total_expense,
-        cfg=cfg,
-    )
-
-
-# ======================================================
-#  MJESEČNI OBRAČун – AUTO
-# ======================================================
-@router.get(
-    "/tax/monthly/auto",
-    response_model=MonthlyTaxSummaryRead,
-    summary="Automatski mjesečni obračun iz invoices + cash + input_invoices (DUMMY)",
-    description=(
-        "Automatski mjesečni porezni obračun za jednog tenenta na osnovu podataka "
-        "iz baze (`invoices` + `cash_entries` + `input_invoices`).\n\n"
-        "Ako već postoji finalizovan rezultat u `tax_monthly_results`, vraća se "
-        "persistirani obračun umjesto novog preračuna.\n\n"
-        "Agregacija izvora:\n"
-        "- prihodi:\n"
-        "    - suma `Invoice.total_amount` za zadati mjesec (po `issue_date`)\n"
-        "    - PLUS suma `CashEntry.amount` za zapise sa `kind='income'`\n"
-        "- rashodi:\n"
-        "    - suma `CashEntry.amount` za zapise sa `kind='expense'`\n"
-        "    - PLUS suma `InputInvoice.total_amount` za ulazne fakture (po `issue_date`).\n\n"
-        "Primjer poziva:\n"
-        "`GET /tax/monthly/auto?year=2025&month=1` "
-        "sa headerom `X-Tenant-Code: t-demo`."
-    ),
-    operation_id="tax_monthly_auto",
-    responses={
-        200: {
-            "description": (
-                "Uspješan automatski obračun ili vraćen već finalizovan rezultat "
-                "za zadati mjesec."
-            ),
-            "content": {
-                "application/json": {
-                    "example": {
-                        "year": 2025,
-                        "month": 1,
-                        "tenant_code": "t-demo",
-                        "total_income": "5000.00",
-                        "total_expense": "1500.00",
-                        "taxable_base": "2000.00",
-                        "income_tax": "200.00",
-                        "contributions_total": "520.00",
-                        "total_due": "720.00",
-                        "is_final": True,
-                        "currency": "BAM",
-                    }
-                }
-            },
-        },
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
-                "Primjer poruke: `Missing X-Tenant-Code header`."
-            ),
-            "content": {
-                "application/json": {
-                    "example": {"detail": "Missing X-Tenant-Code header"}
-                }
-            },
-        },
-        422: {
-            "description": (
-                "Validation error – npr. godina/mjesec van opsega ili pogrešan format "
-                "query parametara."
-            )
-        },
-    },
-)
-def auto_monthly_tax(
-    year: int = Query(
-        ...,
-        ge=2000,
-        le=2100,
-        description="Godina obračuna (YYYY).",
-        examples=[2025],
-    ),
-    month: int = Query(
-        ...,
-        ge=1,
-        le=12,
-        description="Mjesec obračuna (1-12).",
-        examples=[1],
-    ),
-    x_tenant_code: Optional[str] = Header(
-        None,
-        alias="X-Tenant-Code",
-        description=(
-            "Šifra tenenta za kojeg radimo automatski mjesečni obračun.\n"
-            "Primjer: `frizer-mika`, `t-demo`."
-        ),
-    ),
-    db: Session = Depends(_get_session_dep),
-) -> MonthlyTaxSummaryRead:
-    """
-    Automatski mjesečni porezni obračun za jednog tenenta **na osnovu podataka iz baze**.
-
-    Trenutna DUMMY logika agregacije izvora prihoda/rashoda:
-
-    - prihodi:
-        - suma `Invoice.total_amount` za zadati mjesec (po `issue_date`)
-        - PLUS suma `CashEntry.amount` za zapise sa `kind='income'`
-    - rashodi:
-        - suma `CashEntry.amount` za zapise sa `kind='expense'`
-        - PLUS suma `InputInvoice.total_amount` kao trošak ulaznih faktura
-          za isti mjesec (po `issue_date`).
-
-    Datumski opseg:
-    - od prvog dana mjeseca (uključivo)
-    - do prvog dana sljedećeg mjeseca (isključivo)
-
-    Ako je mjesec već finalizovan (postoji zapis u `tax_monthly_results`),
-    vraća se **persistirani rezultat** umjesto ponovnog preračuna.
-
-    > **Napomena:** Business lock na nivou modela sada obuhvata
-    > `Invoice`, `CashEntry` i `InputInvoice` (zabrana izmjene/brisanja nakon finalize),
-    > tako da je osnovica obračuna za finalizovane mjesece poslovno zaključana.
-    """
-    tenant = _require_tenant(x_tenant_code)
-    cfg = TAX_DUMMY_CONFIG
-
-    # 0) Ako postoji već finalizovan obračun, vraćamo njega.
     existing = db.execute(
         select(TaxMonthlyResult).where(
-            TaxMonthlyResult.tenant_code == tenant,
+            TaxMonthlyResult.tenant_code == tenant_code,
             TaxMonthlyResult.year == year,
             TaxMonthlyResult.month == month,
         )
@@ -508,13 +482,185 @@ def auto_monthly_tax(
             currency=existing.currency,
         )
 
-    # 1) Agregacija iz invoices + cash_entries + input_invoices
+    as_of = date(year, month, 1)
+    cfg = _resolve_tax_config(db, tenant_code, as_of=as_of)
+
     total_income, total_expense = _aggregate_monthly_income_and_expense(
         year=year,
         month=month,
-        tenant_code=tenant,
+        tenant_code=tenant_code,
         db=db,
     )
+
+    return _compute_monthly_summary(
+        year=year,
+        month=month,
+        tenant_code=tenant_code,
+        total_income=total_income,
+        total_expense=total_expense,
+        cfg=cfg,
+    )
+
+
+# ======================================================
+#  10.1 /tax/monthly – mjesečni pregled (12 mjeseci)
+# ======================================================
+@router.get(
+    "/tax/monthly",
+    response_model=TaxMonthlyOverviewResponse,
+    summary="Mjesečni pregled obaveza (1-12) + status uplate",
+    operation_id="tax_monthly_overview",
+    responses={400: {"model": ErrorResponse}},
+)
+def tax_monthly_overview(
+    year: int = Query(..., ge=2000, le=2100),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    db: Session = Depends(_get_session_dep),
+) -> TaxMonthlyOverviewResponse:
+    tenant = _require_tenant(x_tenant_code)
+
+    payments = (
+        db.execute(
+            select(TaxMonthlyPayment).where(
+                TaxMonthlyPayment.tenant_code == tenant,
+                TaxMonthlyPayment.year == year,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    payment_by_month = {p.month: p for p in payments}
+
+    items: list[TaxMonthlyOverviewItem] = []
+    for m in range(1, 13):
+        summary = _get_monthly_summary_any(year=year, month=m, tenant_code=tenant, db=db)
+
+        cfg = _resolve_tax_config(db, tenant, as_of=date(year, m, 1))
+        income_tax, pension, health, unemployment = _compute_monthly_components_from_base(
+            taxable_base=Decimal(str(summary.taxable_base)),
+            cfg=cfg,
+        )
+        total_due = income_tax + pension + health + unemployment
+
+        pay = payment_by_month.get(m)
+        items.append(
+            TaxMonthlyOverviewItem(
+                year=year,
+                month=m,
+                income_tax=income_tax,
+                pension=pension,
+                health=health,
+                unemployment=unemployment,
+                total_due=total_due,
+                is_paid=bool(pay.is_paid) if pay is not None else False,
+                paid_at=pay.paid_at if pay is not None else None,
+                currency=cfg.currency,
+            )
+        )
+
+    return TaxMonthlyOverviewResponse(
+        year=year,
+        tenant_code=tenant,
+        items=items,
+    )
+
+
+@router.put(
+    "/tax/monthly/{year}/{month}/payment",
+    response_model=TaxMonthlyOverviewItem,
+    summary="Označi uplatu za mjesec (DA/NE) + datum uplate",
+    operation_id="tax_monthly_payment_upsert",
+    responses={400: {"model": ErrorResponse}},
+)
+def upsert_monthly_payment(
+    year: int,
+    month: int,
+    payload: TaxMonthlyPaymentUpsert,
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    db: Session = Depends(_get_session_dep),
+) -> TaxMonthlyOverviewItem:
+    if year < 2000 or year > 2100:
+        raise HTTPException(status_code=400, detail="Invalid year")
+    if month < 1 or month > 12:
+        raise HTTPException(status_code=400, detail="Invalid month")
+
+    tenant = _require_tenant(x_tenant_code)
+
+    # FK safety: tax_monthly_payments.tenant_code -> tenants.code
+    _ensure_tenant_exists(db, tenant)
+
+    row = db.execute(
+        select(TaxMonthlyPayment).where(
+            TaxMonthlyPayment.tenant_code == tenant,
+            TaxMonthlyPayment.year == year,
+            TaxMonthlyPayment.month == month,
+        )
+    ).scalar_one_or_none()
+
+    if row is None:
+        row = TaxMonthlyPayment(
+            tenant_code=tenant,
+            year=year,
+            month=month,
+            is_paid=False,
+            paid_at=None,
+        )
+        db.add(row)
+
+    row.is_paid = bool(payload.is_paid)
+    if row.is_paid:
+        row.paid_at = payload.paid_at or date.today()
+    else:
+        row.paid_at = None
+
+    db.commit()
+    db.refresh(row)
+
+    as_of = date(year, month, 1)
+    cfg = _resolve_tax_config(db, tenant, as_of=as_of)
+
+    summary = _get_monthly_summary_any(year=year, month=month, tenant_code=tenant, db=db)
+
+    income_tax, pension, health, unemployment = _compute_monthly_components_from_base(
+        taxable_base=Decimal(str(summary.taxable_base)),
+        cfg=cfg,
+    )
+    total_due = income_tax + pension + health + unemployment
+
+    return TaxMonthlyOverviewItem(
+        year=year,
+        month=month,
+        income_tax=income_tax,
+        pension=pension,
+        health=health,
+        unemployment=unemployment,
+        total_due=total_due,
+        is_paid=row.is_paid,
+        paid_at=row.paid_at,
+        currency=cfg.currency,
+    )
+
+
+# ======================================================
+#  MJESEČNI OBRAČUN – PREVIEW
+# ======================================================
+@router.get(
+    "/tax/monthly/preview",
+    response_model=MonthlyTaxSummaryRead,
+    summary="Mjesečni porezni obračun (preview, ručni unos)",
+    operation_id="tax_monthly_preview",
+    responses={400: {"model": ErrorResponse}},
+)
+def preview_monthly_tax(
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    total_income: Decimal = Query(..., ge=0),
+    total_expense: Decimal = Query(0, ge=0),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    db: Session = Depends(_get_session_dep),
+) -> MonthlyTaxSummaryRead:
+    tenant = _require_tenant(x_tenant_code)
+    cfg = _resolve_tax_config(db, tenant, as_of=date(year, month, 1))
 
     return _compute_monthly_summary(
         year=year,
@@ -527,137 +673,44 @@ def auto_monthly_tax(
 
 
 # ======================================================
+#  MJESEČNI OBRAČUN – AUTO
+# ======================================================
+@router.get(
+    "/tax/monthly/auto",
+    response_model=MonthlyTaxSummaryRead,
+    summary="Automatski mjesečni obračun iz invoices + cash + input_invoices",
+    operation_id="tax_monthly_auto",
+    responses={400: {"model": ErrorResponse}},
+)
+def auto_monthly_tax(
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    db: Session = Depends(_get_session_dep),
+) -> MonthlyTaxSummaryRead:
+    tenant = _require_tenant(x_tenant_code)
+    return _get_monthly_summary_any(year=year, month=month, tenant_code=tenant, db=db)
+
+
+# ======================================================
 #  MJESEČNI OBRAČUN – FINALIZE
 # ======================================================
 @router.post(
     "/tax/monthly/finalize",
     response_model=MonthlyTaxSummaryRead,
     summary="Finalizacija mjesečnog obračuna i zapis u bazu",
-    description=(
-        "Finalizuje mjesečni porezni obračun za jednog tenenta i trajno ga upisuje "
-        "u tabelu `tax_monthly_results`.\n\n"
-        "Ako za isti `(tenant_code, year, month)` već postoji zapis, finalize "
-        "se odbija sa HTTP 400.\n\n"
-        "Nakon finalizacije:\n"
-        "- svi pokušaji **izmjene ili brisanja** podataka u tabelama `invoices`, "
-        "  `cash_entries` i `input_invoices` za taj period biće blokirani "
-        "  (model-level business lock),\n"
-        "- /tax/monthly/auto će vraćati zaključani rezultat umjesto novog preračuna.\n\n"
-        "Vrijednosti iz `input_invoices` ulaze u obračun rashoda, a zahvaljujući "
-        "business lock-u i sama InputInvoice tabela je sada zaključana po periodima.\n\n"
-        "Svaki uspješan finalize dodatno upisuje red u `tax_monthly_finalize_history` "
-        "kao audit log (snapshot vrijednosti + metadata o akciji).\n\n"
-        "Primjer poziva:\n"
-        "`POST /tax/monthly/finalize?year=2025&month=1` "
-        "sa headerom `X-Tenant-Code: t-demo`."
-    ),
     operation_id="tax_monthly_finalize",
-    responses={
-        200: {
-            "description": (
-                "Uspješno finalizovan mjesečni obračun. Vraća zaključani rezultat "
-                "sa `is_final=true`."
-            ),
-            "content": {
-                "application/json": {
-                    "example": {
-                        "year": 2025,
-                        "month": 1,
-                        "tenant_code": "t-demo",
-                        "total_income": "5000.00",
-                        "total_expense": "1500.00",
-                        "taxable_base": "2000.00",
-                        "income_tax": "200.00",
-                        "contributions_total": "520.00",
-                        "total_due": "720.00",
-                        "is_final": True,
-                        "currency": "BAM",
-                    }
-                }
-            },
-        },
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "Poslovna greška pri finalizaciji.\n\n"
-                "Tipični scenariji:\n"
-                "- nedostaje `X-Tenant-Code` header → `Missing X-Tenant-Code header`\n"
-                "- period je već finalizovan → "
-                "`Monthly tax result for this period is already finalized`."
-            ),
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "missing_tenant": {
-                            "summary": "Nedostaje X-Tenant-Code",
-                            "value": {"detail": "Missing X-Tenant-Code header"},
-                        },
-                        "already_finalized": {
-                            "summary": "Mjesec već finalizovan",
-                            "value": {
-                                "detail": "Monthly tax result for this period is already finalized"
-                            },
-                        },
-                    }
-                }
-            },
-        },
-        422: {
-            "description": (
-                "Validation error – npr. godina/mjesec van opsega ili pogrešan format "
-                "query parametara."
-            )
-        },
-    },
+    responses={400: {"model": ErrorResponse}},
 )
 def finalize_monthly_tax(
-    year: int = Query(
-        ...,
-        ge=2000,
-        le=2100,
-        description="Godina obračuna (YYYY).",
-        examples=[2025],
-    ),
-    month: int = Query(
-        ...,
-        ge=1,
-        le=12,
-        description="Mjesec obračuna (1-12).",
-        examples=[1],
-    ),
-    x_tenant_code: Optional[str] = Header(
-        None,
-        alias="X-Tenant-Code",
-        description=(
-            "Šifra tenenta za kojeg finalizujemo mjesečni obračun.\n"
-            "Primjer: `frizer-mika`, `t-demo`."
-        ),
-    ),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
     db: Session = Depends(_get_session_dep),
 ) -> MonthlyTaxSummaryRead:
-    """
-    Finalizuje mjesečni porezni obračun za jednog tenenta:
-
-    1. Provjerava da li već postoji zapis u `tax_monthly_results`
-       za zadati (tenant_code, year, month). Ako postoji → 400.
-    2. Agregira prihode/rashode iz invoices + cash_entries + input_invoices
-       (ista logika kao /auto).
-    3. Primjenjuje DUMMY obračun (_compute_monthly_summary).
-    4. Snima rezultat u `tax_monthly_results` kao finalizovan (`is_final=True`).
-    5. Upisuje audit red u `tax_monthly_finalize_history` sa snapshotom vrijednosti
-       i metadata o akciji (`action='finalize'`).
-    6. Vraća izračunati rezultat sa `is_final=True`.
-
-    Nakon što je mjesec finalizovan:
-    - /tax/monthly/auto će vraćati persistirani rezultat (bez novog preračuna).
-    - pokušaji izmjene/brisanja faktura (`Invoice`), cash unosa (`CashEntry`)
-      i ulaznih faktura (`InputInvoice`) u tom mjesecu na nivou modela biće
-      blokirani (globalni business lock).
-    """
     tenant = _require_tenant(x_tenant_code)
-    cfg = TAX_DUMMY_CONFIG
+    cfg = _resolve_tax_config(db, tenant, as_of=date(year, month, 1))
 
-    # 1) Provjera da li već postoji finalizovan zapis
     existing = db.execute(
         select(TaxMonthlyResult).where(
             TaxMonthlyResult.tenant_code == tenant,
@@ -672,7 +725,6 @@ def finalize_monthly_tax(
             detail="Monthly tax result for this period is already finalized",
         )
 
-    # 2) Agregacija prihoda/rashoda iz invoices + cash_entries + input_invoices
     total_income, total_expense = _aggregate_monthly_income_and_expense(
         year=year,
         month=month,
@@ -680,7 +732,6 @@ def finalize_monthly_tax(
         db=db,
     )
 
-    # 3) Izračun po DUMMY formuli
     summary = _compute_monthly_summary(
         year=year,
         month=month,
@@ -690,7 +741,6 @@ def finalize_monthly_tax(
         cfg=cfg,
     )
 
-    # 4) Snimanje u bazu kao finalizovan rezultat + audit zapis u istoj transakciji
     db_obj = TaxMonthlyResult(
         tenant_code=tenant,
         year=summary.year,
@@ -725,7 +775,6 @@ def finalize_monthly_tax(
     db.commit()
     db.refresh(db_obj)
 
-    # 5) Vraćamo summary, ali sa is_final=True
     return MonthlyTaxSummaryRead(
         year=summary.year,
         month=summary.month,
@@ -748,62 +797,14 @@ def finalize_monthly_tax(
     "/tax/monthly/history",
     response_model=list[MonthlyTaxSummaryRead],
     summary="Istorija finalizovanih mjesečnih obračuna za godinu",
-    description=(
-        "Vraća listu svih **finalizovanih** mjesečnih poreznih obračuna za zadatu godinu "
-        "i tenenta.\n\n"
-        "Svaki element liste predstavlja jedan zapis iz `tax_monthly_results` "
-        "mapiran u `MonthlyTaxSummaryRead` model.\n\n"
-        "Ako za dati period nema finalizovanih obračuna, vraća se prazna lista."
-    ),
     operation_id="tax_monthly_history",
-    responses={
-        200: {
-            "description": (
-                "Lista mjesečnih obračuna (može biti i prazna ako još nema podataka)."
-            )
-        },
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
-                "Primjer poruke: `Missing X-Tenant-Code header`."
-            ),
-            "content": {
-                "application/json": {
-                    "example": {"detail": "Missing X-Tenant-Code header"}
-                }
-            },
-        },
-        422: {
-            "description": (
-                "Validation error – npr. godina van opsega ili pogrešan format "
-                "query parametara."
-            )
-        },
-    },
+    responses={400: {"model": ErrorResponse}},
 )
 def monthly_tax_history(
-    year: int = Query(
-        ...,
-        ge=2000,
-        le=2100,
-        description="Godina za koju se traži istorija mjesečnih obračuna.",
-        examples=[2025],
-    ),
-    x_tenant_code: Optional[str] = Header(
-        None,
-        alias="X-Tenant-Code",
-        description=(
-            "Šifra tenenta za kojeg se čita istorija mjesečnih obračuna.\n"
-            "Primjer: `frizer-mika`, `t-demo`."
-        ),
-    ),
+    year: int = Query(..., ge=2000, le=2100),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
     db: Session = Depends(_get_session_dep),
 ) -> list[MonthlyTaxSummaryRead]:
-    """
-    Čita sve **finalizovane** mjesečne porezne obračune iz `tax_monthly_results`
-    za zadatu (year, tenant_code) kombinaciju.
-    """
     tenant = _require_tenant(x_tenant_code)
 
     rows = (
@@ -841,65 +842,14 @@ def monthly_tax_history(
     "/tax/monthly/status",
     response_model=MonthlyTaxStatusResponse,
     summary="Status mjesečnih obračuna po mjesecima za godinu",
-    description=(
-        "Vraća status mjesečnih obračuna za zadatu godinu i tenenta.\n\n"
-        "Za svaki mjesec (1-12) označava da li postoji finalizovan obračun i da li "
-        "postoji bilo kakav podatak (`has_data`).\n\n"
-        "Ovo je idealno za kalendarski prikaz u UI-ju (npr. 'koji mjeseci su zaključani')."
-    ),
     operation_id="tax_monthly_status",
-    responses={
-        200: {
-            "description": (
-                "Status za sve mjesece u zadatoj godini za konkretnog tenenta."
-            )
-        },
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
-                "Primjer poruke: `Missing X-Tenant-Code header`."
-            ),
-            "content": {
-                "application/json": {
-                    "example": {"detail": "Missing X-Tenant-Code header"}
-                }
-            },
-        },
-        422: {
-            "description": (
-                "Validation error – npr. godina van opsega ili pogrešan format "
-                "query parametara."
-            )
-        },
-    },
+    responses={400: {"model": ErrorResponse}},
 )
 def monthly_tax_status(
-    year: int = Query(
-        ...,
-        ge=2000,
-        le=2100,
-        description="Godina za koju se provjerava status mjesečnih obračuna.",
-        examples=[2025],
-    ),
-    x_tenant_code: Optional[str] = Header(
-        None,
-        alias="X-Tenant-Code",
-        description=(
-            "Šifra tenenta za kojeg se provjerava status mjesečnih obračuna.\n"
-            "Primjer: `frizer-mika`, `t-demo`."
-        ),
-    ),
+    year: int = Query(..., ge=2000, le=2100),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
     db: Session = Depends(_get_session_dep),
 ) -> MonthlyTaxStatusResponse:
-    """
-    Vraća status mjesečnih obračuna za godinu/tenenta.
-
-    Implementacija:
-    - učita sve zapise iz `tax_monthly_results` za (tenant_code, year)
-    - mapira ih po mjesecima
-    - za mjesece koji nemaju zapis vraća `is_final=False`, `has_data=False`
-    """
     tenant = _require_tenant(x_tenant_code)
 
     rows = (
@@ -919,21 +869,9 @@ def monthly_tax_status(
     for m in range(1, 13):
         row = by_month.get(m)
         if row is None:
-            items.append(
-                {
-                    "month": m,
-                    "is_final": False,
-                    "has_data": False,
-                }
-            )
+            items.append({"month": m, "is_final": False, "has_data": False})
         else:
-            items.append(
-                {
-                    "month": m,
-                    "is_final": bool(row.is_final),
-                    "has_data": True,
-                }
-            )
+            items.append({"month": m, "is_final": bool(row.is_final), "has_data": True})
 
     return MonthlyTaxStatusResponse(
         year=year,
@@ -948,47 +886,13 @@ def monthly_tax_status(
 @router.get(
     "/tax/monthly/export",
     summary="Export mjesečnog poreznog obračuna u CSV",
-    description=(
-        "Exportuje mjesečni porezni obračun za jednog tenenta u CSV format, "
-        "na osnovu iste logike kao `/tax/monthly/auto`.\n\n"
-        "CSV sadrži jednu vrstu (jedan red) sa vrijednostima za zadati mjesec:\n"
-        "kolone: year,month,tenant_code,total_income,total_expense,"
-        "taxable_base,income_tax,contributions_total,total_due,currency,is_final\n\n"
-        "Idealan je za slanje knjigovođi ili uvoz u eksterni sistem."
-    ),
 )
 def export_monthly_tax_csv(
-    year: int = Query(
-        ...,
-        ge=2000,
-        le=2100,
-        description="Godina za koju se exportuje mjesečni obračun.",
-        examples=[2025],
-    ),
-    month: int = Query(
-        ...,
-        ge=1,
-        le=12,
-        description="Mjesec za koji se exportuje mjesečni obračun (1-12).",
-        examples=[1],
-    ),
-    x_tenant_code: Optional[str] = Header(
-        None,
-        alias="X-Tenant-Code",
-        description=(
-            "Šifra tenenta za kojeg se exportuje mjesečni obračun.\n"
-            "Primjer: `frizer-mika`, `t-demo`."
-        ),
-    ),
+    year: int = Query(..., ge=2000, le=2100),
+    month: int = Query(..., ge=1, le=12),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
     db: Session = Depends(_get_session_dep),
 ) -> Response:
-    """
-    CSV export mjesečnog poreznog obračuna.
-
-    Interno poziva `auto_monthly_tax` kako bi koristio istu logiku
-    agregacije i business lock-a. Ako je mjesec finalizovan, u CSV ide
-    zaključani rezultat; ako nije, ide trenutni DUMMY obračun.
-    """
     summary = auto_monthly_tax(
         year=year,
         month=month,
@@ -1039,9 +943,7 @@ def export_monthly_tax_csv(
     return Response(
         content=csv_content,
         media_type="text/csv",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-        },
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -1052,66 +954,14 @@ def export_monthly_tax_csv(
     "/tax/yearly/preview",
     response_model=YearlyTaxSummaryRead,
     summary="Godišnji porezni obračun (preview) na osnovu finalizovanih mjeseci",
-    description=(
-        "Vraća **godišnji** porezni obračun za jednog tenenta na osnovu "
-        "finalizovanih mjesečnih rezultata u tabeli `tax_monthly_results`.\n\n"
-        "Logika:\n"
-        "- pročita sve zapise za (tenant_code, year) sa `is_final = true`\n"
-        "- sabere polja: `total_income`, `total_expense`, `taxable_base`, "
-        "`income_tax`, `contributions_total`, `total_due`\n"
-        "- vrati zbirne vrijednosti za cijelu godinu\n\n"
-        "Ako nema finalizovanih mjeseci za zadatu godinu, vraća se 0 za sve iznose "
-        "i `months_included = 0`."
-    ),
     operation_id="tax_yearly_preview",
-    responses={
-        200: {
-            "description": "Uspješan preview godišnjeg poreznog obračuna.",
-        },
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
-                "Primjer poruke: `Missing X-Tenant-Code header`."
-            ),
-            "content": {
-                "application/json": {
-                    "example": {"detail": "Missing X-Tenant-Code header"}
-                }
-            },
-        },
-        422: {
-            "description": (
-                "Validation error – npr. godina van opsega ili pogrešan format "
-                "query parametara."
-            )
-        },
-    },
+    responses={400: {"model": ErrorResponse}},
 )
 def yearly_tax_preview(
-    year: int = Query(
-        ...,
-        ge=2000,
-        le=2100,
-        description="Godina za koju se traži godišnji obračun.",
-        examples=[2025],
-    ),
-    x_tenant_code: Optional[str] = Header(
-        None,
-        alias="X-Tenant-Code",
-        description=(
-            "Šifra tenenta za kojeg se računa godišnji obračun.\n"
-            "Primjer: `frizer-mika`, `t-demo`."
-        ),
-    ),
+    year: int = Query(..., ge=2000, le=2100),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
     db: Session = Depends(_get_session_dep),
 ) -> YearlyTaxSummaryRead:
-    """
-    Godišnji porezni obračun na osnovu finalizovanih mjesečnih rezultata.
-
-    Ne radi novi proračun po formuli, već **sabira** već izračunate
-    mjesečne vrijednosti iz `tax_monthly_results` (DUMMY model).
-    """
     tenant = _require_tenant(x_tenant_code)
 
     rows = (
@@ -1127,7 +977,6 @@ def yearly_tax_preview(
     )
 
     if not rows:
-        # Nema finalizovanih mjeseci – vraćamo "prazan" godišnji obračun
         return YearlyTaxSummaryRead(
             year=year,
             tenant_code=tenant,
@@ -1172,113 +1021,22 @@ def yearly_tax_preview(
 
 
 # ======================================================
-#  GODIŠNJI OBRAЧUN – FINALIZE
+#  GODIŠNJI OBRAČUN – FINALIZE
 # ======================================================
 @router.post(
     "/tax/yearly/finalize",
     response_model=YearlyTaxSummaryRead,
     summary="Finalizacija godišnjeg poreznog obračuna i zapis u bazu",
-    description=(
-        "Finalizuje godišnji porezni obračun za jednog tenenta i trajno ga upisuje "
-        "u tabelu `tax_yearly_results`.\n\n"
-        "Logika:\n"
-        "- pročita sve finalizovane mjesečne rezultate iz `tax_monthly_results` za godinu\n"
-        "- sabere polja (kao `/tax/yearly/preview`)\n"
-        "- upiše rezultat u `tax_yearly_results` kao zaključan zapis\n\n"
-        "Ako za dati `(tenant_code, year)` već postoji zapis u `tax_yearly_results`, "
-        "poziv se odbija sa HTTP 400.\n"
-        "Ako nema nijednog finalizovanog mjeseca za tu godinu, finalize se takođe "
-        "odbija (HTTP 400).\n\n"
-        "Nakon godišnje finalizacije:\n"
-        "- podaci na nivou mjeseca ostaju zaključani (već zaključani mjesečni periodi),\n"
-        "- godišnji rezultat se tretira kao referentni summary za izvještaje i uplate."
-    ),
     operation_id="tax_yearly_finalize",
-    responses={
-        200: {
-            "description": (
-                "Uspješno finalizovan godišnji obračun. Vraća zaključani rezultat "
-                "kao `YearlyTaxSummaryRead`."
-            )
-        },
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "Poslovna greška pri finalizaciji.\n\n"
-                "Tipični scenariji:\n"
-                "- nedostaje `X-Tenant-Code` header → `Missing X-Tenant-Code header`\n"
-                "- godišnji rezultat je već finalizovan → "
-                "`Yearly tax result for this year is already finalized`\n"
-                "- nema finalizovanih mjesečnih rezultata za godinu → "
-                "`No finalized monthly tax results for this year; cannot finalize yearly tax result`"
-            ),
-            "content": {
-                "application/json": {
-                    "examples": {
-                        "missing_tenant": {
-                            "summary": "Nedostaje X-Tenant-Code",
-                            "value": {"detail": "Missing X-Tenant-Code header"},
-                        },
-                        "already_finalized": {
-                            "summary": "Godišnji rezultat već finalizovan",
-                            "value": {
-                                "detail": "Yearly tax result for this year is already finalized"
-                            },
-                        },
-                        "no_monthly_data": {
-                            "summary": "Nema finalizovanih mjeseci za godinu",
-                            "value": {
-                                "detail": (
-                                    "No finalized monthly tax results for this year; "
-                                    "cannot finalize yearly tax result"
-                                )
-                            },
-                        },
-                    }
-                }
-            },
-        },
-        422: {
-            "description": (
-                "Validation error – npr. godina van opsega ili pogrešan format "
-                "query parametara."
-            )
-        },
-    },
+    responses={400: {"model": ErrorResponse}},
 )
 def yearly_tax_finalize(
-    year: int = Query(
-        ...,
-        ge=2000,
-        le=2100,
-        description="Godina za koju se finalizuje godišnji obračun.",
-        examples=[2025],
-    ),
-    x_tenant_code: Optional[str] = Header(
-        None,
-        alias="X-Tenant-Code",
-        description=(
-            "Šifra tenenta za kojeg finalizujemo godišnji obračun.\n"
-            "Primjer: `frizer-mika`, `t-demo`."
-        ),
-    ),
+    year: int = Query(..., ge=2000, le=2100),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
     db: Session = Depends(_get_session_dep),
 ) -> YearlyTaxSummaryRead:
-    """
-    Finalizuje godišnji porezni obračun za jednog tenenta na osnovu
-    već finalizovanih mjesečnih rezultata.
-
-    1. Provjerava da li već postoji godišnji zapis u `tax_yearly_results`
-       za (tenant_code, year). Ako postoji → 400.
-    2. Učita sve finalizovane mjesece iz `tax_monthly_results` (is_final=True).
-       Ako nema nijednog → 400.
-    3. Sabere vrijednosti (isti algoritam kao `/tax/yearly/preview`).
-    4. Snimi rezultat u `tax_yearly_results` kao finalizovan (`is_final=True`).
-    5. Vrati zbirne vrijednosti kao `YearlyTaxSummaryRead`.
-    """
     tenant = _require_tenant(x_tenant_code)
 
-    # 1) Da li je godina već finalizovana?
     existing = db.execute(
         select(TaxYearlyResult).where(
             TaxYearlyResult.tenant_code == tenant,
@@ -1292,7 +1050,6 @@ def yearly_tax_finalize(
             detail="Yearly tax result for this year is already finalized",
         )
 
-    # 2) Učitavanje finalizovanih mjesečnih rezultata
     monthly_rows = (
         db.execute(
             select(TaxMonthlyResult).where(
@@ -1314,7 +1071,6 @@ def yearly_tax_finalize(
             ),
         )
 
-    # 3) Sabiranje vrijednosti (isti princip kao /tax/yearly/preview)
     total_income = Decimal("0.00")
     total_expense = Decimal("0.00")
     taxable_base = Decimal("0.00")
@@ -1333,7 +1089,6 @@ def yearly_tax_finalize(
 
     months_included = len(monthly_rows)
 
-    # 4) Snimanje u tax_yearly_results
     db_obj = TaxYearlyResult(
         tenant_code=tenant,
         year=year,
@@ -1351,7 +1106,6 @@ def yearly_tax_finalize(
     db.commit()
     db.refresh(db_obj)
 
-    # 5) Vraćamo YearlyTaxSummaryRead
     return YearlyTaxSummaryRead(
         year=year,
         tenant_code=tenant,
@@ -1372,41 +1126,12 @@ def yearly_tax_finalize(
 @router.get(
     "/tax/yearly/export",
     summary="Export godišnjeg poreznog obračuna u CSV",
-    description=(
-        "Exportuje godišnji porezni obračun za jednog tenenta u CSV format, "
-        "na osnovu iste logike kao `/tax/yearly/preview`.\n\n"
-        "CSV sadrži jednu vrstu (jedan red) sa agregiranim vrijednostima za godinu:\n"
-        "columns: year,tenant_code,months_included,total_income,total_expense,"
-        "taxable_base,income_tax,contributions_total,total_due,currency\n\n"
-        "Idealan je za slanje knjigovođi ili uvoz u eksterni sistem."
-    ),
 )
 def export_yearly_tax_csv(
-    year: int = Query(
-        ...,
-        ge=2000,
-        le=2100,
-        description="Godina za koju se exportuje godišnji obračun.",
-        examples=[2025],
-    ),
-    x_tenant_code: Optional[str] = Header(
-        None,
-        alias="X-Tenant-Code",
-        description=(
-            "Šifra tenenta za kojeg se exportuje godišnji obračun.\n"
-            "Primjer: `frizer-mika`, `t-demo`."
-        ),
-    ),
+    year: int = Query(..., ge=2000, le=2100),
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
     db: Session = Depends(_get_session_dep),
 ) -> Response:
-    """
-    CSV export godišnjeg poreznog obračuna.
-
-    Interno poziva `yearly_tax_preview` kako bi koristio istu logiku sabiranja
-    finalizovanih mjesečnih rezultata. Ako nema finalizovanih mjeseci za godinu,
-    dobiće se red sa nulama (months_included=0).
-    """
-    # Reuse iste logike kao /tax/yearly/preview
     summary = yearly_tax_preview(year=year, x_tenant_code=x_tenant_code, db=db)
 
     buffer = io.StringIO()
@@ -1450,7 +1175,5 @@ def export_yearly_tax_csv(
     return Response(
         content=csv_content,
         media_type="text/csv",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"',
-        },
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

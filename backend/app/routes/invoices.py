@@ -1,3 +1,4 @@
+# /home/miso/dev/sp-app/sp-app/backend/app/routes/invoices.py
 from __future__ import annotations
 
 import io
@@ -16,6 +17,7 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from sqlalchemy import select, func, text
+    # NOTE: text is used in _ensure_is_paid_column
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -69,8 +71,6 @@ def _ensure_is_paid_column(db: Session) -> None:
     if _IS_PAID_COLUMN_CHECKED:
         return
 
-    # ALTER TABLE ... ADD COLUMN IF NOT EXISTS je idempotentno:
-    # ako kolona već postoji, ne dešava se ništa.
     db.execute(
         text(
             """
@@ -292,6 +292,7 @@ def list_invoices(
     if date_to is not None:
         stmt = stmt.where(Invoice.issue_date <= date_to)
     if buyer_name:
+        # Za stari API buyer_name tretiramo kao prefiks, zbog testova
         stmt = stmt.where(Invoice.buyer_name.ilike(f"{buyer_name}%"))
 
     stmt = (
@@ -333,6 +334,50 @@ def list_invoices_slash(
 
 
 # ======================================================
+#  HELPER ZA FILTERE NA UI LISTI
+# ======================================================
+
+
+def _build_invoices_base_stmt_for_ui(
+    tenant: str,
+    year: Optional[int],
+    month: Optional[int],
+    unpaid_only: bool,
+    date_from: Optional[date],
+    date_to: Optional[date],
+    buyer_query: Optional[str],
+):
+    """
+    Zajednički helper za /invoices/list i /invoices/export.
+    """
+    base_stmt = select(Invoice).where(Invoice.tenant_code == tenant)
+
+    # Filtriranje po godini/mjesecu (issue_date)
+    if year is not None:
+        base_stmt = base_stmt.where(func.extract("year", Invoice.issue_date) == year)
+    if month is not None:
+        base_stmt = base_stmt.where(func.extract("month", Invoice.issue_date) == month)
+
+    # Filtriranje po periodu (issue_date od/do)
+    if date_from is not None:
+        base_stmt = base_stmt.where(Invoice.issue_date >= date_from)
+    if date_to is not None:
+        base_stmt = base_stmt.where(Invoice.issue_date <= date_to)
+
+    # Filtriranje po kupcu (case-insensitive, substring)
+    if buyer_query:
+        base_stmt = base_stmt.where(
+            Invoice.buyer_name.ilike(f"%{buyer_query}%"),
+        )
+
+    # Filtriranje po statusu plaćanja
+    if unpaid_only:
+        base_stmt = base_stmt.where(Invoice.is_paid.is_(False))
+
+    return base_stmt
+
+
+# ======================================================
 #  LIST FOR UI – /invoices/list
 # ======================================================
 
@@ -348,44 +393,16 @@ def list_invoices_slash(
         "- `items` – jedna stranica podataka za UI tabelu.\n\n"
         "Podržani filteri:\n"
         "- `year` i `month` – filtriranje po `issue_date` godini/mjesecu,\n"
-        "- `unpaid_only` – ako je `true`, vraća samo neplaćene fakture.\n"
+        "- `date_from` / `date_to` – opseg po `issue_date` (uključivo),\n"
+        "- `buyer_query` – filter po nazivu kupca (substring, case-insensitive),\n"
+        "- `unpaid_only` – ako je `true`, vraća samo neplaćene fakture.\n\n"
+        "Paginacija:\n"
+        "- Može se koristiti `page` + `page_size` (1-based), ili direktno `limit` + `offset`.\n"
+        "- Ako je `page` zadat, `limit`/`offset` se ignorišu."
     ),
     responses={
         200: {
             "description": "Uspješno vraćena lista faktura za UI tabelu.",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "total": 2,
-                        "items": [
-                            {
-                                "id": 1,
-                                "invoice_number": "2025-001",
-                                "issue_date": "2025-11-21",
-                                "due_date": "2025-12-21",
-                                "buyer_name": "Frizer Salon Milica",
-                                "buyer_address": "Kralja Petra I 12, Banja Luka",
-                                "total_base": "25.00",
-                                "total_vat": "4.25",
-                                "total_amount": "29.25",
-                                "is_paid": False,
-                            },
-                            {
-                                "id": 2,
-                                "invoice_number": "2025-002",
-                                "issue_date": "2025-11-25",
-                                "due_date": None,
-                                "buyer_name": "Salon Ljepote Ana",
-                                "buyer_address": None,
-                                "total_base": "40.00",
-                                "total_vat": "6.80",
-                                "total_amount": "46.80",
-                                "is_paid": True,
-                            },
-                        ],
-                    }
-                }
-            },
         },
         400: {
             "description": "Nedostaje `X-Tenant-Code` header ili su filter parametri nevalidni.",
@@ -404,33 +421,169 @@ def list_invoices_ui(
         False,
         description="Ako je True, vraća samo neplaćene fakture.",
     ),
-    limit: int = Query(20, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    date_from: Optional[date] = Query(
+        None,
+        description="Početni datum opsega (issue_date >= date_from).",
+    ),
+    date_to: Optional[date] = Query(
+        None,
+        description="Završni datum opsega (issue_date <= date_to).",
+    ),
+    buyer_query: Optional[str] = Query(
+        None,
+        description="Filter po nazivu kupca (case-insensitive, substring).",
+    ),
+    page: Optional[int] = Query(
+        None,
+        ge=1,
+        description="Broj stranice (1-based). Ako je zadat, koristi se zajedno sa `page_size`.",
+    ),
+    page_size: Optional[int] = Query(
+        None,
+        ge=1,
+        le=200,
+        description="Broj stavki po stranici kada se koristi `page`.",
+    ),
+    limit: int = Query(
+        20,
+        ge=1,
+        le=200,
+        description="Maksimalan broj faktura u odgovoru (koristi se ako `page` nije zadat).",
+    ),
+    offset: int = Query(
+        0,
+        ge=0,
+        description="Offset za rezultate (koristi se ako `page` nije zadat).",
+    ),
 ) -> InvoiceListResponse:
     tenant = _require_tenant(x_tenant_code)
 
     _ensure_is_paid_column(db)
 
-    base_stmt = select(Invoice).where(Invoice.tenant_code == tenant)
+    base_stmt = _build_invoices_base_stmt_for_ui(
+        tenant=tenant,
+        year=year,
+        month=month,
+        unpaid_only=unpaid_only,
+        date_from=date_from,
+        date_to=date_to,
+        buyer_query=buyer_query,
+    )
 
-    if year is not None:
-        base_stmt = base_stmt.where(func.extract("year", Invoice.issue_date) == year)
-    if month is not None:
-        base_stmt = base_stmt.where(func.extract("month", Invoice.issue_date) == month)
-    if unpaid_only:
-        base_stmt = base_stmt.where(Invoice.is_paid.is_(False))
-
+    # total
     count_stmt = select(func.count()).select_from(base_stmt.subquery())
     total: int = db.execute(count_stmt).scalar_one()
 
+    # paginacija – ako je zadat page, on ima prednost nad limit/offset
+    if page is not None:
+        effective_page_size = page_size or limit
+        if effective_page_size <= 0:
+            effective_page_size = 20
+        query_limit = effective_page_size
+        query_offset = (page - 1) * effective_page_size
+    else:
+        query_limit = limit
+        query_offset = offset
+
     items_stmt = (
         base_stmt.order_by(Invoice.issue_date.desc(), Invoice.id.desc())
-        .limit(limit)
-        .offset(offset)
+        .limit(query_limit)
+        .offset(query_offset)
     )
     rows = db.execute(items_stmt).scalars().all()
 
     return InvoiceListResponse(total=total, items=list(rows))
+
+
+# ======================================================
+#  EXPORT LISTE – /invoices/export
+# ======================================================
+
+
+@router.get(
+    "/invoices/export",
+    summary="Export liste izlaznih faktura (Excel/CSV)",
+    response_class=StreamingResponse,
+    description=(
+        "Exportuje listu izlaznih faktura za zadatog tenanta u CSV format koji "
+        "se može direktno otvoriti u Excel-u.\n\n"
+        "Podržani filteri su isti kao i za `/invoices/list`:\n"
+        "- `year`, `month`, `date_from`, `date_to`, `buyer_query`, `unpaid_only`.\n\n"
+        "Napomena: trenutno je podržan format `excel` (CSV, delimiter `;`)."
+    ),
+)
+def export_invoices(
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+    ),
+    year: Optional[int] = Query(None, ge=1900, le=2100),
+    month: Optional[int] = Query(None, ge=1, le=12),
+    unpaid_only: bool = Query(False),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    buyer_query: Optional[str] = Query(None),
+    format: str = Query(
+        "excel",
+        pattern="^(excel|csv)$",
+        description="Format eksportovanog fajla. Trenutno podržano: 'excel' (CSV kompatibilan sa Excelom).",
+    ),
+) -> StreamingResponse:
+    tenant = _require_tenant(x_tenant_code)
+    _ensure_is_paid_column(db)
+
+    base_stmt = _build_invoices_base_stmt_for_ui(
+        tenant=tenant,
+        year=year,
+        month=month,
+        unpaid_only=unpaid_only,
+        date_from=date_from,
+        date_to=date_to,
+        buyer_query=buyer_query,
+    )
+
+    base_stmt = base_stmt.order_by(Invoice.issue_date.desc(), Invoice.id.desc())
+    rows: List[Invoice] = db.execute(base_stmt).scalars().all()
+
+    # Priprema CSV sadržaja (Excel-friendly, delimiter ';', UTF-8 sa BOM)
+    output = io.StringIO()
+    # Header red
+    output.write(
+        "Broj fakture;Datum izdavanja;Rok plaćanja;Kupac;Ukupan iznos;Plaćena\n"
+    )
+
+    for inv in rows:
+        invoice_number = inv.invoice_number or ""
+        issue_date_str = inv.issue_date.isoformat() if inv.issue_date else ""
+        due_date_str = inv.due_date.isoformat() if inv.due_date else ""
+        buyer_name = inv.buyer_name or ""
+        total_amount = f"{inv.total_amount:.2f}" if inv.total_amount is not None else ""
+        is_paid_str = "DA" if inv.is_paid else "NE"
+
+        line = (
+            f"{invoice_number};"
+            f"{issue_date_str};"
+            f"{due_date_str};"
+            f"{buyer_name};"
+            f"{total_amount};"
+            f"{is_paid_str}\n"
+        )
+        output.write(line)
+
+    csv_bytes = ("\ufeff" + output.getvalue()).encode("utf-8")  # BOM za Excel
+    buffer = io.BytesIO(csv_bytes)
+
+    filename = "invoices-export.csv"
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+    }
+
+    return StreamingResponse(
+        buffer,
+        media_type="text/csv; charset=utf-8",
+        headers=headers,
+    )
 
 
 # ======================================================
@@ -592,7 +745,7 @@ def delete_invoice(
 
 
 # ======================================================
-#  PDF EXPORT
+#  PDF EXPORT – pojedinačna faktura
 # ======================================================
 
 

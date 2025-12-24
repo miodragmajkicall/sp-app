@@ -20,6 +20,7 @@ venv/
 # Env files
 .env
 .env.*
+!.env.example
 
 # Build/artifacts
 dist/
@@ -29,8 +30,8 @@ build/
 # Alembic backup
 alembic.ini.bak
 
-# Env files
-.env
-.env.*
-!.env.example
+# Invoice attachments storage
 backend/data/invoice_attachments/
+
+# Local test artifacts
+inspection_test.zip

@@ -16,6 +16,11 @@ from app.routes import (
     dashboard,
     sam,
     reports,
+    kpr,
+    promet,
+    export,
+    settings,
+    admin_constants,
 )
 from app.models import FinalizedPeriodModificationError
 
@@ -58,8 +63,20 @@ tags_metadata = [
         "description": "SAM blok – pregled prihoda, rashoda i obaveza.",
     },
     {
+        "name": "kpr",
+        "description": "Knjiga prihoda i rashoda (KPR) – objedinjena evidencija svih prihoda i rashoda.",
+    },
+    {
+        "name": "promet",
+        "description": "Knjiga prometa (KP-1042) – evidencija bezgotovinskog prometa iz keš knjige.",
+    },
+    {
         "name": "reports",
         "description": "Finansijski izvještaji i pregledi (cashflow, P&L, itd.).",
+    },
+    {
+        "name": "admin",
+        "description": "Admin rute (globalne konstante/parametri sistema).",
     },
     {
         "name": "meta",
@@ -173,5 +190,20 @@ app.include_router(dashboard.router)
 # SAM blok (sumarni financijski pregled)
 app.include_router(sam.router)
 
+# KPR – knjiga prihoda i rashoda
+app.include_router(kpr.router)
+
+# Promet – Knjiga prometa (KP-1042)
+app.include_router(promet.router)
+
 # Reports (godišnji cashflow, itd.)
 app.include_router(reports.router)
+
+# Export (inspekcija)
+app.include_router(export.router)
+
+# Settings (core podešavanja korisnika)
+app.include_router(settings.router)
+
+# Admin constants (globalni parametri)
+app.include_router(admin_constants.router)

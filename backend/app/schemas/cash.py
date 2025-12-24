@@ -44,6 +44,29 @@ class CashEntryCreate(BaseModel):
         description="Iznos unosa (pozitivan decimalni broj, npr. 100.00).",
         examples=["100.00"],
     )
+
+    account: Literal["cash", "bank"] = Field(
+        default="cash",
+        description=(
+            "Vrsta računa:\n"
+            "- `cash` → kasa (gotovina)\n"
+            "- `bank` → tekući račun"
+        ),
+        examples=["cash"],
+    )
+
+    # Opcionalna veza na izlaznu/ulaznu fakturu
+    invoice_id: Optional[int] = Field(
+        default=None,
+        description="ID izlazne fakture (invoices.id) ako je unos vezan za izlaznu fakturu.",
+        examples=[101],
+    )
+    input_invoice_id: Optional[int] = Field(
+        default=None,
+        description="ID ulazne fakture (input_invoices.id) ako je unos vezan za ulaznu fakturu.",
+        examples=[55],
+    )
+
     # Klijentu izlažemo 'note', ali u bazi je 'description'.
     description: Optional[str] = Field(
         default=None,
@@ -86,6 +109,28 @@ class CashEntryUpdate(BaseModel):
         description="Ažurirani iznos (ako se mijenja, mora biti > 0).",
         examples=["250.50"],
     )
+
+    account: Optional[Literal["cash", "bank"]] = Field(
+        default=None,
+        description=(
+            "Ažurirana vrsta računa (ako se mijenja):\n"
+            "- `cash` → kasa (gotovina)\n"
+            "- `bank` → tekući račun"
+        ),
+        examples=["bank"],
+    )
+
+    invoice_id: Optional[int] = Field(
+        default=None,
+        description="Ažurirani ID izlazne fakture (ako se mijenja).",
+        examples=[101],
+    )
+    input_invoice_id: Optional[int] = Field(
+        default=None,
+        description="Ažurirani ID ulazne fakture (ako se mijenja).",
+        examples=[55],
+    )
+
     description: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("note", "description"),
@@ -110,7 +155,6 @@ class CashEntryRead(BaseModel):
 
     model_config = BaseConfig
 
-    # >>> VAŽNO: id je sada INT (BIGINT u bazi)
     id: int = Field(
         ...,
         description="Primarni ključ zapisa (autoincrement BIGINT u bazi).",
@@ -135,6 +179,23 @@ class CashEntryRead(BaseModel):
         description="Iznos unosa (pozitivan decimalni broj).",
         examples=["100.00"],
     )
+
+    account: Literal["cash", "bank"] = Field(
+        ...,
+        description="Vrsta računa: `cash` (kasa) ili `bank` (tekući račun).",
+        examples=["cash"],
+    )
+    invoice_id: Optional[int] = Field(
+        default=None,
+        description="ID izlazne fakture (ako postoji veza).",
+        examples=[101],
+    )
+    input_invoice_id: Optional[int] = Field(
+        default=None,
+        description="ID ulazne fakture (ako postoji veza).",
+        examples=[55],
+    )
+
     # prema klijentu vraćamo 'note', interno je 'description'
     description: Optional[str] = Field(
         default=None,
@@ -152,8 +213,6 @@ class CashEntryRead(BaseModel):
 class CashSummaryRead(BaseModel):
     """
     Izlazni model za sumarni prikaz prihoda i rashoda.
-
-    Tipičan odgovor za rutu npr. `/cash/summary` za zadani period i tenant.
     """
 
     model_config = BaseConfig
@@ -183,13 +242,6 @@ class CashSummaryRead(BaseModel):
 class CashRowItem(BaseModel):
     """
     Pojedinačni red za tabelarni prikaz u UI-ju (lista cash unosa).
-
-    Svaki red sadrži samo ključna polja koja su potrebna za tabelu:
-    - datum,
-    - vrstu (income/expense),
-    - iznos,
-    - napomenu,
-    - vrijeme kreiranja (created_at).
     """
 
     model_config = BaseConfig
@@ -214,6 +266,23 @@ class CashRowItem(BaseModel):
         description="Iznos unosa (pozitivan decimalni broj).",
         examples=["100.00"],
     )
+
+    account: Literal["cash", "bank"] = Field(
+        ...,
+        description="Vrsta računa: `cash` (kasa) ili `bank` (tekući račun).",
+        examples=["cash"],
+    )
+    invoice_id: Optional[int] = Field(
+        default=None,
+        description="ID izlazne fakture (ako postoji veza).",
+        examples=[101],
+    )
+    input_invoice_id: Optional[int] = Field(
+        default=None,
+        description="ID ulazne fakture (ako postoji veza).",
+        examples=[55],
+    )
+
     # prema klijentu vraćamo 'note', interno je 'description'
     description: Optional[str] = Field(
         default=None,

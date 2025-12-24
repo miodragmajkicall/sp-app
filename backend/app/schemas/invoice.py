@@ -107,6 +107,10 @@ class InvoiceBase(BaseModel):
         None,
         description="Adresa kupca (opcionalno).",
     )
+    note: Optional[str] = Field(
+        None,
+        description="Napomena koja će se prikazati na fakturi (opcionalno).",
+    )
 
 
 class InvoiceCreate(InvoiceBase):
@@ -122,6 +126,7 @@ class InvoiceCreate(InvoiceBase):
                 "due_date": "2025-12-21",
                 "buyer_name": "Frizer Salon Milica",
                 "buyer_address": "Kralja Petra I 12, Banja Luka",
+                "note": "Napomena na fakturi (opciono).",
                 "items": [
                     {
                         "description": "Muško šišanje",

@@ -51,6 +51,8 @@ def _ensure_tenant(db, tenant_code: str) -> None:
                 row[col.name] = 1.0
             elif python_type is Decimal:
                 row[col.name] = Decimal("1.00")
+            elif python_type is bool:
+                row[col.name] = False
             elif python_type.__name__ == "date":
                 row[col.name] = date(2025, 1, 1)
             else:
@@ -94,6 +96,8 @@ def _insert_invoice_january_2025(
                 row[col.name] = 1.0
             elif python_type is Decimal:
                 row[col.name] = Decimal("1.00")
+            elif python_type is bool:
+                row[col.name] = False
             elif python_type.__name__ == "date":
                 row[col.name] = date(2025, 1, 1)
             else:
@@ -141,6 +145,8 @@ def _insert_cash_entry_january_2025(
                 row[col.name] = 1.0
             elif python_type is Decimal:
                 row[col.name] = Decimal("1.00")
+            elif python_type is bool:
+                row[col.name] = False
             elif python_type.__name__ == "date":
                 row[col.name] = date(2025, 1, 1)
             else:
