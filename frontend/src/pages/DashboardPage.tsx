@@ -1,8 +1,11 @@
+// /home/miso/dev/sp-app/sp-app/frontend/src/pages/DashboardPage.tsx
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { apiClient, getApiBaseUrl } from "../services/apiClient";
+import { apiClient } from "../services/apiClient";
 import { fetchInvoicesList } from "../services/invoicesApi";
 import { fetchInputInvoicesList } from "../services/inputInvoicesApi";
+import { getTaxProfileSettings } from "../services/settingsApi";
+import type { TaxProfileSettingsRead } from "../types/settings";
 
 interface MonthlyCashSummary {
   year: number;
@@ -117,27 +120,27 @@ function buildAiComment(
     incomePct === null
       ? null
       : incomePct > 5
-      ? `Prihodi su veći za oko ${incomePct.toFixed(
-          1,
-        )}% u odnosu na prošli mjesec.`
-      : incomePct < -5
-      ? `Prihodi su manji za oko ${Math.abs(incomePct).toFixed(
-          1,
-        )}% u odnosu na prošli mjesec.`
-      : "Prihodi su na sličnom nivou kao prošli mjesec.";
+        ? `Prihodi su veći za oko ${incomePct.toFixed(
+            1,
+          )}% u odnosu na prošli mjesec.`
+        : incomePct < -5
+          ? `Prihodi su manji za oko ${Math.abs(incomePct).toFixed(
+              1,
+            )}% u odnosu na prošli mjesec.`
+          : "Prihodi su na sličnom nivou kao prošli mjesec.";
 
   const expensePart =
     expensePct === null
       ? null
       : expensePct > 5
-      ? `Troškovi su veći za oko ${expensePct.toFixed(
-          1,
-        )}% u odnosu na prošli mjesec.`
-      : expensePct < -5
-      ? `Troškovi su manji za oko ${Math.abs(expensePct).toFixed(
-          1,
-        )}% u odnosu na prošli mjesec.`
-      : "Troškovi su na sličnom nivou kao prošli mjesec.";
+        ? `Troškovi su veći za oko ${expensePct.toFixed(
+            1,
+          )}% u odnosu na prošli mjesec.`
+        : expensePct < -5
+          ? `Troškovi su manji za oko ${Math.abs(expensePct).toFixed(
+              1,
+            )}% u odnosu na prošli mjesec.`
+          : "Troškovi su na sličnom nivou kao prošli mjesec.";
 
   let netPart: string;
   if (curNet > 0 && netDelta >= 0) {
@@ -169,8 +172,26 @@ function buildAiComment(
 }
 
 export default function DashboardPage() {
-  const apiUrl = getApiBaseUrl();
   const navigate = useNavigate();
+
+  // TAX PROFILE (Settings) — za “Doprinosi (mjesečno – plan)”
+  const taxProfileQuery = useQuery<TaxProfileSettingsRead, Error>({
+    queryKey: ["settings", "tax"],
+    queryFn: getTaxProfileSettings,
+    staleTime: 60_000,
+  });
+
+  const manualPension = taxProfileQuery.data?.monthly_pension ?? null;
+  const manualHealth = taxProfileQuery.data?.monthly_health ?? null;
+  const manualUnemployment = taxProfileQuery.data?.monthly_unemployment ?? null;
+
+  const hasAnyManualContrib =
+    manualPension != null || manualHealth != null || manualUnemployment != null;
+
+  const contributionsPlan =
+    hasAnyManualContrib
+      ? toNumber(manualPension) + toNumber(manualHealth) + toNumber(manualUnemployment)
+      : null;
 
   // 1) Trenutni mjesečni dashboard
   const {
@@ -217,7 +238,13 @@ export default function DashboardPage() {
 
   // 4) Lista ulaznih faktura za TEKUĆI mjesec (za kategorije + top dobavljače + zadnjih 5)
   const { data: inputInvoicesListData } = useQuery({
-    queryKey: ["dashboard", "input-invoices", "current-month", data?.year, data?.month],
+    queryKey: [
+      "dashboard",
+      "input-invoices",
+      "current-month",
+      data?.year,
+      data?.month,
+    ],
     enabled: !!data,
     queryFn: async () => {
       if (!data) {
@@ -234,27 +261,29 @@ export default function DashboardPage() {
   });
 
   // 5) Yearly cash by month – za graf prihoda po mjesecima
-  const { data: yearlyCashByMonth } = useQuery<(DashboardMonthlyResponse | null)[]>({
-    queryKey: ["dashboard", "cash", "yearly-by-month", data?.year],
-    enabled: !!data,
-    queryFn: async () => {
-      if (!data) {
-        throw new Error("Missing dashboard data");
-      }
-      const year = data.year;
-      const months = Array.from({ length: 12 }, (_, idx) => idx + 1);
-      const results = await Promise.all(
-        months.map((m) =>
-          apiClient
-            .get<DashboardMonthlyResponse>(`/dashboard/monthly/${year}/${m}`)
-            .then((res) => res.data)
-            .catch(() => null),
-        ),
-      );
-      return results;
+  const { data: yearlyCashByMonth } = useQuery<(DashboardMonthlyResponse | null)[]>(
+    {
+      queryKey: ["dashboard", "cash", "yearly-by-month", data?.year],
+      enabled: !!data,
+      queryFn: async () => {
+        if (!data) {
+          throw new Error("Missing dashboard data");
+        }
+        const year = data.year;
+        const months = Array.from({ length: 12 }, (_, idx) => idx + 1);
+        const results = await Promise.all(
+          months.map((m) =>
+            apiClient
+              .get<DashboardMonthlyResponse>(`/dashboard/monthly/${year}/${m}`)
+              .then((res) => res.data)
+              .catch(() => null),
+          ),
+        );
+        return results;
+      },
+      staleTime: 60_000,
     },
-    staleTime: 60_000,
-  });
+  );
 
   const monthLabel = (() => {
     if (!data) return "";
@@ -273,16 +302,19 @@ export default function DashboardPage() {
   const invoicesCount = data?.invoices?.invoices_count ?? 0;
   const invoicesTotal = toNumber(data?.invoices?.total_amount);
 
-  const taxTotal = toNumber(data?.tax?.total_due);
-  const hasTaxResult = data?.tax?.has_result ?? false;
-  const isTaxFinal = data?.tax?.is_final ?? false;
-
-  const samTotal = toNumber(data?.sam?.total_due);
-  const hasSamResult = data?.sam?.has_result ?? false;
-  const isSamFinal = data?.sam?.is_final ?? false;
+  const inputInvoicesCount = inputInvoicesListData?.items?.length ?? 0;
+  const inputInvoicesTotal =
+    inputInvoicesListData?.items?.reduce((acc: number, inv: any) => {
+      const amount = inv?.total_amount ?? 0;
+      return acc + (Number.isFinite(amount) ? amount : 0);
+    }, 0) ?? 0;
 
   const netClass =
-    cashNet > 0 ? "text-emerald-600" : cashNet < 0 ? "text-rose-600" : "text-slate-700";
+    cashNet > 0
+      ? "text-emerald-600"
+      : cashNet < 0
+        ? "text-rose-600"
+        : "text-slate-700";
 
   // Zadnjih 5 izlaznih i ulaznih faktura
   const lastOutgoingInvoices = invoicesListData?.items.slice(0, 5) ?? [];
@@ -290,7 +322,7 @@ export default function DashboardPage() {
 
   // Neplaćene fakture starije od 30 dana
   const overdueUnpaidCount =
-    invoicesListData?.items.filter((inv) => {
+    invoicesListData?.items.filter((inv: any) => {
       if (!inv.due_date) return false;
       if (inv.is_paid) return false;
       const due = new Date(inv.due_date);
@@ -314,22 +346,25 @@ export default function DashboardPage() {
 
   const maxIncomeValue = Math.max(...incomeSeries.map((i) => Math.abs(i.value)), 0);
 
-  // Graf rashoda po "kategorijama" – ovdje koristimo dobavljača kao kategoriju
-  const expenseByCategoryMap = new Map<string, number>();
+  // Graf rashoda po dobavljačima (privremeno “kategorije”)
+  const expenseBySupplierMap = new Map<string, number>();
   if (inputInvoicesListData) {
     for (const inv of inputInvoicesListData.items) {
       const name = inv.supplier_name || "Ostalo";
       const amount = inv.total_amount ?? 0;
-      expenseByCategoryMap.set(name, (expenseByCategoryMap.get(name) ?? 0) + amount);
+      expenseBySupplierMap.set(name, (expenseBySupplierMap.get(name) ?? 0) + amount);
     }
   }
 
-  const expenseCategories = Array.from(expenseByCategoryMap.entries())
+  const expenseSuppliers = Array.from(expenseBySupplierMap.entries())
     .map(([name, total]) => ({ name, total }))
     .sort((a, b) => b.total - a.total)
     .slice(0, 6);
 
-  const maxExpenseCategory = Math.max(...expenseCategories.map((c) => Math.abs(c.total)), 0);
+  const maxExpenseSupplier = Math.max(
+    ...expenseSuppliers.map((c) => Math.abs(c.total)),
+    0,
+  );
 
   // Top kupci (po ukupnom prometu)
   const topCustomers = (() => {
@@ -363,46 +398,24 @@ export default function DashboardPage() {
       .slice(0, 5);
   })();
 
-  // Brza upozorenja / info badge-ovi
-  const alerts: { type: "warning" | "info"; text: string }[] = [];
-
-  if (hasTaxResult && !isTaxFinal) {
-    alerts.push({
-      type: "warning",
-      text: "Porezi za trenutni mjesec nisu finalizovani – otvori TAX ekran i izvrši finalizaciju.",
-    });
-  } else if (!hasTaxResult) {
-    alerts.push({
-      type: "info",
-      text: "Nema obračuna poreza za trenutni mjesec – pokreni auto obračun u TAX modulu.",
-    });
-  }
-
-  if (hasSamResult && !isSamFinal) {
-    alerts.push({
-      type: "warning",
-      text: "SAM doprinosi za trenutni mjesec nisu finalizovani.",
-    });
-  } else if (!hasSamResult) {
-    alerts.push({
-      type: "info",
-      text: "Nema SAM obračuna za trenutni mjesec – podaci će se pojaviti nakon obračuna u TAX / SAM modulu.",
-    });
-  }
+  // Poruke asistenta (bez TAX/SAM “dev” koncepta u UI)
+  const messages: { type: "warning" | "info"; text: string }[] = [];
 
   if (cashNet < 0) {
-    alerts.push({
+    messages.push({
       type: "warning",
-      text: "Neto kretanje gotovine za trenutni mjesec je NEGATIVNO – rashodi su veći od prihoda.",
+      text: "Neto kretanje gotovine za trenutni mjesec je negativno – rashodi su veći od prihoda.",
     });
   }
 
   if (overdueUnpaidCount > 0) {
-    alerts.push({
+    messages.push({
       type: "warning",
       text: `Imaš ${overdueUnpaidCount} neplaćenih izlaznih faktura sa rokom dospijeća starijim od 30 dana.`,
     });
   }
+
+  const aiComment = buildAiComment(data, previousMonthlyData);
 
   // Podaci za mini graf kase (3 stubića: prihodi, rashodi, neto)
   const cashChartItems = [
@@ -410,66 +423,41 @@ export default function DashboardPage() {
       key: "Prihodi",
       value: cashIncome,
       colorClass: "bg-emerald-500",
-      hint: "Ukupan priliv gotovine za mjesec",
     },
     {
       key: "Rashodi",
       value: cashExpense,
       colorClass: "bg-rose-500",
-      hint: "Ukupan odliv gotovine za mjesec",
     },
     {
       key: "Neto",
       value: cashNet,
       colorClass: cashNet >= 0 ? "bg-sky-500" : "bg-slate-700",
-      hint: "Prihodi - rashodi za mjesec",
     },
   ];
 
   const maxCashAbs = Math.max(...cashChartItems.map((i) => Math.abs(i.value)), 0);
 
-  const aiComment = buildAiComment(data, previousMonthlyData);
-
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <h2 className="text-2xl font-semibold text-slate-900 tracking-tight">
-              Kontrolna tabla – mjesečni pregled
-            </h2>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-2xl font-semibold text-slate-900 tracking-tight">
+            Kontrolna tabla – mjesečni pregled
+          </h2>
+        </div>
 
-            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 mt-2">
-              <span>
-                API: <span className="font-mono">{apiUrl}</span>
-              </span>
-
-              {data && (
-                <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1">
-                  <span className="text-[10px] uppercase tracking-wide text-slate-500">
-                    Period
-                  </span>
-                  <span className="font-semibold text-slate-700">
-                    {monthLabel} • tenant{" "}
-                    <span className="font-mono">{data.tenant_code}</span>
-                  </span>
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* QUICK ACTIONS */}
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => navigate("/export/inspection")}
-              className="inline-flex items-center justify-center rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
-              title="Kreiraj ZIP paket (PDF-ovi) za inspekciju"
-            >
-              Izvoz za inspekciju
-            </button>
-          </div>
+        {/* QUICK ACTIONS */}
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => navigate("/export/inspection")}
+            className="inline-flex items-center justify-center rounded-md bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-rose-700 focus:outline-none focus:ring-2 focus:ring-rose-500/40"
+            title="Kreiraj paket dokumenata za inspekciju"
+          >
+            Izvoz za inspekciju
+          </button>
         </div>
       </div>
 
@@ -485,25 +473,28 @@ export default function DashboardPage() {
         </p>
       )}
 
-      {/* SUMMARY tekućeg mjeseca */}
+      {/* Sumarni pregled tekućeg mjeseca */}
       {!isLoading && !isError && data && (
         <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4">
           <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide mb-2">
-            Summary za tekući mjesec
+            Sumarni pregled za tekući mjesec
           </p>
-          <div className="grid gap-4 md:grid-cols-5 text-xs text-slate-700">
+
+          <div className="grid gap-4 md:grid-cols-4 text-xs text-slate-700">
             <div>
               <p className="text-[11px] text-slate-500">Ukupni prihodi</p>
               <p className="text-sm font-semibold text-emerald-600">
                 {formatAmount(cashIncome)} KM
               </p>
             </div>
+
             <div>
               <p className="text-[11px] text-slate-500">Ukupni rashodi</p>
               <p className="text-sm font-semibold text-rose-600">
                 {formatAmount(cashExpense)} KM
               </p>
             </div>
+
             <div>
               <p className="text-[11px] text-slate-500">
                 Rezultat (profit / gubitak)
@@ -512,73 +503,91 @@ export default function DashboardPage() {
                 {formatAmount(cashNet)} KM
               </p>
             </div>
+
             <div>
-              <p className="text-[11px] text-slate-500">Procijenjeni porez</p>
-              <p className="text-sm font-semibold text-slate-900">
-                {formatAmount(taxTotal)} KM
+              <p className="text-[11px] text-slate-500">
+                Doprinosi (mjesečno – plan)
               </p>
-              <p className="text-[10px] text-slate-500">
-                Paušal / 2% u skladu sa TAX modulom.
-              </p>
-            </div>
-            <div>
-              <p className="text-[11px] text-slate-500">Doprinosi (mjesečno)</p>
-              <p className="text-sm font-semibold text-slate-900">
-                {formatAmount(samTotal)} KM
-              </p>
-              <p className="text-[10px] text-slate-500">
-                Ukupni SAM doprinosi za ovaj mjesec.
-              </p>
+
+              {contributionsPlan != null ? (
+                <>
+                  <p className="text-sm font-semibold text-slate-900">
+                    {formatAmount(contributionsPlan)} KM
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    Prema unosu u Postavkama (Poreski profil).
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="text-sm font-semibold text-slate-900">—</p>
+                  <div className="mt-1 rounded-md border border-rose-200 bg-rose-50 px-2 py-1.5">
+                    <p className="text-[11px] font-medium text-rose-700">
+                      Nije podešeno.
+                    </p>
+                    <p className="text-[11px] text-rose-700/90">
+                      U Postavkama izaberi entitet/režim i unesi potrebne podatke
+                      o načinu poslovanja (mjesečne doprinose).
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => navigate("/settings")}
+                      className="mt-2 inline-flex items-center justify-center rounded-md bg-rose-600 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-rose-700"
+                    >
+                      Otvori Postavke
+                    </button>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         </div>
       )}
 
-      {/* Upozorenja / brzi info badge-ovi */}
-      {!isLoading && !isError && data && alerts.length > 0 && (
-        <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 space-y-2">
-          <p className="text-[11px] font-semibold text-amber-800 uppercase tracking-wide">
-            Brza upozorenja za trenutni mjesec
-          </p>
-          <ul className="space-y-1">
-            {alerts.map((a, idx) => (
-              <li
-                key={idx}
-                className="text-[11px] flex items-start gap-2 text-slate-800"
-              >
-                <span
-                  className={
-                    "mt-0.5 inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] " +
-                    (a.type === "warning"
-                      ? "bg-amber-500 text-white"
-                      : "bg-slate-400 text-white")
-                  }
-                >
-                  {a.type === "warning" ? "!" : "i"}
-                </span>
-                <span>{a.text}</span>
-              </li>
-            ))}
-          </ul>
-          <p className="text-[10px] text-amber-900/80 mt-1">
-            Ova lista se generiše automatski na osnovu stanja kase, faktura i TAX
-            / SAM modula za aktivni mjesec.
-          </p>
-        </div>
-      )}
-
-      {/* AI komentar mjeseca (Premium dodatak) */}
+      {/* Asistent – status mjeseca (spojeno: upozorenja + komentar) */}
       {!isLoading && !isError && data && (
-        <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-2">
-          <div className="flex items-center justify-between">
-            <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
-              AI komentar mjeseca (Premium – beta)
+        <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
+          <div className="flex items-start justify-between gap-4">
+            <div className="min-w-0">
+              <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+                Asistent – status mjeseca
+              </p>
+              <p className="text-xs text-slate-500 mt-1">
+                {monthLabel || `${data.year}-${data.month}`}
+              </p>
+            </div>
+          </div>
+
+          {messages.length > 0 && (
+            <ul className="space-y-2">
+              {messages.map((m, idx) => (
+                <li
+                  key={idx}
+                  className="flex items-start gap-2 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2"
+                >
+                  <span
+                    className={
+                      "mt-0.5 inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] font-bold " +
+                      (m.type === "warning"
+                        ? "bg-amber-500 text-white"
+                        : "bg-slate-400 text-white")
+                    }
+                    aria-hidden="true"
+                  >
+                    {m.type === "warning" ? "!" : "i"}
+                  </span>
+                  <span className="text-[12px] text-slate-800">{m.text}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="pt-1">
+            <p className="text-sm text-slate-700">
+              {aiComment ??
+                "Nema dovoljno podataka za detaljniji komentar. Kako se gomilaju mjeseci i promet, ovdje ćeš imati kratak sažetak kretanja prihoda, troškova i neto rezultata."}
             </p>
           </div>
-          <p className="text-sm text-slate-700">
-            {aiComment ??
-              "Nema dovoljno podataka za detaljniji komentar. Kako se gomilaju mjeseci i promet, ovdje ćeš imati kratki sažetak kretanja prihoda, troškova i neto rezultata."}
-          </p>
         </div>
       )}
 
@@ -590,48 +599,42 @@ export default function DashboardPage() {
               <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
                 Kretanje gotovine – {monthLabel || `${data.year}-${data.month}`}
               </p>
-              <p className="text-xs text-slate-600">
-                Poređenje ukupnih{" "}
-                <span className="font-semibold">prihoda, rashoda i neta</span>{" "}
-                za aktivni mjesec.
-              </p>
             </div>
           </div>
 
           <div className="mt-2 h-40 flex items-end justify-around gap-6 border border-slate-100 rounded-lg bg-slate-50 px-6 py-4">
             {maxCashAbs === 0 ? (
               <p className="text-[11px] text-slate-500">
-                Nema dovoljno podataka za prikaz grafa – provjeri da li postoje
-                zapisi u kasi za ovaj mjesec.
+                Nema dovoljno podataka za prikaz grafa.
               </p>
             ) : (
               cashChartItems.map((item) => {
                 const heightPercent =
                   maxCashAbs > 0
-                    ? Math.max(8, (Math.abs(item.value) / maxCashAbs) * 100)
+                    ? Math.max(10, (Math.abs(item.value) / maxCashAbs) * 100)
                     : 0;
 
                 return (
                   <div
                     key={item.key}
                     className="flex flex-col items-center justify-end gap-1 h-full"
-                    title={`${item.key}: ${formatAmount(item.value)} KM – ${item.hint}`}
+                    title={`${item.key}: ${formatAmount(item.value)} KM`}
                   >
                     <div className="flex flex-col justify-end w-full h-full">
                       <div
                         className={
-                          "w-7 mx-auto rounded-t-md shadow-sm transition-all " +
+                          "w-8 mx-auto rounded-t-md shadow-sm transition-all " +
                           item.colorClass
                         }
                         style={{
                           height: maxCashAbs > 0 ? `${heightPercent}%` : "0%",
                         }}
-                      ></div>
+                      />
                     </div>
                     <span className="text-[11px] font-medium text-slate-700">
                       {item.key}
                     </span>
-                    <span className="text-[10px] text-slate-600">
+                    <span className="text-[11px] font-semibold text-slate-800">
                       {formatAmount(item.value)} KM
                     </span>
                   </div>
@@ -639,18 +642,12 @@ export default function DashboardPage() {
               })
             )}
           </div>
-
-          <p className="text-[10px] text-slate-500 mt-1">
-            Visina stubića je proporcionalna apsolutnoj vrijednosti (|iznos|).
-            Neto može biti pozitivan ili negativan; boja označava vrstu
-            vrijednosti.
-          </p>
         </div>
       )}
 
-      {/* Glavne kartice */}
+      {/* Glavne kartice (Kasa, Izlazne, Ulazne) */}
       {data && (
-        <div className="grid gap-4 md:grid-cols-4">
+        <div className="grid gap-4 md:grid-cols-3">
           {/* Kasa kartica */}
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col gap-2">
             <p className="text-xs font-medium text-slate-500">
@@ -669,9 +666,6 @@ export default function DashboardPage() {
                 {formatAmount(cashExpense)} KM
               </span>
             </p>
-            <p className="text-[11px] text-slate-400 pt-1">
-              Pozitivan neto iznos znači višak u kasi za ovaj mjesec.
-            </p>
           </div>
 
           {/* Izlazne fakture kartica */}
@@ -679,91 +673,50 @@ export default function DashboardPage() {
             <p className="text-xs font-medium text-slate-500">
               Izlazne fakture – {monthLabel || `${data.year}-${data.month}`}
             </p>
-            <p className="text-2xl font-semibold text-slate-900">{invoicesCount}</p>
+            <p className="text-2xl font-semibold text-slate-900">
+              {invoicesCount}
+            </p>
             <p className="text-xs text-slate-500">
               Ukupan iznos:{" "}
-              <span className="font-semibold">{formatAmount(invoicesTotal)} KM</span>
+              <span className="font-semibold">
+                {formatAmount(invoicesTotal)} KM
+              </span>
             </p>
             <button
               type="button"
               onClick={() => navigate("/invoices")}
-              className="mt-2 inline-flex items-center justify-center rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+              className="mt-2 inline-flex items-center justify-center rounded-md bg-slate-900 px-3 py-2 text-[12px] font-semibold text-white hover:bg-slate-800"
             >
               Otvori izlazne fakture
             </button>
           </div>
 
-          {/* Porezi kartica */}
+          {/* Ulazne fakture kartica */}
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col gap-2">
             <p className="text-xs font-medium text-slate-500">
-              Porezi – {monthLabel || `${data.year}-${data.month}`}
+              Ulazne fakture – {monthLabel || `${data.year}-${data.month}`}
             </p>
-            <p className="text-lg font-semibold text-slate-900">
-              {formatAmount(taxTotal)} KM
+            <p className="text-2xl font-semibold text-slate-900">
+              {inputInvoicesCount}
             </p>
             <p className="text-xs text-slate-500">
-              Status obračuna:{" "}
-              {hasTaxResult ? (
-                <span
-                  className={
-                    "inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold " +
-                    (isTaxFinal
-                      ? "bg-emerald-50 text-emerald-700"
-                      : "bg-amber-50 text-amber-700")
-                  }
-                >
-                  {isTaxFinal ? "FINALIZOVAN" : "NACRT"}
-                </span>
-              ) : (
-                <span className="inline-flex rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
-                  NEMA OBRAČUNA
-                </span>
-              )}
+              Ukupan iznos:{" "}
+              <span className="font-semibold">
+                {formatAmount(inputInvoicesTotal)} KM
+              </span>
             </p>
             <button
               type="button"
-              onClick={() => navigate("/tax")}
-              className="mt-2 inline-flex items-center justify-center rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+              onClick={() => navigate("/input-invoices")}
+              className="mt-2 inline-flex items-center justify-center rounded-md bg-slate-900 px-3 py-2 text-[12px] font-semibold text-white hover:bg-slate-800"
             >
-              Otvori Porezi / SAM
+              Otvori ulazne fakture
             </button>
-          </div>
-
-          {/* SAM kartica */}
-          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 flex flex-col gap-2">
-            <p className="text-xs font-medium text-slate-500">
-              SAM doprinosi – {monthLabel || `${data.year}-${data.month}`}
-            </p>
-            <p className="text-lg font-semibold text-slate-900">
-              {formatAmount(samTotal)} KM
-            </p>
-            <p className="text-xs text-slate-500">
-              Status:{" "}
-              {hasSamResult ? (
-                <span
-                  className={
-                    "inline-flex rounded-full px-2 py-0.5 text-[11px] font-semibold " +
-                    (isSamFinal
-                      ? "bg-emerald-50 text-emerald-700"
-                      : "bg-amber-50 text-amber-700")
-                  }
-                >
-                  {isSamFinal ? "FINALIZOVAN" : "NACRT"}
-                </span>
-              ) : (
-                <span className="inline-flex rounded-full bg-slate-50 px-2 py-0.5 text-[11px] font-semibold text-slate-500">
-                  NEMA OBRAČUNA
-                </span>
-              )}
-            </p>
-            <p className="text-[11px] text-slate-400">
-              Vrijednosti dolaze iz TAX / SAM modula za aktivni mjesec.
-            </p>
           </div>
         </div>
       )}
 
-      {/* Grafovi – prihodi po mjesecima + rashodi po kategorijama */}
+      {/* Grafovi – prihodi po mjesecima + rashodi po dobavljačima */}
       {!isLoading && !isError && data && (
         <div className="grid gap-4 md:grid-cols-2">
           {/* Graf prihoda po mjesecima */}
@@ -771,34 +724,55 @@ export default function DashboardPage() {
             <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
               Prihodi po mjesecima – {data.year}
             </p>
-            <p className="text-xs text-slate-500">
-              Stubičasti graf ukupnih prihoda po mjesecima (na osnovu kase /
-              dashboard podataka).
-            </p>
 
-            <div className="mt-2 h-40 flex items-end gap-2 border border-slate-100 rounded-lg bg-slate-50 px-4 py-4 overflow-x-auto">
+            <div className="mt-2 h-44 flex items-end gap-2 border border-slate-100 rounded-lg bg-slate-50 px-4 py-4 overflow-x-auto">
               {incomeSeries.length === 0 || maxIncomeValue === 0 ? (
                 <p className="text-[11px] text-slate-500">
                   Nema dovoljno podataka za prikaz ovog grafa.
                 </p>
               ) : (
                 incomeSeries.map((item) => {
-                  const heightPercent = (Math.abs(item.value) / maxIncomeValue) * 100;
+                  const heightPercent =
+                    (Math.abs(item.value) / maxIncomeValue) * 100;
+                  const isActiveMonth = item.month === data.month;
+
                   return (
                     <div
                       key={item.month}
-                      className="flex flex-col items-center justify-end gap-1 h-full min-w-[18px]"
+                      className="flex flex-col items-center justify-end gap-1 h-full min-w-[26px]"
                       title={`${item.label}: ${formatAmount(item.value)} KM`}
                     >
+                      <span
+                        className={
+                          "text-[11px] font-semibold " +
+                          (isActiveMonth ? "text-slate-800" : "text-slate-400")
+                        }
+                      >
+                        {isActiveMonth ? `${formatAmount(item.value)} KM` : ""}
+                      </span>
+
                       <div className="flex flex-col justify-end w-full h-full">
                         <div
-                          className="w-3 mx-auto rounded-t-md shadow-sm bg-emerald-500"
+                          className={
+                            "mx-auto rounded-t-md shadow-sm " +
+                            (isActiveMonth
+                              ? "bg-emerald-600 w-4"
+                              : "bg-emerald-400 w-3")
+                          }
                           style={{
-                            height: `${Math.max(6, heightPercent)}%`,
+                            height: `${Math.max(8, heightPercent)}%`,
                           }}
-                        ></div>
+                        />
                       </div>
-                      <span className="text-[10px] text-slate-600">{item.label}</span>
+
+                      <span
+                        className={
+                          "text-[10px] " +
+                          (isActiveMonth ? "text-slate-700" : "text-slate-500")
+                        }
+                      >
+                        {item.label}
+                      </span>
                     </div>
                   );
                 })
@@ -806,38 +780,40 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Graf rashoda po kategorijama */}
+          {/* Graf rashoda po dobavljačima */}
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
             <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
-              Rashodi po kategorijama (dobavljači) – {monthLabel}
-            </p>
-            <p className="text-xs text-slate-500">
-              Prikaz troškova po dobavljačima za tekući mjesec. Kasnije ovo lako
-              možemo zamijeniti pravim kategorijama (gorivo, zakup, režije…).
+              Rashodi po dobavljačima – {monthLabel}
             </p>
 
-            <div className="mt-2 h-40 flex items-end gap-4 border border-slate-100 rounded-lg bg-slate-50 px-4 py-4 overflow-x-auto">
-              {expenseCategories.length === 0 || maxExpenseCategory === 0 ? (
+            <div className="mt-2 h-44 flex items-end gap-4 border border-slate-100 rounded-lg bg-slate-50 px-4 py-4 overflow-x-auto">
+              {expenseSuppliers.length === 0 || maxExpenseSupplier === 0 ? (
                 <p className="text-[11px] text-slate-500">
                   Nema dovoljno podataka za prikaz ovog grafa.
                 </p>
               ) : (
-                expenseCategories.map((cat) => {
-                  const heightPercent = (Math.abs(cat.total) / maxExpenseCategory) * 100;
+                expenseSuppliers.map((cat) => {
+                  const heightPercent =
+                    (Math.abs(cat.total) / maxExpenseSupplier) * 100;
                   return (
                     <div
                       key={cat.name}
-                      className="flex flex-col items-center justify-end gap-1 h-full min-w-[40px]"
+                      className="flex flex-col items-center justify-end gap-1 h-full min-w-[56px]"
                       title={`${cat.name}: ${formatAmount(cat.total)} KM`}
                     >
+                      <span className="text-[11px] font-semibold text-slate-800">
+                        {formatAmount(cat.total)} KM
+                      </span>
+
                       <div className="flex flex-col justify-end w-full h-full">
                         <div
-                          className="w-6 mx-auto rounded-t-md shadow-sm bg-rose-500"
+                          className="w-8 mx-auto rounded-t-md shadow-sm bg-rose-500"
                           style={{
-                            height: `${Math.max(8, heightPercent)}%`,
+                            height: `${Math.max(10, heightPercent)}%`,
                           }}
-                        ></div>
+                        />
                       </div>
+
                       <span className="text-[10px] text-center text-slate-600 line-clamp-2">
                         {cat.name}
                       </span>
@@ -860,9 +836,6 @@ export default function DashboardPage() {
                 <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
                   Zadnjih 5 izlaznih faktura
                 </p>
-                <p className="text-xs text-slate-500">
-                  Brzi pregled najnovijih faktura koje si izdao.
-                </p>
               </div>
               <button
                 type="button"
@@ -875,8 +848,7 @@ export default function DashboardPage() {
 
             {lastOutgoingInvoices.length === 0 ? (
               <p className="text-[11px] text-slate-500">
-                Nema izlaznih faktura za prikaz. Kreiraj prvu fakturu u modulu
-                izlaznih faktura.
+                Nema izlaznih faktura za prikaz. Kreiraj prvu fakturu u modulu izlaznih faktura.
               </p>
             ) : (
               <div className="overflow-x-auto">
@@ -890,7 +862,7 @@ export default function DashboardPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {lastOutgoingInvoices.map((inv) => (
+                    {lastOutgoingInvoices.map((inv: any) => (
                       <tr
                         key={inv.id}
                         className="border-b border-slate-50 last:border-0"
@@ -929,9 +901,6 @@ export default function DashboardPage() {
                 <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
                   Zadnjih 5 ulaznih računa
                 </p>
-                <p className="text-xs text-slate-500">
-                  Najnoviji troškovi (računi dobavljača).
-                </p>
               </div>
               <button
                 type="button"
@@ -944,8 +913,7 @@ export default function DashboardPage() {
 
             {lastInputInvoices.length === 0 ? (
               <p className="text-[11px] text-slate-500">
-                Nema ulaznih računa za prikaz. Dodaj prvi račun u modulu ulaznih
-                faktura.
+                Nema ulaznih računa za prikaz. Dodaj prvi račun u modulu ulaznih faktura.
               </p>
             ) : (
               <div className="overflow-x-auto">
@@ -959,7 +927,7 @@ export default function DashboardPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {lastInputInvoices.map((inv) => (
+                    {lastInputInvoices.map((inv: any) => (
                       <tr
                         key={inv.id}
                         className="border-b border-slate-50 last:border-0"
@@ -988,14 +956,14 @@ export default function DashboardPage() {
         </div>
       )}
 
-      {/* Premium kartice – Top kupci / Top dobavljači */}
+      {/* Top kupci / Top dobavljači */}
       {!isLoading && !isError && (
         <div className="grid gap-4 md:grid-cols-2">
           {/* Top kupci */}
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
-                Top kupci (Premium)
+                Top kupci
               </p>
             </div>
             {topCustomers.length === 0 ? (
@@ -1025,7 +993,7 @@ export default function DashboardPage() {
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
             <div className="flex items-center justify-between">
               <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
-                Top dobavljači (Premium, tekući mjesec)
+                Top dobavljači (tekući mjesec)
               </p>
             </div>
             {topSuppliers.length === 0 ? (

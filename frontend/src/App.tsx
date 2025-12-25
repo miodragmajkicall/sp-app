@@ -55,6 +55,8 @@ type NavItem = {
 };
 
 function App() {
+  const isDev = import.meta.env.DEV;
+
   const linkBase =
     "grid grid-cols-[20px_1fr] items-center gap-3 rounded-md px-3 py-2 transition-colors";
   const linkInactive =
@@ -260,24 +262,35 @@ function App() {
             </div>
           </nav>
 
-          <div className="px-4 py-3 border-t border-slate-800/70 text-xs text-slate-500">
-            <p className="min-w-0 truncate" title={`Tenant: ${tenant}`}>
-              Tenant: <span className="font-mono text-slate-300">{tenant}</span>
-            </p>
-          </div>
+          {/* Tenant info – dev only */}
+          {isDev && (
+            <div className="px-4 py-3 border-t border-slate-800/70 text-xs text-slate-500">
+              <p className="min-w-0 truncate" title={`Tenant: ${tenant}`}>
+                Tenant:{" "}
+                <span className="font-mono text-slate-300">{tenant}</span>
+              </p>
+            </div>
+          )}
         </aside>
 
         {/* Main content */}
         <div className="flex-1 flex flex-col">
           <header className="h-14 border-b border-slate-200 bg-white flex items-center justify-between px-6">
-            <div className="min-w-0">
+            {/* Left: product name only (no internal/dev details in normal view) */}
+            <div className="min-w-0 flex items-center gap-2">
               <p className="text-sm font-semibold text-slate-900 truncate">
                 Evident
               </p>
-              <p className="text-xs text-slate-500 truncate">
-                V1 • demo okruženje • tenant{" "}
-                <span className="font-mono">{tenant}</span>
-              </p>
+
+              {/* Dev indicator – discreet */}
+              {isDev && (
+                <span
+                  className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600"
+                  title={`Demo okruženje • tenant ${tenant}`}
+                >
+                  Demo
+                </span>
+              )}
             </div>
 
             <NavLink
