@@ -15,7 +15,6 @@ import {
   getTaxProfileSettings,
   putTaxProfileSettings,
   getSubscriptionSettings,
-  putSubscriptionSettings,
 } from "../services/settingsApi";
 
 function toNumberOrNull(value: string): number | null {
@@ -29,6 +28,16 @@ function toNumberOrNull(value: string): number | null {
 function formatTenantLabel(tenantCode?: string | null): string {
   if (!tenantCode) return "t-demo";
   return tenantCode;
+}
+
+function formatRegimeLabel(regime: TaxRegime): string {
+  return regime === "pausal" ? "Paušal" : "2% (stvarni prihod)";
+}
+
+function formatPlanLabel(plan: SubscriptionPlan): string {
+  // za sada ostaje kompatibilno sa backendom (Basic/Standard/Premium)
+  // kasnije možemo mapirati Standard->Pro ili slično
+  return plan;
 }
 
 export default function SettingsPage() {
@@ -63,18 +72,14 @@ export default function SettingsPage() {
     monthly_pension: string;
     monthly_health: string;
     monthly_unemployment: string;
-  }>({
+  }>( {
     entity: "RS",
     regime: "pausal",
     has_additional_activity: false,
     monthly_pension: "",
     monthly_health: "",
     monthly_unemployment: "",
-  });
-
-  const [subForm, setSubForm] = useState<{ plan: SubscriptionPlan }>({
-    plan: "Basic",
-  });
+  } );
 
   // init forms when queries load (do not overwrite while saving)
   useEffect(() => {
@@ -103,11 +108,6 @@ export default function SettingsPage() {
     });
   }, [taxQuery.data]);
 
-  useEffect(() => {
-    if (!subQuery.data) return;
-    setSubForm({ plan: subQuery.data.plan });
-  }, [subQuery.data]);
-
   const tenantCode = useMemo(() => {
     return (
       profileQuery.data?.tenant_code ||
@@ -117,18 +117,25 @@ export default function SettingsPage() {
     );
   }, [profileQuery.data, taxQuery.data, subQuery.data]);
 
+  const hasTaxProfileMinimum = useMemo(() => {
+    // trenutno: entitet+režim su uvijek postavljeni (default),
+    // kasnije: uslov će biti scenario_key != null
+    return Boolean(taxQuery.data?.entity) && Boolean(taxQuery.data?.regime);
+  }, [taxQuery.data]);
+
   /* =========================
    * Mutations
    * ========================= */
   const profileMutation = useMutation({
     mutationFn: async () => {
       if (!profileForm.business_name.trim()) {
-        throw new Error("Naziv poslovanja (business name) je obavezan.");
+        throw new Error("Naziv poslovanja je obavezan.");
       }
       return putProfileSettings({
         business_name: profileForm.business_name.trim(),
         address: profileForm.address.trim() ? profileForm.address.trim() : null,
         tax_id: profileForm.tax_id.trim() ? profileForm.tax_id.trim() : null,
+        // za sada ostaje radi kompatibilnosti; u sljedećem koraku to mijenjamo na upload
         logo_attachment_id: toNumberOrNull(profileForm.logo_attachment_id),
       });
     },
@@ -153,36 +160,50 @@ export default function SettingsPage() {
     },
   });
 
-  const subMutation = useMutation({
-    mutationFn: async () => {
-      return putSubscriptionSettings({ plan: subForm.plan });
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({
-        queryKey: ["settings", "subscription"],
-      });
-    },
-  });
-
   const anyLoading =
     profileQuery.isLoading || taxQuery.isLoading || subQuery.isLoading;
   const anyError = profileQuery.isError || taxQuery.isError || subQuery.isError;
 
+  const currentPlan: SubscriptionPlan = (subQuery.data?.plan ?? "Basic") as any;
+
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex flex-col gap-1">
-        <h2 className="text-xl font-semibold text-slate-800">Postavke</h2>
-        <p className="text-xs text-slate-500">
-          Parametri koje korisnik unosi ovdje biće korišteni u ostalim modulima
-          (tax/kpr/izvještaji), ali integraciju radimo u narednoj sesiji.
-        </p>
-        <p className="text-[11px] text-slate-400">
-          Tenant:{" "}
-          <span className="font-mono text-slate-600">
-            {formatTenantLabel(tenantCode)}
-          </span>
-        </p>
+      <div className="flex flex-col gap-2">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-xl font-semibold text-slate-800">Postavke</h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Podešavanja firme, poreskog profila i pretplate.
+            </p>
+          </div>
+
+          <div className="text-right">
+            <div className="text-[11px] text-slate-400">Tenant</div>
+            <div className="mt-0.5 inline-flex items-center rounded-full border border-slate-200 bg-white px-2 py-0.5 font-mono text-[11px] text-slate-700 shadow-sm">
+              {formatTenantLabel(tenantCode)}
+            </div>
+          </div>
+        </div>
+
+        {/* Info banner */}
+        <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
+          <div className="font-medium text-slate-800">
+            Postavke firme i poreskog profila
+          </div>
+          <p className="mt-1 text-xs text-slate-600">
+            Podaci koje unesete ovdje koriste se u obračunima doprinosa i poreza,
+            kao i u izvještajima i PDF dokumentima. Preporuka je da prvo završite
+            poreski profil, pa tek onda unosite fakture i promet.
+          </p>
+
+          {!hasTaxProfileMinimum && (
+            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              Poreski profil nije podešen. Da bi obračuni bili tačni, odaberite
+              entitet i šemu u sekciji “Poreski profil”.
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Loading / Error */}
@@ -199,7 +220,7 @@ export default function SettingsPage() {
             {profileQuery.error?.message && (
               <li>Profil: {profileQuery.error.message}</li>
             )}
-            {taxQuery.error?.message && <li>Tax: {taxQuery.error.message}</li>}
+            {taxQuery.error?.message && <li>Porezi: {taxQuery.error.message}</li>}
             {subQuery.error?.message && (
               <li>Pretplata: {subQuery.error.message}</li>
             )}
@@ -225,9 +246,9 @@ export default function SettingsPage() {
           {/* PROFILE */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="mb-3">
-              <h3 className="text-sm font-semibold text-slate-800">Profil</h3>
+              <h3 className="text-sm font-semibold text-slate-800">Profil firme</h3>
               <p className="mt-1 text-[11px] text-slate-500">
-                Osnovni podaci o poslovanju (za zaglavlja, izvještaje, PDF).
+                Osnovni podaci za zaglavlja, izvještaje i PDF dokumente.
               </p>
             </div>
 
@@ -274,24 +295,37 @@ export default function SettingsPage() {
                 />
               </div>
 
-              <div>
-                <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                  Logo attachment ID (opciono)
-                </label>
-                <input
-                  value={profileForm.logo_attachment_id}
-                  onChange={(e) =>
-                    setProfileForm((p) => ({
-                      ...p,
-                      logo_attachment_id: e.target.value,
-                    }))
-                  }
-                  className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-                  placeholder="npr. 12"
-                />
-                <p className="mt-1 text-[11px] text-slate-400">
-                  Trenutno samo kao broj (kasnije možemo povezati sa upload modulom).
-                </p>
+              {/* LOGO (prepared for upload) */}
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                      Logo
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-600">
+                      U sljedećem koraku uvodimo upload logotipa (konverzija i
+                      automatska zamjena starog loga). Za sada je vezano preko
+                      attachment ID.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="mt-3">
+                  <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                    Attachment ID (privremeno)
+                  </label>
+                  <input
+                    value={profileForm.logo_attachment_id}
+                    onChange={(e) =>
+                      setProfileForm((p) => ({
+                        ...p,
+                        logo_attachment_id: e.target.value,
+                      }))
+                    }
+                    className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                    placeholder="npr. 12"
+                  />
+                </div>
               </div>
 
               {profileMutation.error && (
@@ -316,11 +350,10 @@ export default function SettingsPage() {
           {/* TAX PROFILE */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="mb-3">
-              <h3 className="text-sm font-semibold text-slate-800">
-                Poreski profil
-              </h3>
+              <h3 className="text-sm font-semibold text-slate-800">Poreski profil</h3>
               <p className="mt-1 text-[11px] text-slate-500">
-                Odabir entiteta i režima + opcioni mjesečni iznosi.
+                Birate entitet i šemu obračuna. EVIDENT će kasnije automatski
+                povlačiti parametre iz Admin konstanti.
               </p>
             </div>
 
@@ -348,7 +381,7 @@ export default function SettingsPage() {
 
                 <div>
                   <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                    Režim
+                    Šema (privremeno: režim)
                   </label>
                   <select
                     value={taxForm.regime}
@@ -363,6 +396,10 @@ export default function SettingsPage() {
                     <option value="pausal">Paušal</option>
                     <option value="two_percent">2% (stvarni prihod)</option>
                   </select>
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    Trenutno biramo “režim”. U narednom koraku ovo postaje izbor
+                    šeme (scenario_key) iz Admin konstanti.
+                  </p>
                 </div>
               </div>
 
@@ -382,54 +419,65 @@ export default function SettingsPage() {
                   htmlFor="has_additional_activity"
                   className="text-xs text-slate-700"
                 >
-                  Imam dodatnu djelatnost / drugi osnov
+                  Dopunska djelatnost / drugi osnov
                 </label>
               </div>
 
-              <div className="grid grid-cols-1 gap-3">
-                <div>
-                  <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                    Mjesečni PIO (opciono)
-                  </label>
-                  <input
-                    value={taxForm.monthly_pension}
-                    onChange={(e) =>
-                      setTaxForm((t) => ({ ...t, monthly_pension: e.target.value }))
-                    }
-                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-                    placeholder="npr. 250"
-                  />
+              <div className="rounded-lg border border-slate-200 bg-white p-3">
+                <div className="text-xs font-medium text-slate-800">
+                  Iznosi doprinosa (privremeno ručno / kasnije automatski)
                 </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  Nakon povezivanja sa Admin konstantama, polja će se automatski
+                  popunjavati po šemi ({formatRegimeLabel(taxForm.regime)}), uz
+                  mogućnost kontrolisanog ručnog “override” unosa.
+                </p>
 
-                <div>
-                  <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                    Mjesečno zdravstvo (opciono)
-                  </label>
-                  <input
-                    value={taxForm.monthly_health}
-                    onChange={(e) =>
-                      setTaxForm((t) => ({ ...t, monthly_health: e.target.value }))
-                    }
-                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-                    placeholder="npr. 180"
-                  />
-                </div>
+                <div className="mt-3 grid grid-cols-1 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                      Mjesečni PIO (opciono)
+                    </label>
+                    <input
+                      value={taxForm.monthly_pension}
+                      onChange={(e) =>
+                        setTaxForm((t) => ({ ...t, monthly_pension: e.target.value }))
+                      }
+                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                      placeholder="npr. 250"
+                    />
+                  </div>
 
-                <div>
-                  <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                    Mjesečno nezaposlenost (opciono)
-                  </label>
-                  <input
-                    value={taxForm.monthly_unemployment}
-                    onChange={(e) =>
-                      setTaxForm((t) => ({
-                        ...t,
-                        monthly_unemployment: e.target.value,
-                      }))
-                    }
-                    className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-                    placeholder="npr. 25"
-                  />
+                  <div>
+                    <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                      Mjesečno zdravstvo (opciono)
+                    </label>
+                    <input
+                      value={taxForm.monthly_health}
+                      onChange={(e) =>
+                        setTaxForm((t) => ({ ...t, monthly_health: e.target.value }))
+                      }
+                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                      placeholder="npr. 180"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                      Nezaposlenost (opciono)
+                    </label>
+                    <input
+                      value={taxForm.monthly_unemployment}
+                      onChange={(e) =>
+                        setTaxForm((t) => ({
+                          ...t,
+                          monthly_unemployment: e.target.value,
+                        }))
+                      }
+                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                      placeholder="npr. 25"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -457,51 +505,48 @@ export default function SettingsPage() {
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-slate-800">Pretplata</h3>
               <p className="mt-1 text-[11px] text-slate-500">
-                Plan određuje dostupne funkcije (Basic/Standard/Premium).
+                Ovdje se prikazuje status pretplate. Promjena plana ide kroz
+                naplatu (Billing).
               </p>
             </div>
 
             <div className="space-y-3">
-              <div>
-                <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                  Plan
-                </label>
-                <select
-                  value={subForm.plan}
-                  onChange={(e) =>
-                    setSubForm({ plan: e.target.value as SubscriptionPlan })
-                  }
-                  className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-                >
-                  <option value="Basic">Basic</option>
-                  <option value="Standard">Standard</option>
-                  <option value="Premium">Premium</option>
-                </select>
-              </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                      Trenutni plan
+                    </div>
+                    <div className="mt-1 text-sm font-semibold text-slate-900">
+                      {formatPlanLabel(currentPlan)}
+                    </div>
+                  </div>
 
-              <div className="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-                <p className="font-medium text-slate-700">Napomena</p>
-                <p className="mt-1">
-                  Ovo je “feature toggle” osnova. U narednoj sesiji možemo
-                  sakrivati/otključavati dijelove UI-ja i backend ponašanje po planu.
+                  <div className="text-right">
+                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                      Status
+                    </div>
+                    <div className="mt-1 inline-flex items-center rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[11px] font-medium text-slate-700">
+                      Aktivno (dev)
+                    </div>
+                  </div>
+                </div>
+
+                <p className="mt-2 text-[11px] text-slate-600">
+                  U sljedećem koraku dodajemo Billing stranicu i Stripe (ili drugi
+                  provider) za nadogradnju/obnovu plana.
                 </p>
               </div>
-
-              {subMutation.error && (
-                <p className="text-xs text-red-600">
-                  {subMutation.error instanceof Error
-                    ? subMutation.error.message
-                    : "Greška pri snimanju."}
-                </p>
-              )}
 
               <button
                 type="button"
-                onClick={() => subMutation.mutate()}
-                disabled={subMutation.isPending}
-                className="mt-1 inline-flex w-full items-center justify-center rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-60"
+                onClick={() => {
+                  // za sada stub; kasnije će /billing biti stvarna stranica
+                  window.location.href = "/billing";
+                }}
+                className="mt-1 inline-flex w-full items-center justify-center rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white shadow-sm hover:bg-slate-800"
               >
-                {subMutation.isPending ? "Snima se..." : "Sačuvaj pretplatu"}
+                Upravljaj pretplatom
               </button>
 
               <button
@@ -515,6 +560,15 @@ export default function SettingsPage() {
               >
                 Osvježi sa servera
               </button>
+
+              <div className="rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600">
+                <p className="font-medium text-slate-700">Napomena</p>
+                <p className="mt-1">
+                  Backend trenutno podržava “plan” kao feature-toggle. UI ovdje
+                  više ne nudi ručnu promjenu plana, da se izbjegne pogrešna
+                  očekivanja u produkciji.
+                </p>
+              </div>
             </div>
           </div>
         </div>

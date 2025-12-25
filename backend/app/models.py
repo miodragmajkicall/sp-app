@@ -316,6 +316,40 @@ class InputInvoice(Base):
 
 
 # ======================================================
+#  TENANT ASSETS (logo / pečat / potpis / itd.)
+# ======================================================
+class TenantAsset(Base):
+    """
+    Fajlovi koji pripadaju tenantu i nisu vezani za fakture (npr. logo firme).
+    Služi da Settings (profil) ima čist lifecycle: upload -> replace -> delete.
+    """
+
+    __tablename__ = "tenant_assets"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    tenant_code = Column(
+        String(64),
+        ForeignKey("tenants.code", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    kind = Column(String(32), nullable=False, default="logo")  # npr. logo, stamp, signature
+
+    filename = Column(String(256), nullable=False)
+    content_type = Column(String(128), nullable=False)
+    size_bytes = Column(BigInteger, nullable=False)
+
+    storage_path = Column(Text, nullable=False)
+
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        CheckConstraint("kind in ('logo')", name="ck_tenant_assets_kind"),
+    )
+
+
+# ======================================================
 #  TAX SETTINGS (per-tenant stope)
 # ======================================================
 class TaxSettings(Base):
@@ -670,9 +704,17 @@ class TenantProfileSettings(Base):
     address = Column(String(256), nullable=True)
     tax_id = Column(String(64), nullable=True)
 
+    # Back-compat (staro rješenje):
     logo_attachment_id = Column(
         BigInteger,
         ForeignKey("invoice_attachments.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # Novo (ispravno) rješenje:
+    logo_asset_id = Column(
+        BigInteger,
+        ForeignKey("tenant_assets.id", ondelete="SET NULL"),
         nullable=True,
     )
 

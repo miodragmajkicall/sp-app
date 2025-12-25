@@ -14,14 +14,24 @@ class ProfileSettingsRead(BaseModel):
     business_name: str
     address: Optional[str] = None
     tax_id: Optional[str] = None
+
+    # Back-compat:
     logo_attachment_id: Optional[int] = None
+
+    # Novo:
+    logo_asset_id: Optional[int] = None
 
 
 class ProfileSettingsUpsert(BaseModel):
     business_name: str
     address: Optional[str] = None
     tax_id: Optional[str] = None
+
+    # Back-compat:
     logo_attachment_id: Optional[int] = None
+
+    # Novo (nećemo ga ručno unositi iz UI-ja, ali ga ostavljamo zbog API fleksibilnosti):
+    logo_asset_id: Optional[int] = None
 
 
 # ---------------- TAX PROFILE ----------------
