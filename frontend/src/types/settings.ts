@@ -4,6 +4,13 @@ export type TenantEntity = "RS" | "FBiH" | "Brcko";
 export type TaxRegime = "pausal" | "two_percent";
 export type SubscriptionPlan = "Basic" | "Standard" | "Premium";
 
+export type ScenarioKey =
+  | "rs_primary"
+  | "rs_supplementary"
+  | "fbih_obrt"
+  | "fbih_slobodna"
+  | "bd_samostalna";
+
 /* =========================
  * PROFILE
  * ========================= */
@@ -29,6 +36,7 @@ export interface TaxProfileSettingsRead {
   tenant_code: string;
   entity: TenantEntity;
   regime: TaxRegime;
+  scenario_key: ScenarioKey | null;
   has_additional_activity: boolean;
   monthly_pension: number | null;
   monthly_health: number | null;
@@ -38,6 +46,7 @@ export interface TaxProfileSettingsRead {
 export interface TaxProfileSettingsUpsert {
   entity: TenantEntity;
   regime: TaxRegime;
+  scenario_key?: ScenarioKey | null;
   has_additional_activity: boolean;
   monthly_pension?: number | null;
   monthly_health?: number | null;

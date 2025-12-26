@@ -56,6 +56,7 @@ export async function putTaxProfileSettings(
   const res = await apiClient.put<TaxProfileSettingsRead>("/settings/tax", {
     entity: payload.entity,
     regime: payload.regime,
+    scenario_key: payload.scenario_key ?? null,
     has_additional_activity: payload.has_additional_activity,
     monthly_pension: payload.monthly_pension ?? null,
     monthly_health: payload.monthly_health ?? null,
@@ -69,6 +70,7 @@ function normalizeTaxProfile(r: any): TaxProfileSettingsRead {
     tenant_code: String(r.tenant_code),
     entity: (r.entity ?? "RS") as any,
     regime: (r.regime ?? "pausal") as any,
+    scenario_key: r.scenario_key ?? null,
     has_additional_activity: Boolean(r.has_additional_activity),
     monthly_pension:
       r.monthly_pension == null ? null : Number(r.monthly_pension),

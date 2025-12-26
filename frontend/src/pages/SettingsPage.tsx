@@ -8,6 +8,7 @@ import type {
   SubscriptionPlan,
   TenantEntity,
   TaxRegime,
+  ScenarioKey,
 } from "../types/settings";
 import {
   getProfileSettings,
@@ -34,10 +35,45 @@ function formatRegimeLabel(regime: TaxRegime): string {
   return regime === "pausal" ? "Paušal" : "2% (stvarni prihod)";
 }
 
+function formatScenarioLabel(s: ScenarioKey): string {
+  switch (s) {
+    case "rs_primary":
+      return "RS – Osnovna djelatnost";
+    case "rs_supplementary":
+      return "RS – Dopunska djelatnost (uz zaposlenje)";
+    case "fbih_obrt":
+      return "FBiH – Obrt";
+    case "fbih_slobodna":
+      return "FBiH – Slobodna djelatnost";
+    case "bd_samostalna":
+      return "Brčko – Samostalna djelatnost";
+    default:
+      return s;
+  }
+}
+
 function formatPlanLabel(plan: SubscriptionPlan): string {
   // za sada ostaje kompatibilno sa backendom (Basic/Standard/Premium)
   // kasnije možemo mapirati Standard->Pro ili slično
   return plan;
+}
+
+const SCENARIOS_BY_ENTITY: Record<TenantEntity, ScenarioKey[]> = {
+  RS: ["rs_primary", "rs_supplementary"],
+  FBiH: ["fbih_obrt", "fbih_slobodna"],
+  Brcko: ["bd_samostalna"],
+};
+
+function isScenarioValidForEntity(
+  entity: TenantEntity,
+  scenario: ScenarioKey | null,
+): boolean {
+  if (!scenario) return false;
+  return SCENARIOS_BY_ENTITY[entity].includes(scenario);
+}
+
+function getDefaultScenarioForEntity(entity: TenantEntity): ScenarioKey {
+  return SCENARIOS_BY_ENTITY[entity][0];
 }
 
 export default function SettingsPage() {
@@ -68,18 +104,20 @@ export default function SettingsPage() {
   const [taxForm, setTaxForm] = useState<{
     entity: TenantEntity;
     regime: TaxRegime;
+    scenario_key: ScenarioKey | "";
     has_additional_activity: boolean;
     monthly_pension: string;
     monthly_health: string;
     monthly_unemployment: string;
-  }>( {
+  }>({
     entity: "RS",
     regime: "pausal",
+    scenario_key: "",
     has_additional_activity: false,
     monthly_pension: "",
     monthly_health: "",
     monthly_unemployment: "",
-  } );
+  });
 
   // init forms when queries load (do not overwrite while saving)
   useEffect(() => {
@@ -97,9 +135,17 @@ export default function SettingsPage() {
   useEffect(() => {
     if (!taxQuery.data) return;
     const t = taxQuery.data;
+
+    const entity = t.entity;
+    const rawScenario = t.scenario_key ?? null;
+    const scenarioToUse = isScenarioValidForEntity(entity, rawScenario)
+      ? (rawScenario as ScenarioKey)
+      : "";
+
     setTaxForm({
-      entity: t.entity,
+      entity,
       regime: t.regime,
+      scenario_key: scenarioToUse,
       has_additional_activity: t.has_additional_activity,
       monthly_pension: t.monthly_pension == null ? "" : String(t.monthly_pension),
       monthly_health: t.monthly_health == null ? "" : String(t.monthly_health),
@@ -107,6 +153,20 @@ export default function SettingsPage() {
         t.monthly_unemployment == null ? "" : String(t.monthly_unemployment),
     });
   }, [taxQuery.data]);
+
+  // keep scenario_key consistent when entity changes
+  useEffect(() => {
+    const entity = taxForm.entity;
+    const current = taxForm.scenario_key ? (taxForm.scenario_key as ScenarioKey) : null;
+
+    if (current && isScenarioValidForEntity(entity, current)) return;
+
+    // auto-pick default scenario for the entity, but only if user already had some selection or tax profile exists
+    // (we still allow blank to show "Odaberi" if user wants to review before saving)
+    if (taxQuery.data?.scenario_key != null || taxForm.scenario_key !== "") {
+      setTaxForm((t) => ({ ...t, scenario_key: getDefaultScenarioForEntity(entity) }));
+    }
+  }, [taxForm.entity]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tenantCode = useMemo(() => {
     return (
@@ -118,10 +178,13 @@ export default function SettingsPage() {
   }, [profileQuery.data, taxQuery.data, subQuery.data]);
 
   const hasTaxProfileMinimum = useMemo(() => {
-    // trenutno: entitet+režim su uvijek postavljeni (default),
-    // kasnije: uslov će biti scenario_key != null
-    return Boolean(taxQuery.data?.entity) && Boolean(taxQuery.data?.regime);
+    // novo pravilo: scenario_key je minimum da profil smatramo podešenim
+    return Boolean(taxQuery.data?.scenario_key);
   }, [taxQuery.data]);
+
+  const scenarioOptions = useMemo(() => {
+    return SCENARIOS_BY_ENTITY[taxForm.entity];
+  }, [taxForm.entity]);
 
   /* =========================
    * Mutations
@@ -146,9 +209,14 @@ export default function SettingsPage() {
 
   const taxMutation = useMutation({
     mutationFn: async () => {
+      if (!taxForm.scenario_key) {
+        throw new Error("Odaberite šemu obračuna (scenario).");
+      }
+
       return putTaxProfileSettings({
         entity: taxForm.entity,
         regime: taxForm.regime,
+        scenario_key: taxForm.scenario_key as ScenarioKey,
         has_additional_activity: taxForm.has_additional_activity,
         monthly_pension: toNumberOrNull(taxForm.monthly_pension),
         monthly_health: toNumberOrNull(taxForm.monthly_health),
@@ -381,26 +449,48 @@ export default function SettingsPage() {
 
                 <div>
                   <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                    Šema (privremeno: režim)
+                    Šema obračuna (scenario)
                   </label>
                   <select
-                    value={taxForm.regime}
+                    value={taxForm.scenario_key}
                     onChange={(e) =>
                       setTaxForm((t) => ({
                         ...t,
-                        regime: e.target.value as TaxRegime,
+                        scenario_key: e.target.value as any,
                       }))
                     }
                     className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
                   >
-                    <option value="pausal">Paušal</option>
-                    <option value="two_percent">2% (stvarni prihod)</option>
+                    <option value="">Odaberi…</option>
+                    {scenarioOptions.map((s) => (
+                      <option key={s} value={s}>
+                        {formatScenarioLabel(s)}
+                      </option>
+                    ))}
                   </select>
                   <p className="mt-1 text-[11px] text-slate-400">
-                    Trenutno biramo “režim”. U narednom koraku ovo postaje izbor
-                    šeme (scenario_key) iz Admin konstanti.
+                    Šema određuje koji set Admin konstanti se primjenjuje za obračun.
                   </p>
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  Režim oporezivanja (još uvijek prisutan radi kompatibilnosti)
+                </label>
+                <select
+                  value={taxForm.regime}
+                  onChange={(e) =>
+                    setTaxForm((t) => ({
+                      ...t,
+                      regime: e.target.value as TaxRegime,
+                    }))
+                  }
+                  className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                >
+                  <option value="pausal">Paušal</option>
+                  <option value="two_percent">2% (stvarni prihod)</option>
+                </select>
               </div>
 
               <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
@@ -429,8 +519,8 @@ export default function SettingsPage() {
                 </div>
                 <p className="mt-1 text-[11px] text-slate-500">
                   Nakon povezivanja sa Admin konstantama, polja će se automatski
-                  popunjavati po šemi ({formatRegimeLabel(taxForm.regime)}), uz
-                  mogućnost kontrolisanog ručnog “override” unosa.
+                  popunjavati po šemi i pravilima, uz mogućnost kontrolisanog ručnog
+                  “override” unosa. Trenutno: režim ({formatRegimeLabel(taxForm.regime)}).
                 </p>
 
                 <div className="mt-3 grid grid-cols-1 gap-3">
