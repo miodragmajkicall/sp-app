@@ -741,6 +741,9 @@ class TenantTaxProfileSettings(Base):
     entity = Column(String(16), nullable=False)  # RS / FBiH / Brcko
     regime = Column(String(32), nullable=False)  # pausal / two_percent
 
+    # NOVO: primarni izbor scenarija (RS primary/supplementary, FBiH obrt/slobodna, BD samostalna)
+    scenario_key = Column(String(64), nullable=True)
+
     has_additional_activity = Column(Boolean, nullable=False, default=False)
 
     monthly_pension = Column(Numeric(14, 2), nullable=True)

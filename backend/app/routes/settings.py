@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 
 from fastapi import (
     APIRouter,
@@ -14,6 +14,7 @@ from fastapi import (
     File,
     Response,
     status,
+    Query,
 )
 from fastapi.responses import FileResponse
 from sqlalchemy import select
@@ -32,6 +33,7 @@ from app.schemas.settings import (
     ProfileSettingsUpsert,
     TaxProfileSettingsRead,
     TaxProfileSettingsUpsert,
+    TaxScenarioOption,
     SubscriptionSettingsRead,
     SubscriptionSettingsUpsert,
 )
@@ -99,6 +101,59 @@ def _get_or_create_profile_row(db: Session, tenant: str) -> TenantProfileSetting
         db.add(row)
         db.flush()
     return row
+
+
+def _scenario_catalog_for(entity: str, has_additional_activity: bool) -> List[TaxScenarioOption]:
+    """
+    Minimalni scenario katalog (Inkrement 1).
+    Kasnije (Inkrement 2) možemo ga vezati na Admin Constants i effective-dated logiku.
+    """
+    entity_norm = (entity or "RS").strip()
+
+    if entity_norm == "RS":
+        if has_additional_activity:
+            return [
+                TaxScenarioOption(
+                    key="rs_supplementary",
+                    label="RS – Dopunska djelatnost (uz zaposlenje)",
+                    hint="Dopunska djelatnost: SP uz postojeće zaposlenje.",
+                    entity="RS",
+                )
+            ]
+        return [
+            TaxScenarioOption(
+                key="rs_primary",
+                label="RS – Osnovna djelatnost",
+                hint="Osnovna djelatnost: samostalni preduzetnik (glavna djelatnost).",
+                entity="RS",
+            )
+        ]
+
+    if entity_norm == "FBiH":
+        return [
+            TaxScenarioOption(
+                key="fbih_obrt",
+                label="FBiH – Obrt",
+                hint="Registracija u formi obrta (osnovni poslovni režim).",
+                entity="FBiH",
+            ),
+            TaxScenarioOption(
+                key="fbih_slobodna",
+                label="FBiH – Slobodna djelatnost",
+                hint="Slobodno zanimanje / samostalna djelatnost u FBiH.",
+                entity="FBiH",
+            ),
+        ]
+
+    # Brcko / BD
+    return [
+        TaxScenarioOption(
+            key="bd_samostalna",
+            label="Brčko – Samostalna djelatnost",
+            hint="Brčko distrikt: samostalni preduzetnik (osnovni režim).",
+            entity="Brcko",
+        )
+    ]
 
 
 # ======================================================
@@ -357,6 +412,7 @@ def get_tax_profile(
             tenant_code=tenant,
             entity="RS",
             regime="pausal",
+            scenario_key=None,
             has_additional_activity=False,
         )
 
@@ -393,9 +449,24 @@ def upsert_tax_profile(
     row.monthly_health = payload.monthly_health
     row.monthly_unemployment = payload.monthly_unemployment
 
+    # Novo: scenario_key (back-compat: može biti None)
+    row.scenario_key = payload.scenario_key
+
     db.commit()
     db.refresh(row)
     return row
+
+
+@router.get(
+    "/tax/scenarios",
+    response_model=list[TaxScenarioOption],
+    summary="Scenario katalog za Settings (dropdown)",
+)
+def get_tax_scenarios_catalog(
+    entity: str = Query("RS", description="RS | FBiH | Brcko"),
+    has_additional_activity: bool = Query(False, description="Za RS razlikuje osnovnu i dopunsku djelatnost"),
+) -> list[TaxScenarioOption]:
+    return _scenario_catalog_for(entity=entity, has_additional_activity=has_additional_activity)
 
 
 # ======================================================

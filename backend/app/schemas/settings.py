@@ -41,6 +41,10 @@ class TaxProfileSettingsRead(BaseModel):
     tenant_code: str
     entity: str
     regime: str
+
+    # Novo: primarni izbor scenarija
+    scenario_key: Optional[str] = None
+
     has_additional_activity: bool
     monthly_pension: Optional[float] = None
     monthly_health: Optional[float] = None
@@ -50,10 +54,24 @@ class TaxProfileSettingsRead(BaseModel):
 class TaxProfileSettingsUpsert(BaseModel):
     entity: str = Field(..., examples=["RS", "FBiH", "Brcko"])
     regime: str = Field(..., examples=["pausal", "two_percent"])
+
+    # Novo: opcioni upsert scenario_key (back-compat: može biti None)
+    scenario_key: Optional[str] = Field(
+        default=None,
+        examples=["rs_primary", "rs_supplementary", "fbih_obrt", "fbih_slobodna", "bd_samostalna"],
+    )
+
     has_additional_activity: bool = False
     monthly_pension: Optional[float] = None
     monthly_health: Optional[float] = None
     monthly_unemployment: Optional[float] = None
+
+
+class TaxScenarioOption(BaseModel):
+    key: str
+    label: str
+    hint: Optional[str] = None
+    entity: str = Field(..., examples=["RS", "FBiH", "Brcko"])
 
 
 # ---------------- SUBSCRIPTION ----------------
