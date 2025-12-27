@@ -138,9 +138,13 @@ export default function SettingsPage() {
 
     const entity = t.entity;
     const rawScenario = t.scenario_key ?? null;
+
+    // Key change:
+    // - Ako backend scenario_key nije postavljen ili je nevalidan za entity,
+    //   auto-izaberemo default scenario (da izbjegnemo prazno stanje i dummy kalkulacije).
     const scenarioToUse = isScenarioValidForEntity(entity, rawScenario)
       ? (rawScenario as ScenarioKey)
-      : "";
+      : getDefaultScenarioForEntity(entity);
 
     setTaxForm({
       entity,
@@ -159,13 +163,14 @@ export default function SettingsPage() {
     const entity = taxForm.entity;
     const current = taxForm.scenario_key ? (taxForm.scenario_key as ScenarioKey) : null;
 
+    // Key change:
+    // - Uvijek garantujemo validan scenario za entity.
     if (current && isScenarioValidForEntity(entity, current)) return;
 
-    // auto-pick default scenario for the entity, but only if user already had some selection or tax profile exists
-    // (we still allow blank to show "Odaberi" if user wants to review before saving)
-    if (taxQuery.data?.scenario_key != null || taxForm.scenario_key !== "") {
-      setTaxForm((t) => ({ ...t, scenario_key: getDefaultScenarioForEntity(entity) }));
-    }
+    setTaxForm((t) => ({
+      ...t,
+      scenario_key: getDefaultScenarioForEntity(entity),
+    }));
   }, [taxForm.entity]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tenantCode = useMemo(() => {
