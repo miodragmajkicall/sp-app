@@ -12,7 +12,6 @@ from app.db import SessionLocal
 from app.models import AppConstantsSet
 from app.schemas.constants import (
     ALLOWED_SCENARIOS,
-    AppConstantsCurrentResponse,
     AppConstantsSetCreate,
     AppConstantsSetListResponse,
     AppConstantsSetRead,
@@ -451,39 +450,5 @@ def admin_constants_update(constants_id: int, payload: AppConstantsSetUpdate) ->
         db.commit()
         db.refresh(row)
         return AppConstantsSetRead.model_validate(row)
-    finally:
-        db.close()
-
-
-@router.get(
-    "/constants/current",
-    response_model=AppConstantsCurrentResponse,
-    summary="Vraća trenutno važeći set konstanti za jurisdikciju, scenario i datum",
-    operation_id="constants_current",
-)
-def constants_current(
-    jurisdiction: str = Query(..., description="RS / FBiH / BD"),
-    scenario_key: str = Query(..., description="scenario_key (npr. rs_pausal)"),
-    as_of: date = Query(..., description="Datum za koji tražimo važeći set (YYYY-MM-DD)"),
-) -> AppConstantsCurrentResponse:
-    db = _get_db()
-    try:
-        _validate_scenario(jurisdiction, scenario_key)
-        row = _find_current_set(db=db, jurisdiction=jurisdiction, scenario_key=scenario_key, as_of=as_of)
-        if row is None:
-            return AppConstantsCurrentResponse(
-                jurisdiction=jurisdiction,
-                scenario_key=scenario_key,
-                as_of=as_of,
-                found=False,
-                item=None,
-            )
-        return AppConstantsCurrentResponse(
-            jurisdiction=jurisdiction,
-            scenario_key=scenario_key,
-            as_of=as_of,
-            found=True,
-            item=AppConstantsSetRead.model_validate(row),
-        )
     finally:
         db.close()

@@ -21,6 +21,7 @@ from app.routes import (
     export,
     settings,
     admin_constants,
+    constants,  # ✅ ADD
 )
 from app.models import FinalizedPeriodModificationError
 
@@ -73,6 +74,10 @@ tags_metadata = [
     {
         "name": "reports",
         "description": "Finansijski izvještaji i pregledi (cashflow, P&L, itd.).",
+    },
+    {
+        "name": "constants",
+        "description": "Aktuelni zakonski parametri (effective-dated) po entitetu i scenariju.",
     },
     {
         "name": "admin",
@@ -204,6 +209,9 @@ app.include_router(export.router)
 
 # Settings (core podešavanja korisnika)
 app.include_router(settings.router)
+
+# ✅ Constants (current effective-dated set)
+app.include_router(constants.router)
 
 # Admin constants (globalni parametri)
 app.include_router(admin_constants.router)

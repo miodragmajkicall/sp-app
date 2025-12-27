@@ -1,17 +1,19 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/services/adminConstantsApi.ts
 
 import { apiClient } from "./apiClient";
+import type { ScenarioKey } from "../types/settings";
 import type {
   AppConstantsCurrentResponse,
   AppConstantsSetCreate,
   AppConstantsSetListResponse,
   AppConstantsSetRead,
   AppConstantsSetUpdate,
+  Jurisdiction,
 } from "../types/constants";
 
 export async function adminConstantsList(params?: {
-  jurisdiction?: string;
-  scenario_key?: string;
+  jurisdiction?: Jurisdiction;
+  scenario_key?: ScenarioKey;
 }): Promise<AppConstantsSetListResponse> {
   const res = await apiClient.get<AppConstantsSetListResponse>(
     "/admin/constants",
@@ -42,8 +44,8 @@ export async function adminConstantsUpdate(
 }
 
 export async function constantsCurrent(params: {
-  jurisdiction: string;
-  scenario_key: string;
+  jurisdiction: Jurisdiction;
+  scenario_key: ScenarioKey;
   as_of: string; // YYYY-MM-DD
 }): Promise<AppConstantsCurrentResponse> {
   const res = await apiClient.get<AppConstantsCurrentResponse>(
