@@ -38,7 +38,7 @@ type ConstantsForm = {
   // FBiH: monthly base (KM)
   monthly_contrib_base_bam: string;
 
-  // Optional min base (KM) (kept as generic; max is intentionally removed from UI per spec)
+  // Optional min base (KM) (kept generic; RS primary should not show it in UI)
   contrib_base_min_bam: string;
 
   // Notes / sources
@@ -150,8 +150,14 @@ function defaultScenarioForJurisdiction(j: Jurisdiction): string {
 }
 
 function defaultForm(j: Jurisdiction, scenario_key?: string): ConstantsForm {
+  const sk = scenario_key ?? defaultScenarioForJurisdiction(j);
+
+  // RS defaults by scenario
+  const rsIsSupplementary = j === "RS" && sk === "rs_supplementary";
+  const rsBasePctDefault = rsIsSupplementary ? "30" : "80";
+
   return {
-    scenario_key: scenario_key ?? defaultScenarioForJurisdiction(j),
+    scenario_key: sk,
 
     currency: "BAM",
 
@@ -162,13 +168,14 @@ function defaultForm(j: Jurisdiction, scenario_key?: string): ConstantsForm {
     income_tax_rate_percent: "10",
     flat_tax_monthly_amount_bam: "",
 
+    // default rates
     pension_rate_percent: "18",
-    health_rate_percent: "12",
-    unemployment_rate_percent: "1.5",
+    health_rate_percent: rsIsSupplementary ? "" : "12",
+    unemployment_rate_percent: rsIsSupplementary ? "" : "1.5",
 
     // RS/BD
     avg_gross_wage_prev_year_bam: "",
-    contrib_base_percent_of_avg_gross: "",
+    contrib_base_percent_of_avg_gross: rsBasePctDefault,
 
     // FBiH
     monthly_contrib_base_bam: "",
@@ -191,9 +198,28 @@ function computeCalculatedBaseBam(
   return avg * (pct / 100);
 }
 
+function computeContributionAmount(base: number | null, ratePercentStr: string): number | null {
+  if (base === null) return null;
+  const p = toNumOrNull(ratePercentStr);
+  if (p === null) return null;
+  const pct = clampPercent(p);
+  return base * (pct / 100);
+}
+
+function computeTotalContribAmount(values: Array<number | null>): number | null {
+  const nums = values.filter((x): x is number => typeof x === "number" && Number.isFinite(x));
+  if (nums.length === 0) return null;
+  return nums.reduce((a, b) => a + b, 0);
+}
+
+function rsContributionMode(scenarioKey: string): "PRIMARY" | "SUPPLEMENTARY" {
+  return scenarioKey === "rs_supplementary" ? "SUPPLEMENTARY" : "PRIMARY";
+}
+
 function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
   const vatRate = percentStrToRateDecimal(form.vat_standard_rate_percent);
   const incomeTaxRate = percentStrToRateDecimal(form.income_tax_rate_percent);
+
   const pensionRate = percentStrToRateDecimal(form.pension_rate_percent);
   const healthRate = percentStrToRateDecimal(form.health_rate_percent);
   const unempRate = percentStrToRateDecimal(form.unemployment_rate_percent);
@@ -204,6 +230,40 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
           form.avg_gross_wage_prev_year_bam,
           form.contrib_base_percent_of_avg_gross
         )
+      : null;
+
+  const isRS = j === "RS";
+  const isBD = j === "BD";
+  const isFBiH = j === "FBiH";
+
+  const rsMode = isRS ? rsContributionMode(form.scenario_key) : null;
+
+  const pensionAmount =
+    isRS || isBD ? computeContributionAmount(calculatedBase, form.pension_rate_percent) : null;
+
+  const healthAmount =
+    isRS && rsMode === "PRIMARY"
+      ? computeContributionAmount(calculatedBase, form.health_rate_percent)
+      : isBD
+      ? computeContributionAmount(calculatedBase, form.health_rate_percent)
+      : null;
+
+  const unempAmount =
+    isRS && rsMode === "PRIMARY"
+      ? computeContributionAmount(calculatedBase, form.unemployment_rate_percent)
+      : isBD
+      ? computeContributionAmount(calculatedBase, form.unemployment_rate_percent)
+      : null;
+
+  const totalContribAmount =
+    isRS
+      ? computeTotalContribAmount(
+          rsMode === "SUPPLEMENTARY"
+            ? [pensionAmount]
+            : [pensionAmount, healthAmount, unempAmount]
+        )
+      : isBD
+      ? computeTotalContribAmount([pensionAmount, healthAmount, unempAmount])
       : null;
 
   const payload: any = {
@@ -224,10 +284,16 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
     },
 
     contributions: {
+      // rates
       pension_rate: pensionRate,
-      health_rate: healthRate,
-      unemployment_rate: unempRate,
-      base_min_bam: toNumOrNull(form.contrib_base_min_bam),
+
+      // amounts (KM)
+      pension_amount_bam: pensionAmount,
+      total_contrib_amount_bam: totalContribAmount,
+
+      // generic optional (kept only where relevant; RS UI hides min base)
+      base_min_bam:
+        j === "FBiH" || j === "BD" ? toNumOrNull(form.contrib_base_min_bam) : null,
     },
 
     meta: {
@@ -237,7 +303,7 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
     },
   };
 
-  if (j === "RS") {
+  if (isRS) {
     payload.base.avg_gross_wage_prev_year_bam = toNumOrNull(
       form.avg_gross_wage_prev_year_bam
     );
@@ -245,15 +311,23 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
       form.contrib_base_percent_of_avg_gross
     );
     payload.base.calculated_contrib_base_bam = calculatedBase;
+
+    // RS: supplementary -> only PIO, primary -> PIO+health+unemp
+    if (rsMode === "PRIMARY") {
+      payload.contributions.health_rate = healthRate;
+      payload.contributions.unemployment_rate = unempRate;
+      payload.contributions.health_amount_bam = healthAmount;
+      payload.contributions.unemployment_amount_bam = unempAmount;
+    }
   }
 
-  if (j === "FBiH") {
+  if (isFBiH) {
     payload.base.monthly_contrib_base_bam = toNumOrNull(
       form.monthly_contrib_base_bam
     );
   }
 
-  if (j === "BD") {
+  if (isBD) {
     payload.base.avg_gross_prev_year_bam = toNumOrNull(
       form.avg_gross_wage_prev_year_bam
     );
@@ -261,6 +335,11 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
       form.contrib_base_percent_of_avg_gross
     );
     payload.base.calculated_contrib_base_bam = calculatedBase;
+
+    payload.contributions.health_rate = healthRate;
+    payload.contributions.unemployment_rate = unempRate;
+    payload.contributions.health_amount_bam = healthAmount;
+    payload.contributions.unemployment_amount_bam = unempAmount;
   }
 
   return payload;
@@ -285,13 +364,15 @@ function hydrateFormFromPayload(j: Jurisdiction, payload: any): ConstantsForm {
     rateDecimalToPercentStr(vat.standard_rate) || d.vat_standard_rate_percent;
   const income_tax_rate_percent =
     rateDecimalToPercentStr(tax.income_tax_rate) || d.income_tax_rate_percent;
+
   const pension_rate_percent =
     rateDecimalToPercentStr(contrib.pension_rate) || d.pension_rate_percent;
+
+  // For RS supplementary we intentionally allow blanks; if payload doesn't have these, keep empty.
   const health_rate_percent =
-    rateDecimalToPercentStr(contrib.health_rate) || d.health_rate_percent;
+    rateDecimalToPercentStr(contrib.health_rate) || "";
   const unemployment_rate_percent =
-    rateDecimalToPercentStr(contrib.unemployment_rate) ||
-    d.unemployment_rate_percent;
+    rateDecimalToPercentStr(contrib.unemployment_rate) || "";
 
   const vat_entry_threshold_bam = numToStr(vat.entry_threshold_bam);
   const flat_tax_monthly_amount_bam = numToStr(tax.flat_tax_monthly_amount_bam);
@@ -313,6 +394,7 @@ function hydrateFormFromPayload(j: Jurisdiction, payload: any): ConstantsForm {
   const monthly_contrib_base_bam =
     j === "FBiH" ? numToStr(base.monthly_contrib_base_bam) : "";
 
+  // When RS supplementary: if payload has no health/unemp, keep empty; defaults already handled by defaultForm on reset.
   return {
     scenario_key,
 
@@ -607,7 +689,6 @@ function FriendlyPayloadEditor({
   jurisdiction,
   form,
   setForm,
-  derivedPayload,
   advanced,
   setAdvanced,
   raw,
@@ -616,7 +697,7 @@ function FriendlyPayloadEditor({
   jurisdiction: Jurisdiction;
   form: ConstantsForm;
   setForm: (next: ConstantsForm) => void;
-  derivedPayload: string;
+  derivedPayload: string; // kept in signature by caller, but no longer rendered here
   advanced: boolean;
   setAdvanced: (v: boolean) => void;
   raw: string;
@@ -626,12 +707,42 @@ function FriendlyPayloadEditor({
   const isFBiH = jurisdiction === "FBiH";
   const isBD = jurisdiction === "BD";
 
+  const rsMode = isRS ? rsContributionMode(form.scenario_key) : null;
+
   const calculatedBase =
     isRS || isBD
       ? computeCalculatedBaseBam(
           form.avg_gross_wage_prev_year_bam,
           form.contrib_base_percent_of_avg_gross
         )
+      : null;
+
+  const pensionAmount =
+    isRS || isBD ? computeContributionAmount(calculatedBase, form.pension_rate_percent) : null;
+
+  const healthAmount =
+    isRS && rsMode === "PRIMARY"
+      ? computeContributionAmount(calculatedBase, form.health_rate_percent)
+      : isBD
+      ? computeContributionAmount(calculatedBase, form.health_rate_percent)
+      : null;
+
+  const unempAmount =
+    isRS && rsMode === "PRIMARY"
+      ? computeContributionAmount(calculatedBase, form.unemployment_rate_percent)
+      : isBD
+      ? computeContributionAmount(calculatedBase, form.unemployment_rate_percent)
+      : null;
+
+  const totalContribAmount =
+    isRS
+      ? computeTotalContribAmount(
+          rsMode === "SUPPLEMENTARY"
+            ? [pensionAmount]
+            : [pensionAmount, healthAmount, unempAmount]
+        )
+      : isBD
+      ? computeTotalContribAmount([pensionAmount, healthAmount, unempAmount])
       : null;
 
   return (
@@ -650,7 +761,6 @@ function FriendlyPayloadEditor({
           <Button
             variant="secondary"
             onClick={() => {
-              if (!advanced) setRaw(derivedPayload);
               setAdvanced(!advanced);
             }}
           >
@@ -661,17 +771,15 @@ function FriendlyPayloadEditor({
 
       {!advanced ? (
         <>
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+          {/* TOP GRID - NO HINTS (for strict alignment) */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
             <div>
-              <FieldLabel
-                label="Scenario / šema (read-only)"
-                hint="Scenario se bira iznad. Promjena scenarija automatski učitava aktivni set."
-              />
+              <FieldLabel label="Scenario / šema (read-only)" />
               <Input value={form.scenario_key} onChange={() => {}} readOnly />
             </div>
 
             <div>
-              <FieldLabel label="Valuta" hint="Najčešće BAM." />
+              <FieldLabel label="Valuta" />
               <Input
                 value={form.currency}
                 onChange={(v) => setForm({ ...form, currency: v })}
@@ -679,7 +787,7 @@ function FriendlyPayloadEditor({
               />
             </div>
 
-            {isRS || isBD ? (
+            {(isRS || isBD) ? (
               <div>
                 <FieldLabel
                   label={
@@ -687,7 +795,6 @@ function FriendlyPayloadEditor({
                       ? "Prosječna bruto plata (prethodna godina) (KM)"
                       : "Prosječna bruto plata (BD) – prethodna godina (KM)"
                   }
-                  hint="Decimal (npr. 2000.00)."
                 />
                 <Input
                   value={form.avg_gross_wage_prev_year_bam}
@@ -700,10 +807,24 @@ function FriendlyPayloadEditor({
             ) : (
               <div className="hidden lg:block" />
             )}
+
+            {(isRS || isBD) ? (
+              <div>
+                <FieldLabel label="Ukupno doprinosi (KM)" />
+                <Input
+                  value={totalContribAmount === null ? "" : totalContribAmount.toFixed(2)}
+                  onChange={() => {}}
+                  readOnly
+                  placeholder="automatski"
+                />
+              </div>
+            ) : (
+              <div className="hidden lg:block" />
+            )}
           </div>
 
           {(isRS || isBD) && (
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
               <div>
                 <FieldLabel
                   label={
@@ -711,16 +832,21 @@ function FriendlyPayloadEditor({
                       ? "Osnovica doprinosa = % prosječne bruto plate"
                       : "Procenat prosječne bruto plate za osnovicu (%)"
                   }
-                  hint="Unos u procentima (npr. 80 znači 80%)."
+                  hint={
+                    isRS && rsMode === "SUPPLEMENTARY"
+                      ? "Dopunska djelatnost: default 30%."
+                      : "Unos u procentima (npr. 80 znači 80%)."
+                  }
                 />
                 <Input
                   value={form.contrib_base_percent_of_avg_gross}
                   onChange={(v) =>
                     setForm({ ...form, contrib_base_percent_of_avg_gross: v })
                   }
-                  placeholder="npr. 80"
+                  placeholder={isRS && rsMode === "SUPPLEMENTARY" ? "30" : "npr. 80"}
                 />
               </div>
+
               <div>
                 <FieldLabel
                   label="Izračunata osnovica doprinosa (KM)"
@@ -733,12 +859,14 @@ function FriendlyPayloadEditor({
                   placeholder="automatski izračun"
                 />
               </div>
+
+              <div className="hidden lg:block" />
               <div className="hidden lg:block" />
             </div>
           )}
 
           {isFBiH && (
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
               <div>
                 <FieldLabel
                   label="Mjesečna osnovica doprinosa (KM)"
@@ -754,12 +882,13 @@ function FriendlyPayloadEditor({
               </div>
               <div className="hidden lg:block" />
               <div className="hidden lg:block" />
+              <div className="hidden lg:block" />
             </div>
           )}
 
           <div className="pt-2">
             <SectionTitle title="PDV" subtitle="Stopa i prag ulaska u PDV sistem." />
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <div>
                 <FieldLabel
                   label="PDV stopa (%)"
@@ -786,7 +915,6 @@ function FriendlyPayloadEditor({
                   placeholder="50000"
                 />
               </div>
-              <div className="hidden lg:block" />
             </div>
           </div>
 
@@ -795,7 +923,7 @@ function FriendlyPayloadEditor({
               title="Porez"
               subtitle="Stopa poreza i opcionalni paušalni mjesečni iznos."
             />
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <div>
                 <FieldLabel
                   label="Porez na dohodak (%)"
@@ -822,68 +950,173 @@ function FriendlyPayloadEditor({
                   placeholder="npr. 50.00"
                 />
               </div>
-              <div className="hidden lg:block" />
             </div>
           </div>
 
           <div className="pt-2">
             <SectionTitle
               title="Doprinosi"
-              subtitle="Stope doprinosa (u procentima) i minimalna osnovica."
+              subtitle={
+                isRS && rsMode === "SUPPLEMENTARY"
+                  ? "Dopunska djelatnost: samo PIO, automatski izračun iznosa u KM (osnovica × stopa)."
+                  : "Unos stopa (u %) i automatski izračun iznosa u KM (osnovica × stopa)."
+              }
             />
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-              <div>
-                <FieldLabel
-                  label="Doprinos PIO (%)"
-                  hint="Unos u % (npr. 18). Sistem čuva 0.18."
-                />
-                <Input
-                  value={form.pension_rate_percent}
-                  onChange={(v) => setForm({ ...form, pension_rate_percent: v })}
-                  placeholder="18"
-                />
-              </div>
-              <div>
-                <FieldLabel
-                  label="Zdravstveno (%)"
-                  hint="Unos u % (npr. 12). Sistem čuva 0.12."
-                />
-                <Input
-                  value={form.health_rate_percent}
-                  onChange={(v) => setForm({ ...form, health_rate_percent: v })}
-                  placeholder="12"
-                />
-              </div>
-              <div>
-                <FieldLabel
-                  label="Nezaposlenost (%)"
-                  hint="Unos u % (npr. 1.5). Sistem čuva 0.015."
-                />
-                <Input
-                  value={form.unemployment_rate_percent}
-                  onChange={(v) =>
-                    setForm({ ...form, unemployment_rate_percent: v })
-                  }
-                  placeholder="1.5"
-                />
-              </div>
-            </div>
 
-            <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-              <div>
-                <FieldLabel
-                  label="Min osnovica doprinosa (KM)"
-                  hint="Opciono (ako imamo minimalnu osnovicu u modelu)."
-                />
-                <Input
-                  value={form.contrib_base_min_bam}
-                  onChange={(v) => setForm({ ...form, contrib_base_min_bam: v })}
-                  placeholder="npr. 1200.00"
-                />
+            {/* RS supplementary: only PIO */}
+            {(isRS && rsMode === "SUPPLEMENTARY") ? (
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+                <div>
+                  <FieldLabel
+                    label="Doprinos PIO (%)"
+                    hint="Unos u % (npr. 18)."
+                  />
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      value={form.pension_rate_percent}
+                      onChange={(v) => setForm({ ...form, pension_rate_percent: v })}
+                      placeholder="18"
+                    />
+                    <Input
+                      value={pensionAmount === null ? "" : pensionAmount.toFixed(2)}
+                      onChange={() => {}}
+                      readOnly
+                      placeholder="iznos (KM)"
+                    />
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">
+                    Lijevo: % • Desno: iznos (KM) = osnovica × stopa.
+                  </p>
+                </div>
+
+                <div>
+                  <FieldLabel
+                    label="Ukupno doprinosi (KM)"
+                    hint="Za dopunsku: ukupno = PIO."
+                  />
+                  <Input
+                    value={totalContribAmount === null ? "" : totalContribAmount.toFixed(2)}
+                    onChange={() => {}}
+                    readOnly
+                    placeholder="ukupno"
+                  />
+                </div>
               </div>
-              <div className="hidden lg:block" />
-              <div className="hidden lg:block" />
-            </div>
+            ) : (
+              <>
+                {/* PRIMARY RS and BD: PIO + Health + Unemployment */}
+                <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+                  <div>
+                    <FieldLabel
+                      label="Doprinos PIO (%)"
+                      hint="Unesi stopu u %. Ispod vidiš iznos u KM."
+                    />
+                    <div className="grid grid-cols-2 gap-3">
+                      <Input
+                        value={form.pension_rate_percent}
+                        onChange={(v) => setForm({ ...form, pension_rate_percent: v })}
+                        placeholder="18"
+                      />
+                      <Input
+                        value={pensionAmount === null ? "" : pensionAmount.toFixed(2)}
+                        onChange={() => {}}
+                        readOnly
+                        placeholder="iznos (KM)"
+                      />
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Lijevo: % • Desno: iznos (KM) = osnovica × stopa.
+                    </p>
+                  </div>
+
+                  <div>
+                    <FieldLabel
+                      label="Zdravstveno (%)"
+                      hint="Unesi stopu u %. Ispod vidiš iznos u KM."
+                    />
+                    <div className="grid grid-cols-2 gap-3">
+                      <Input
+                        value={form.health_rate_percent}
+                        onChange={(v) => setForm({ ...form, health_rate_percent: v })}
+                        placeholder="12"
+                      />
+                      <Input
+                        value={healthAmount === null ? "" : healthAmount.toFixed(2)}
+                        onChange={() => {}}
+                        readOnly
+                        placeholder="iznos (KM)"
+                      />
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Lijevo: % • Desno: iznos (KM) = osnovica × stopa.
+                    </p>
+                  </div>
+
+                  <div>
+                    <FieldLabel
+                      label="Nezaposlenost (%)"
+                      hint="Unesi stopu u %. Ispod vidiš iznos u KM."
+                    />
+                    <div className="grid grid-cols-2 gap-3">
+                      <Input
+                        value={form.unemployment_rate_percent}
+                        onChange={(v) =>
+                          setForm({ ...form, unemployment_rate_percent: v })
+                        }
+                        placeholder="1.5"
+                      />
+                      <Input
+                        value={unempAmount === null ? "" : unempAmount.toFixed(2)}
+                        onChange={() => {}}
+                        readOnly
+                        placeholder="iznos (KM)"
+                      />
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Lijevo: % • Desno: iznos (KM) = osnovica × stopa.
+                    </p>
+                  </div>
+                </div>
+
+                {(isRS || isBD) && (
+                  <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+                    <div>
+                      <FieldLabel
+                        label="Ukupno doprinosi (KM)"
+                        hint="Read-only: zbir iznosa doprinosa."
+                      />
+                      <Input
+                        value={totalContribAmount === null ? "" : totalContribAmount.toFixed(2)}
+                        onChange={() => {}}
+                        readOnly
+                        placeholder="ukupno"
+                      />
+                    </div>
+                    <div className="hidden lg:block" />
+                    <div className="hidden lg:block" />
+                  </div>
+                )}
+
+                {/* Min base - not for RS per your spec */}
+                {(jurisdiction === "FBiH" || jurisdiction === "BD") && (
+                  <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+                    <div>
+                      <FieldLabel
+                        label="Min osnovica doprinosa (KM)"
+                        hint="Opciono (ako imamo minimalnu osnovicu u modelu)."
+                      />
+                      <Input
+                        value={form.contrib_base_min_bam}
+                        onChange={(v) => setForm({ ...form, contrib_base_min_bam: v })}
+                        placeholder="npr. 1200.00"
+                      />
+                    </div>
+                    <div className="hidden lg:block" />
+                    <div className="hidden lg:block" />
+                  </div>
+                )}
+              </>
+            )}
           </div>
 
           <div className="pt-2">
@@ -917,13 +1150,6 @@ function FriendlyPayloadEditor({
                 />
               </div>
             </div>
-          </div>
-
-          <div className="pt-2">
-            <SectionTitle title="Generisani payload (preview)" />
-            <pre className="max-h-80 overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800">
-              {derivedPayload}
-            </pre>
           </div>
         </>
       ) : (
@@ -1075,9 +1301,16 @@ export default function AdminConstantsPage() {
       { name: "PDV stopa (%)", value: form.vat_standard_rate_percent },
       { name: "Porez na dohodak (%)", value: form.income_tax_rate_percent },
       { name: "PIO (%)", value: form.pension_rate_percent },
-      { name: "Zdravstvo (%)", value: form.health_rate_percent },
-      { name: "Nezaposlenost (%)", value: form.unemployment_rate_percent },
     ];
+
+    const isRS = activeTab === "RS";
+    const isBD = activeTab === "BD";
+    const rsMode = isRS ? rsContributionMode(form.scenario_key) : null;
+
+    if ((isRS && rsMode === "PRIMARY") || isBD) {
+      percentFields.push({ name: "Zdravstvo (%)", value: form.health_rate_percent });
+      percentFields.push({ name: "Nezaposlenost (%)", value: form.unemployment_rate_percent });
+    }
 
     if (activeTab === "RS" || activeTab === "BD") {
       percentFields.push({
@@ -1135,7 +1368,6 @@ export default function AdminConstantsPage() {
       payloadObj = buildPayloadFromForm(activeTab, form);
     }
 
-    // Uvijek forsiramo scenario_key konzistentnost (i za advanced JSON).
     if (typeof payloadObj !== "object" || payloadObj === null || Array.isArray(payloadObj)) {
       setErr("Payload mora biti JSON objekat.");
       return;
@@ -1259,9 +1491,10 @@ export default function AdminConstantsPage() {
           </div>
         }
       >
-        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12">
-          {/* Current card */}
-          <div className="lg:col-span-5">
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-stretch">
+          {/* LEFT column */}
+          <div className="lg:col-span-5 flex flex-col min-h-0">
+            {/* Current card */}
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               {curLoading ? (
                 <div className="text-sm text-slate-700">
@@ -1363,10 +1596,26 @@ export default function AdminConstantsPage() {
                 </div>
               </div>
             </div>
+
+            {/* Payload preview – LEFT column, fills remaining space */}
+            <div className="mt-4 flex-1 min-h-0 rounded-lg border border-slate-200 bg-white px-4 py-4 overflow-hidden">
+              <div className="mb-2">
+                <div className="text-sm font-semibold text-slate-900">
+                  Generisani payload (preview)
+                </div>
+                <div className="mt-1 text-sm text-slate-600">
+                  Read-only prikaz payload-a koji će biti snimljen.
+                </div>
+              </div>
+
+              <pre className="h-full min-h-0 max-h-[70vh] overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800 whitespace-pre">
+                {derivedPayload}
+              </pre>
+            </div>
           </div>
 
-          {/* Save inputs */}
-          <div className="lg:col-span-7">
+          {/* RIGHT column */}
+          <div className="lg:col-span-7 min-h-0">
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
               <div>
                 <FieldLabel label="Effective from" hint="Od kog datuma važi novi set." />
