@@ -12,6 +12,20 @@ import {
   constantsCurrent,
 } from "../services/adminConstantsApi";
 
+import AdminConstantsRSPanel from "./admin-constants/AdminConstantsRSPanel";
+import AdminConstantsFBiHPanel from "./admin-constants/AdminConstantsFBiHPanel";
+import AdminConstantsBDPanel from "./admin-constants/AdminConstantsBDPanel";
+
+import {
+  Badge,
+  Button,
+  Card,
+  FieldLabel,
+  Input,
+  SectionTitle,
+  Tabs,
+} from "./admin-constants/adminConstantsUi";
+
 type ConstantsForm = {
   scenario_key: string;
 
@@ -152,7 +166,6 @@ function defaultScenarioForJurisdiction(j: Jurisdiction): string {
 function defaultForm(j: Jurisdiction, scenario_key?: string): ConstantsForm {
   const sk = scenario_key ?? defaultScenarioForJurisdiction(j);
 
-  // RS defaults by scenario
   const rsIsSupplementary = j === "RS" && sk === "rs_supplementary";
   const rsBasePctDefault = rsIsSupplementary ? "30" : "80";
 
@@ -161,23 +174,19 @@ function defaultForm(j: Jurisdiction, scenario_key?: string): ConstantsForm {
 
     currency: "BAM",
 
-    // percent input defaults (UI)
     vat_standard_rate_percent: "17",
     vat_entry_threshold_bam: "",
 
     income_tax_rate_percent: "10",
     flat_tax_monthly_amount_bam: "",
 
-    // default rates
     pension_rate_percent: "18",
     health_rate_percent: rsIsSupplementary ? "" : "12",
     unemployment_rate_percent: rsIsSupplementary ? "" : "1.5",
 
-    // RS/BD
     avg_gross_wage_prev_year_bam: "",
     contrib_base_percent_of_avg_gross: rsBasePctDefault,
 
-    // FBiH
     monthly_contrib_base_bam: "",
 
     contrib_base_min_bam: "",
@@ -198,7 +207,10 @@ function computeCalculatedBaseBam(
   return avg * (pct / 100);
 }
 
-function computeContributionAmount(base: number | null, ratePercentStr: string): number | null {
+function computeContributionAmount(
+  base: number | null,
+  ratePercentStr: string
+): number | null {
   if (base === null) return null;
   const p = toNumOrNull(ratePercentStr);
   if (p === null) return null;
@@ -207,7 +219,9 @@ function computeContributionAmount(base: number | null, ratePercentStr: string):
 }
 
 function computeTotalContribAmount(values: Array<number | null>): number | null {
-  const nums = values.filter((x): x is number => typeof x === "number" && Number.isFinite(x));
+  const nums = values.filter(
+    (x): x is number => typeof x === "number" && Number.isFinite(x)
+  );
   if (nums.length === 0) return null;
   return nums.reduce((a, b) => a + b, 0);
 }
@@ -234,12 +248,13 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
 
   const isRS = j === "RS";
   const isBD = j === "BD";
-  const isFBiH = j === "FBiH";
 
   const rsMode = isRS ? rsContributionMode(form.scenario_key) : null;
 
   const pensionAmount =
-    isRS || isBD ? computeContributionAmount(calculatedBase, form.pension_rate_percent) : null;
+    isRS || isBD
+      ? computeContributionAmount(calculatedBase, form.pension_rate_percent)
+      : null;
 
   const healthAmount =
     isRS && rsMode === "PRIMARY"
@@ -284,14 +299,12 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
     },
 
     contributions: {
-      // rates
       pension_rate: pensionRate,
 
       // amounts (KM)
       pension_amount_bam: pensionAmount,
       total_contrib_amount_bam: totalContribAmount,
 
-      // generic optional (kept only where relevant; RS UI hides min base)
       base_min_bam:
         j === "FBiH" || j === "BD" ? toNumOrNull(form.contrib_base_min_bam) : null,
     },
@@ -312,7 +325,6 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
     );
     payload.base.calculated_contrib_base_bam = calculatedBase;
 
-    // RS: supplementary -> only PIO, primary -> PIO+health+unemp
     if (rsMode === "PRIMARY") {
       payload.contributions.health_rate = healthRate;
       payload.contributions.unemployment_rate = unempRate;
@@ -321,7 +333,7 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
     }
   }
 
-  if (isFBiH) {
+  if (j === "FBiH") {
     payload.base.monthly_contrib_base_bam = toNumOrNull(
       form.monthly_contrib_base_bam
     );
@@ -368,9 +380,7 @@ function hydrateFormFromPayload(j: Jurisdiction, payload: any): ConstantsForm {
   const pension_rate_percent =
     rateDecimalToPercentStr(contrib.pension_rate) || d.pension_rate_percent;
 
-  // For RS supplementary we intentionally allow blanks; if payload doesn't have these, keep empty.
-  const health_rate_percent =
-    rateDecimalToPercentStr(contrib.health_rate) || "";
+  const health_rate_percent = rateDecimalToPercentStr(contrib.health_rate) || "";
   const unemployment_rate_percent =
     rateDecimalToPercentStr(contrib.unemployment_rate) || "";
 
@@ -394,7 +404,6 @@ function hydrateFormFromPayload(j: Jurisdiction, payload: any): ConstantsForm {
   const monthly_contrib_base_bam =
     j === "FBiH" ? numToStr(base.monthly_contrib_base_bam) : "";
 
-  // When RS supplementary: if payload has no health/unemp, keep empty; defaults already handled by defaultForm on reset.
   return {
     scenario_key,
 
@@ -423,229 +432,24 @@ function hydrateFormFromPayload(j: Jurisdiction, payload: any): ConstantsForm {
   };
 }
 
-/**
- * Tailwind UI-like primitives (labels, inputs, cards)
- */
-
-function FieldLabel({
-  label,
-  hint,
-  htmlFor,
-}: {
-  label: string;
-  hint?: string;
-  htmlFor?: string;
-}) {
-  return (
-    <div className="mb-1">
-      <label
-        htmlFor={htmlFor}
-        className="block text-sm font-medium text-slate-700"
-      >
-        {label}
-      </label>
-      {hint ? <p className="mt-1 text-xs text-slate-500">{hint}</p> : null}
-    </div>
-  );
+function explainOverlap(detail: string): string {
+  if ((detail ?? "").toLowerCase().includes("overlapping")) {
+    return (
+      "Ne može snimiti jer postoji set sa preklapajućim datumima za isti scenario. " +
+      "Za rollover: novi set treba biti open-ended (Effective to prazno), " +
+      "i Effective from mora biti POSLIJE trenutnog active seta u istom scenario-u. " +
+      `Detalj: ${detail}`
+    );
+  }
+  return detail;
 }
 
-function Card({
-  title,
-  subtitle,
-  right,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  right?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
-      <div className="border-b border-slate-200 px-4 py-4 sm:px-6">
-        <div className="flex items-start justify-between gap-4">
-          <div className="min-w-0">
-            <h3 className="text-base font-semibold text-slate-900 truncate">
-              {title}
-            </h3>
-            {subtitle ? (
-              <p className="mt-1 text-sm text-slate-600">{subtitle}</p>
-            ) : null}
-          </div>
-          {right ? <div className="shrink-0">{right}</div> : null}
-        </div>
-      </div>
-      <div className="px-4 py-5 sm:px-6">{children}</div>
-    </div>
-  );
+function scenarioLabelFromKey(key: string): string {
+  const found = SCENARIOS.find((s) => s.key === key);
+  return found ? found.label : key;
 }
 
-function SectionTitle({
-  title,
-  subtitle,
-}: {
-  title: string;
-  subtitle?: string;
-}) {
-  return (
-    <div className="mb-4">
-      <h4 className="text-sm font-semibold text-slate-900">{title}</h4>
-      {subtitle ? <p className="mt-1 text-sm text-slate-600">{subtitle}</p> : null}
-    </div>
-  );
-}
-
-function Input({
-  id,
-  value,
-  onChange,
-  placeholder,
-  type = "text",
-  readOnly = false,
-}: {
-  id?: string;
-  value: string;
-  onChange: (v: string) => void;
-  placeholder?: string;
-  type?: string;
-  readOnly?: boolean;
-}) {
-  return (
-    <input
-      id={id}
-      type={type}
-      value={value}
-      readOnly={readOnly}
-      onChange={(e) => onChange(e.target.value)}
-      placeholder={placeholder}
-      className={[
-        "block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm",
-        "placeholder:text-slate-400 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200",
-        readOnly ? "bg-slate-50 text-slate-700" : "",
-      ].join(" ")}
-    />
-  );
-}
-
-function TextArea({
-  id,
-  value,
-  onChange,
-  rows = 3,
-  mono = false,
-  placeholder,
-}: {
-  id?: string;
-  value: string;
-  onChange: (v: string) => void;
-  rows?: number;
-  mono?: boolean;
-  placeholder?: string;
-}) {
-  return (
-    <textarea
-      id={id}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      rows={rows}
-      placeholder={placeholder}
-      className={[
-        "block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm",
-        "placeholder:text-slate-400 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200",
-        mono ? "font-mono" : "",
-      ].join(" ")}
-    />
-  );
-}
-
-function Button({
-  children,
-  onClick,
-  disabled,
-  variant = "primary",
-  type = "button",
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-  variant?: "primary" | "secondary" | "ghost" | "danger";
-  type?: "button" | "submit";
-}) {
-  const base =
-    "inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-semibold shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2";
-  const variants: Record<string, string> = {
-    primary:
-      "bg-slate-900 text-white hover:bg-slate-800 focus:ring-slate-300",
-    secondary:
-      "bg-white text-slate-900 ring-1 ring-inset ring-slate-300 hover:bg-slate-50 focus:ring-slate-200",
-    ghost:
-      "bg-transparent text-slate-700 hover:bg-slate-100 focus:ring-slate-200",
-    danger:
-      "bg-rose-600 text-white hover:bg-rose-700 focus:ring-rose-300",
-  };
-
-  return (
-    <button
-      type={type}
-      onClick={onClick}
-      disabled={disabled}
-      className={[
-        base,
-        variants[variant],
-        disabled ? "opacity-50 cursor-not-allowed" : "",
-      ].join(" ")}
-    >
-      {children}
-    </button>
-  );
-}
-
-function Badge({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-700">
-      {children}
-    </span>
-  );
-}
-
-function Tabs({
-  value,
-  onChange,
-}: {
-  value: Jurisdiction;
-  onChange: (v: Jurisdiction) => void;
-}) {
-  const tabs: Array<{ key: Jurisdiction; label: string }> = [
-    { key: "RS", label: "RS" },
-    { key: "FBiH", label: "FBiH" },
-    { key: "BD", label: "Brčko (BD)" },
-  ];
-
-  return (
-    <div className="flex w-full max-w-xl rounded-lg bg-slate-100 p-1">
-      {tabs.map((t) => {
-        const active = t.key === value;
-        return (
-          <button
-            key={t.key}
-            type="button"
-            onClick={() => onChange(t.key)}
-            className={[
-              "flex-1 rounded-md px-3 py-2 text-sm font-medium",
-              active
-                ? "bg-white text-slate-900 shadow-sm"
-                : "text-slate-700 hover:text-slate-900",
-            ].join(" ")}
-          >
-            {t.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function ScenarioSelect({
+function ScenarioSelectLocal({
   jurisdiction,
   value,
   onChange,
@@ -657,7 +461,7 @@ function ScenarioSelect({
   id?: string;
 }) {
   const options = SCENARIOS.filter((s) => s.jurisdiction === jurisdiction);
-  const selected = options.find((s) => s.key === value);
+  const selected = options.find((s) => s.key === value) ?? options[0];
 
   return (
     <div className="w-full">
@@ -685,510 +489,6 @@ function ScenarioSelect({
   );
 }
 
-function FriendlyPayloadEditor({
-  jurisdiction,
-  form,
-  setForm,
-  advanced,
-  setAdvanced,
-  raw,
-  setRaw,
-}: {
-  jurisdiction: Jurisdiction;
-  form: ConstantsForm;
-  setForm: (next: ConstantsForm) => void;
-  derivedPayload: string; // kept in signature by caller, but no longer rendered here
-  advanced: boolean;
-  setAdvanced: (v: boolean) => void;
-  raw: string;
-  setRaw: (v: string) => void;
-}) {
-  const isRS = jurisdiction === "RS";
-  const isFBiH = jurisdiction === "FBiH";
-  const isBD = jurisdiction === "BD";
-
-  const rsMode = isRS ? rsContributionMode(form.scenario_key) : null;
-
-  const calculatedBase =
-    isRS || isBD
-      ? computeCalculatedBaseBam(
-          form.avg_gross_wage_prev_year_bam,
-          form.contrib_base_percent_of_avg_gross
-        )
-      : null;
-
-  const pensionAmount =
-    isRS || isBD ? computeContributionAmount(calculatedBase, form.pension_rate_percent) : null;
-
-  const healthAmount =
-    isRS && rsMode === "PRIMARY"
-      ? computeContributionAmount(calculatedBase, form.health_rate_percent)
-      : isBD
-      ? computeContributionAmount(calculatedBase, form.health_rate_percent)
-      : null;
-
-  const unempAmount =
-    isRS && rsMode === "PRIMARY"
-      ? computeContributionAmount(calculatedBase, form.unemployment_rate_percent)
-      : isBD
-      ? computeContributionAmount(calculatedBase, form.unemployment_rate_percent)
-      : null;
-
-  const totalContribAmount =
-    isRS
-      ? computeTotalContribAmount(
-          rsMode === "SUPPLEMENTARY"
-            ? [pensionAmount]
-            : [pensionAmount, healthAmount, unempAmount]
-        )
-      : isBD
-      ? computeTotalContribAmount([pensionAmount, healthAmount, unempAmount])
-      : null;
-
-  return (
-    <div className="space-y-6">
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <div className="text-sm font-semibold text-slate-900">
-            Payload (unos kroz formu)
-          </div>
-          <div className="mt-1 text-sm text-slate-600">
-            Standardni unos kroz polja. Advanced JSON koristiš samo za privremene
-            ključeve koje UI još ne podržava.
-          </div>
-        </div>
-        <div className="shrink-0">
-          <Button
-            variant="secondary"
-            onClick={() => {
-              setAdvanced(!advanced);
-            }}
-          >
-            {advanced ? "Nazad na formu" : "Advanced JSON"}
-          </Button>
-        </div>
-      </div>
-
-      {!advanced ? (
-        <>
-          {/* TOP GRID - NO HINTS (for strict alignment) */}
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
-            <div>
-              <FieldLabel label="Scenario / šema (read-only)" />
-              <Input value={form.scenario_key} onChange={() => {}} readOnly />
-            </div>
-
-            <div>
-              <FieldLabel label="Valuta" />
-              <Input
-                value={form.currency}
-                onChange={(v) => setForm({ ...form, currency: v })}
-                placeholder="BAM"
-              />
-            </div>
-
-            {(isRS || isBD) ? (
-              <div>
-                <FieldLabel
-                  label={
-                    isRS
-                      ? "Prosječna bruto plata (prethodna godina) (KM)"
-                      : "Prosječna bruto plata (BD) – prethodna godina (KM)"
-                  }
-                />
-                <Input
-                  value={form.avg_gross_wage_prev_year_bam}
-                  onChange={(v) =>
-                    setForm({ ...form, avg_gross_wage_prev_year_bam: v })
-                  }
-                  placeholder="npr. 2000.00"
-                />
-              </div>
-            ) : (
-              <div className="hidden lg:block" />
-            )}
-
-            {(isRS || isBD) ? (
-              <div>
-                <FieldLabel label="Ukupno doprinosi (KM)" />
-                <Input
-                  value={totalContribAmount === null ? "" : totalContribAmount.toFixed(2)}
-                  onChange={() => {}}
-                  readOnly
-                  placeholder="automatski"
-                />
-              </div>
-            ) : (
-              <div className="hidden lg:block" />
-            )}
-          </div>
-
-          {(isRS || isBD) && (
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
-              <div>
-                <FieldLabel
-                  label={
-                    isRS
-                      ? "Osnovica doprinosa = % prosječne bruto plate"
-                      : "Procenat prosječne bruto plate za osnovicu (%)"
-                  }
-                  hint={
-                    isRS && rsMode === "SUPPLEMENTARY"
-                      ? "Dopunska djelatnost: default 30%."
-                      : "Unos u procentima (npr. 80 znači 80%)."
-                  }
-                />
-                <Input
-                  value={form.contrib_base_percent_of_avg_gross}
-                  onChange={(v) =>
-                    setForm({ ...form, contrib_base_percent_of_avg_gross: v })
-                  }
-                  placeholder={isRS && rsMode === "SUPPLEMENTARY" ? "30" : "npr. 80"}
-                />
-              </div>
-
-              <div>
-                <FieldLabel
-                  label="Izračunata osnovica doprinosa (KM)"
-                  hint="Read-only: avg_gross * (percent/100)."
-                />
-                <Input
-                  value={calculatedBase === null ? "" : calculatedBase.toFixed(2)}
-                  onChange={() => {}}
-                  readOnly
-                  placeholder="automatski izračun"
-                />
-              </div>
-
-              <div className="hidden lg:block" />
-              <div className="hidden lg:block" />
-            </div>
-          )}
-
-          {isFBiH && (
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
-              <div>
-                <FieldLabel
-                  label="Mjesečna osnovica doprinosa (KM)"
-                  hint="FBiH: primarni input. Decimal > 0 (npr. 1376.00)."
-                />
-                <Input
-                  value={form.monthly_contrib_base_bam}
-                  onChange={(v) =>
-                    setForm({ ...form, monthly_contrib_base_bam: v })
-                  }
-                  placeholder="npr. 1376.00"
-                />
-              </div>
-              <div className="hidden lg:block" />
-              <div className="hidden lg:block" />
-              <div className="hidden lg:block" />
-            </div>
-          )}
-
-          <div className="pt-2">
-            <SectionTitle title="PDV" subtitle="Stopa i prag ulaska u PDV sistem." />
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-              <div>
-                <FieldLabel
-                  label="PDV stopa (%)"
-                  hint="Unos u procentima (npr. 17). Sistem čuva 0.17."
-                />
-                <Input
-                  value={form.vat_standard_rate_percent}
-                  onChange={(v) =>
-                    setForm({ ...form, vat_standard_rate_percent: v })
-                  }
-                  placeholder="17"
-                />
-              </div>
-              <div>
-                <FieldLabel
-                  label="PDV prag ulaska (KM)"
-                  hint="Opciono; npr. 50000"
-                />
-                <Input
-                  value={form.vat_entry_threshold_bam}
-                  onChange={(v) =>
-                    setForm({ ...form, vat_entry_threshold_bam: v })
-                  }
-                  placeholder="50000"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="pt-2">
-            <SectionTitle
-              title="Porez"
-              subtitle="Stopa poreza i opcionalni paušalni mjesečni iznos."
-            />
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-              <div>
-                <FieldLabel
-                  label="Porez na dohodak (%)"
-                  hint="Unos u procentima (npr. 10). Sistem čuva 0.10."
-                />
-                <Input
-                  value={form.income_tax_rate_percent}
-                  onChange={(v) =>
-                    setForm({ ...form, income_tax_rate_percent: v })
-                  }
-                  placeholder="10"
-                />
-              </div>
-              <div>
-                <FieldLabel
-                  label="Paušalni porez (KM mjesečno)"
-                  hint="Opciono (ako postoji fiksni mjesečni iznos)."
-                />
-                <Input
-                  value={form.flat_tax_monthly_amount_bam}
-                  onChange={(v) =>
-                    setForm({ ...form, flat_tax_monthly_amount_bam: v })
-                  }
-                  placeholder="npr. 50.00"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="pt-2">
-            <SectionTitle
-              title="Doprinosi"
-              subtitle={
-                isRS && rsMode === "SUPPLEMENTARY"
-                  ? "Dopunska djelatnost: samo PIO, automatski izračun iznosa u KM (osnovica × stopa)."
-                  : "Unos stopa (u %) i automatski izračun iznosa u KM (osnovica × stopa)."
-              }
-            />
-
-            {/* RS supplementary: only PIO */}
-            {(isRS && rsMode === "SUPPLEMENTARY") ? (
-              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                <div>
-                  <FieldLabel
-                    label="Doprinos PIO (%)"
-                    hint="Unos u % (npr. 18)."
-                  />
-                  <div className="grid grid-cols-2 gap-3">
-                    <Input
-                      value={form.pension_rate_percent}
-                      onChange={(v) => setForm({ ...form, pension_rate_percent: v })}
-                      placeholder="18"
-                    />
-                    <Input
-                      value={pensionAmount === null ? "" : pensionAmount.toFixed(2)}
-                      onChange={() => {}}
-                      readOnly
-                      placeholder="iznos (KM)"
-                    />
-                  </div>
-                  <p className="mt-2 text-xs text-slate-500">
-                    Lijevo: % • Desno: iznos (KM) = osnovica × stopa.
-                  </p>
-                </div>
-
-                <div>
-                  <FieldLabel
-                    label="Ukupno doprinosi (KM)"
-                    hint="Za dopunsku: ukupno = PIO."
-                  />
-                  <Input
-                    value={totalContribAmount === null ? "" : totalContribAmount.toFixed(2)}
-                    onChange={() => {}}
-                    readOnly
-                    placeholder="ukupno"
-                  />
-                </div>
-              </div>
-            ) : (
-              <>
-                {/* PRIMARY RS and BD: PIO + Health + Unemployment */}
-                <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-                  <div>
-                    <FieldLabel
-                      label="Doprinos PIO (%)"
-                      hint="Unesi stopu u %. Ispod vidiš iznos u KM."
-                    />
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input
-                        value={form.pension_rate_percent}
-                        onChange={(v) => setForm({ ...form, pension_rate_percent: v })}
-                        placeholder="18"
-                      />
-                      <Input
-                        value={pensionAmount === null ? "" : pensionAmount.toFixed(2)}
-                        onChange={() => {}}
-                        readOnly
-                        placeholder="iznos (KM)"
-                      />
-                    </div>
-                    <p className="mt-2 text-xs text-slate-500">
-                      Lijevo: % • Desno: iznos (KM) = osnovica × stopa.
-                    </p>
-                  </div>
-
-                  <div>
-                    <FieldLabel
-                      label="Zdravstveno (%)"
-                      hint="Unesi stopu u %. Ispod vidiš iznos u KM."
-                    />
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input
-                        value={form.health_rate_percent}
-                        onChange={(v) => setForm({ ...form, health_rate_percent: v })}
-                        placeholder="12"
-                      />
-                      <Input
-                        value={healthAmount === null ? "" : healthAmount.toFixed(2)}
-                        onChange={() => {}}
-                        readOnly
-                        placeholder="iznos (KM)"
-                      />
-                    </div>
-                    <p className="mt-2 text-xs text-slate-500">
-                      Lijevo: % • Desno: iznos (KM) = osnovica × stopa.
-                    </p>
-                  </div>
-
-                  <div>
-                    <FieldLabel
-                      label="Nezaposlenost (%)"
-                      hint="Unesi stopu u %. Ispod vidiš iznos u KM."
-                    />
-                    <div className="grid grid-cols-2 gap-3">
-                      <Input
-                        value={form.unemployment_rate_percent}
-                        onChange={(v) =>
-                          setForm({ ...form, unemployment_rate_percent: v })
-                        }
-                        placeholder="1.5"
-                      />
-                      <Input
-                        value={unempAmount === null ? "" : unempAmount.toFixed(2)}
-                        onChange={() => {}}
-                        readOnly
-                        placeholder="iznos (KM)"
-                      />
-                    </div>
-                    <p className="mt-2 text-xs text-slate-500">
-                      Lijevo: % • Desno: iznos (KM) = osnovica × stopa.
-                    </p>
-                  </div>
-                </div>
-
-                {(isRS || isBD) && (
-                  <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-                    <div>
-                      <FieldLabel
-                        label="Ukupno doprinosi (KM)"
-                        hint="Read-only: zbir iznosa doprinosa."
-                      />
-                      <Input
-                        value={totalContribAmount === null ? "" : totalContribAmount.toFixed(2)}
-                        onChange={() => {}}
-                        readOnly
-                        placeholder="ukupno"
-                      />
-                    </div>
-                    <div className="hidden lg:block" />
-                    <div className="hidden lg:block" />
-                  </div>
-                )}
-
-                {/* Min base - not for RS per your spec */}
-                {(jurisdiction === "FBiH" || jurisdiction === "BD") && (
-                  <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-                    <div>
-                      <FieldLabel
-                        label="Min osnovica doprinosa (KM)"
-                        hint="Opciono (ako imamo minimalnu osnovicu u modelu)."
-                      />
-                      <Input
-                        value={form.contrib_base_min_bam}
-                        onChange={(v) => setForm({ ...form, contrib_base_min_bam: v })}
-                        placeholder="npr. 1200.00"
-                      />
-                    </div>
-                    <div className="hidden lg:block" />
-                    <div className="hidden lg:block" />
-                  </div>
-                )}
-              </>
-            )}
-          </div>
-
-          <div className="pt-2">
-            <SectionTitle
-              title="Izvori"
-              subtitle="Napomena i referenca (audit-friendly)."
-            />
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-              <div>
-                <FieldLabel
-                  label="Napomena / izvor (source_note)"
-                  hint="Kratko: odakle je uzeto (institucija/dokument)."
-                />
-                <TextArea
-                  value={form.source_note}
-                  onChange={(v) => setForm({ ...form, source_note: v })}
-                  rows={3}
-                  placeholder="npr. 'RZS / Službeni glasnik / odluka ...'"
-                />
-              </div>
-              <div>
-                <FieldLabel
-                  label="Referenca (source_reference)"
-                  hint="Link, broj službenog glasnika, naziv akta, itd."
-                />
-                <TextArea
-                  value={form.source_reference}
-                  onChange={(v) => setForm({ ...form, source_reference: v })}
-                  rows={3}
-                  placeholder="npr. 'SG RS 12/2025...' ili URL"
-                />
-              </div>
-            </div>
-          </div>
-        </>
-      ) : (
-        <>
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            Advanced JSON je za slučajeve kad želiš dodati dodatne ključeve prije
-            nego što ih UI dobije kao polja.
-          </div>
-          <div>
-            <FieldLabel
-              label="payload (JSON)"
-              hint="Mora biti validan JSON. Backend ga snima u app_constants_sets.payload."
-            />
-            <TextArea
-              value={raw}
-              onChange={setRaw}
-              rows={12}
-              mono
-              placeholder='{ "example": true }'
-            />
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function explainOverlap(detail: string): string {
-  if ((detail ?? "").toLowerCase().includes("overlapping")) {
-    return (
-      "Ne može snimiti jer postoji set sa preklapajućim datumima za isti scenario. " +
-      "Za rollover: novi set treba biti open-ended (Effective to prazno), " +
-      "i Effective from mora biti POSLIJE trenutnog active seta u istom scenario-u. " +
-      `Detalj: ${detail}`
-    );
-  }
-  return detail;
-}
-
 export default function AdminConstantsPage() {
   const [activeTab, setActiveTab] = useState<Jurisdiction>("RS");
 
@@ -1210,11 +510,10 @@ export default function AdminConstantsPage() {
   const [curItem, setCurItem] = useState<AppConstantsSetRead | null>(null);
   const [curLoading, setCurLoading] = useState(false);
 
-  // "As of" za lookup aktivnog seta (default: danas)
   const [asOf, setAsOf] = useState<string>(todayYmd());
 
   const [effectiveFrom, setEffectiveFrom] = useState<string>(todayYmd());
-  const [createdBy, setCreatedBy] = useState<string>(""); // audit-friendly default
+  const [createdBy, setCreatedBy] = useState<string>("");
   const [createdReason, setCreatedReason] = useState<string>("update constants");
 
   const [form, setForm] = useState<ConstantsForm>(() => defaultForm("RS"));
@@ -1244,7 +543,11 @@ export default function AdminConstantsPage() {
     }
   }
 
-  async function refreshCurrent(j: Jurisdiction, scenario_key: string, asOfYmd: string) {
+  async function refreshCurrent(
+    j: Jurisdiction,
+    scenario_key: string,
+    asOfYmd: string
+  ) {
     setCurLoading(true);
     try {
       const res = await constantsCurrent({
@@ -1274,20 +577,20 @@ export default function AdminConstantsPage() {
     ]);
   }
 
-  // Jedan efekat: tab + scenario
   useEffect(() => {
     setErr(null);
     setAdvanced(false);
     setPayloadRaw("");
 
-    setAsOf(todayYmd());
-    setEffectiveFrom(todayYmd());
+    const t = todayYmd();
+    setAsOf(t);
+    setEffectiveFrom(t);
     setCreatedReason("update constants");
 
     setForm(defaultForm(activeTab, activeScenario));
     setCurItem(null);
 
-    refreshAll(activeTab, activeScenario, todayYmd());
+    refreshAll(activeTab, activeScenario, t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, activeScenario]);
 
@@ -1309,7 +612,10 @@ export default function AdminConstantsPage() {
 
     if ((isRS && rsMode === "PRIMARY") || isBD) {
       percentFields.push({ name: "Zdravstvo (%)", value: form.health_rate_percent });
-      percentFields.push({ name: "Nezaposlenost (%)", value: form.unemployment_rate_percent });
+      percentFields.push({
+        name: "Nezaposlenost (%)",
+        value: form.unemployment_rate_percent,
+      });
     }
 
     if (activeTab === "RS" || activeTab === "BD") {
@@ -1368,7 +674,11 @@ export default function AdminConstantsPage() {
       payloadObj = buildPayloadFromForm(activeTab, form);
     }
 
-    if (typeof payloadObj !== "object" || payloadObj === null || Array.isArray(payloadObj)) {
+    if (
+      typeof payloadObj !== "object" ||
+      payloadObj === null ||
+      Array.isArray(payloadObj)
+    ) {
       setErr("Payload mora biti JSON objekat.");
       return;
     }
@@ -1432,7 +742,7 @@ export default function AdminConstantsPage() {
             </div>
 
             <div className="w-full lg:max-w-xl">
-              <ScenarioSelect
+              <ScenarioSelectLocal
                 jurisdiction={activeTab}
                 value={activeScenario}
                 onChange={(v) =>
@@ -1494,7 +804,6 @@ export default function AdminConstantsPage() {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-12 items-stretch">
           {/* LEFT column */}
           <div className="lg:col-span-5 flex flex-col min-h-0">
-            {/* Current card */}
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               {curLoading ? (
                 <div className="text-sm text-slate-700">
@@ -1597,7 +906,6 @@ export default function AdminConstantsPage() {
               </div>
             </div>
 
-            {/* Payload preview – LEFT column, fills remaining space */}
             <div className="mt-4 flex-1 min-h-0 rounded-lg border border-slate-200 bg-white px-4 py-4 overflow-hidden">
               <div className="mb-2">
                 <div className="text-sm font-semibold text-slate-900">
@@ -1643,16 +951,35 @@ export default function AdminConstantsPage() {
             </div>
 
             <div className="mt-6">
-              <FriendlyPayloadEditor
-                jurisdiction={activeTab}
-                form={form}
-                setForm={setForm}
-                derivedPayload={derivedPayload}
-                advanced={advanced}
-                setAdvanced={setAdvanced}
-                raw={payloadRaw}
-                setRaw={setPayloadRaw}
-              />
+              {activeTab === "RS" ? (
+                <AdminConstantsRSPanel
+                  jurisdiction={activeTab}
+                  form={form as any}
+                  setForm={setForm as any}
+                  advanced={advanced}
+                  setAdvanced={setAdvanced}
+                  raw={payloadRaw}
+                  setRaw={setPayloadRaw}
+                />
+              ) : activeTab === "FBiH" ? (
+                <AdminConstantsFBiHPanel
+                  form={form as any}
+                  setForm={setForm as any}
+                  advanced={advanced}
+                  setAdvanced={setAdvanced}
+                  raw={payloadRaw}
+                  setRaw={setPayloadRaw}
+                />
+              ) : (
+                <AdminConstantsBDPanel
+                  form={form as any}
+                  setForm={setForm as any}
+                  advanced={advanced}
+                  setAdvanced={setAdvanced}
+                  raw={payloadRaw}
+                  setRaw={setPayloadRaw}
+                />
+              )}
             </div>
           </div>
         </div>
@@ -1687,47 +1014,62 @@ export default function AdminConstantsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
-                {activeHistory.map((row) => (
-                  <tr key={row.id} className="hover:bg-slate-50">
-                    <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-slate-700">
-                      {row.id}
-                    </td>
+                {activeHistory.map((row) => {
+                  const scenarioKey =
+                    (row as any)?.scenario_key ||
+                    (row as any)?.payload?.scenario_key ||
+                    "-";
 
-                    <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-slate-700">
-                      {row.effective_from}..{row.effective_to ?? "∞"}
-                    </td>
+                  const label =
+                    scenarioKey === "-" ? "-" : scenarioLabelFromKey(String(scenarioKey));
 
-                    <td className="px-4 py-3">
-                      <div
-                        className="min-w-0 font-mono text-xs text-slate-700 truncate"
-                        title={row.scenario_key || "-"}
-                      >
-                        {row.scenario_key || "-"}
-                      </div>
-                    </td>
+                  return (
+                    <tr key={row.id} className="hover:bg-slate-50">
+                      <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-slate-700">
+                        {row.id}
+                      </td>
 
-                    <td className="px-4 py-3 text-xs text-slate-600">
-                      <div
-                        className="min-w-0 truncate"
-                        title={`${row.created_by ?? "-"} / ${
-                          row.created_reason ?? "-"
-                        }`}
-                      >
-                        created: {row.created_by ?? "-"} /{" "}
-                        {row.created_reason ?? "-"}
-                      </div>
-                      <div
-                        className="min-w-0 truncate"
-                        title={`${row.updated_by ?? "-"} / ${
-                          row.updated_reason ?? "-"
-                        }`}
-                      >
-                        updated: {row.updated_by ?? "-"} /{" "}
-                        {row.updated_reason ?? "-"}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
+                      <td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-slate-700">
+                        {row.effective_from}..{row.effective_to ?? "∞"}
+                      </td>
+
+                      <td className="px-4 py-3">
+                        <div
+                          className="min-w-0 text-xs text-slate-700 truncate"
+                          title={String(scenarioKey)}
+                        >
+                          {label}
+                        </div>
+                        {scenarioKey !== "-" ? (
+                          <div className="mt-0.5 font-mono text-[11px] text-slate-500 truncate">
+                            {String(scenarioKey)}
+                          </div>
+                        ) : null}
+                      </td>
+
+                      <td className="px-4 py-3 text-xs text-slate-600">
+                        <div
+                          className="min-w-0 truncate"
+                          title={`${row.created_by ?? "-"} / ${
+                            row.created_reason ?? "-"
+                          }`}
+                        >
+                          created: {row.created_by ?? "-"} /{" "}
+                          {row.created_reason ?? "-"}
+                        </div>
+                        <div
+                          className="min-w-0 truncate"
+                          title={`${row.updated_by ?? "-"} / ${
+                            row.updated_reason ?? "-"
+                          }`}
+                        >
+                          updated: {row.updated_by ?? "-"} /{" "}
+                          {row.updated_reason ?? "-"}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
 
                 {activeHistory.length === 0 && (
                   <tr>
