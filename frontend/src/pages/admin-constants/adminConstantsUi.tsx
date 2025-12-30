@@ -145,3 +145,78 @@ export function Button({
     </button>
   );
 }
+
+export function Badge({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex items-center rounded-full border border-slate-200 bg-white px-2 py-0.5 text-xs font-semibold text-slate-700 shadow-sm">
+      {children}
+    </span>
+  );
+}
+
+export function Card({
+  title,
+  subtitle,
+  right,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  right?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="min-w-0">
+          <div className="text-base font-semibold text-slate-900">{title}</div>
+          {subtitle ? (
+            <div className="mt-1 text-sm text-slate-600">{subtitle}</div>
+          ) : null}
+        </div>
+        {right ? <div className="shrink-0">{right}</div> : null}
+      </div>
+
+      <div className="px-5 py-5">{children}</div>
+    </div>
+  );
+}
+
+type JurisdictionTab = "RS" | "FBiH" | "BD";
+
+export function Tabs({
+  value,
+  onChange,
+}: {
+  value: JurisdictionTab;
+  onChange: (v: JurisdictionTab) => void;
+}) {
+  const tabs: Array<{ key: JurisdictionTab; label: string }> = [
+    { key: "RS", label: "RS" },
+    { key: "FBiH", label: "FBiH" },
+    { key: "BD", label: "BD" },
+  ];
+
+  return (
+    <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1 shadow-sm">
+      {tabs.map((t) => {
+        const active = t.key === value;
+        return (
+          <button
+            key={t.key}
+            type="button"
+            onClick={() => onChange(t.key)}
+            className={[
+              "rounded-md px-3 py-1.5 text-sm font-semibold",
+              active
+                ? "bg-slate-900 text-white"
+                : "text-slate-700 hover:bg-slate-100",
+            ].join(" ")}
+          >
+            {t.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
