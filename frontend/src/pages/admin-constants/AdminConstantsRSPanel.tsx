@@ -101,10 +101,35 @@ export default function AdminConstantsRSPanel({
       ? computeContributionAmount(calculatedBase, form.unemployment_rate_percent)
       : null;
 
+  // NEW: child protection (RS primary only)
+  const [childProtectionRatePercent, setChildProtectionRatePercent] = (() => {
+    const payloadAny = (form as any);
+    const current =
+      typeof payloadAny.child_protection_rate_percent === "string"
+        ? payloadAny.child_protection_rate_percent
+        : "";
+
+    const setter = (v: string) => {
+      setForm({ ...(form as any), child_protection_rate_percent: v });
+    };
+
+    return [current, setter] as const;
+  })();
+
+  const childProtectionAmount =
+    rsMode === "PRIMARY"
+      ? computeContributionAmount(calculatedBase, childProtectionRatePercent)
+      : null;
+
   const totalContribAmount =
     rsMode === "SUPPLEMENTARY"
       ? computeTotalContribAmount([pensionAmount])
-      : computeTotalContribAmount([pensionAmount, healthAmount, unempAmount]);
+      : computeTotalContribAmount([
+          pensionAmount,
+          healthAmount,
+          unempAmount,
+          childProtectionAmount,
+        ]);
 
   return (
     <div className="space-y-6">
@@ -132,8 +157,8 @@ export default function AdminConstantsRSPanel({
 
       {!advanced ? (
         <>
-          {/* TOP GRID */}
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
+          {/* TOP GRID (aligned) */}
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 items-end">
             <div>
               <FieldLabel label="Scenario / šema (read-only)" />
               <Input value={form.scenario_key} onChange={() => {}} readOnly />
@@ -156,19 +181,9 @@ export default function AdminConstantsRSPanel({
                 placeholder="npr. 2000.00"
               />
             </div>
-
-            <div>
-              <FieldLabel label="Ukupno doprinosi (KM)" />
-              <Input
-                value={totalContribAmount === null ? "" : totalContribAmount.toFixed(2)}
-                onChange={() => {}}
-                readOnly
-                placeholder="automatski"
-              />
-            </div>
           </div>
 
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 items-end">
             <div>
               <FieldLabel
                 label="Osnovica doprinosa = % prosječne bruto plate"
@@ -199,9 +214,6 @@ export default function AdminConstantsRSPanel({
                 placeholder="automatski izračun"
               />
             </div>
-
-            <div className="hidden lg:block" />
-            <div className="hidden lg:block" />
           </div>
 
           <div className="pt-2">
@@ -268,12 +280,12 @@ export default function AdminConstantsRSPanel({
               subtitle={
                 rsMode === "SUPPLEMENTARY"
                   ? "Dopunska djelatnost: samo PIO, automatski izračun iznosa u KM (osnovica × stopa)."
-                  : "Osnovna djelatnost: PIO + zdravstvo + nezaposlenost (iznos u KM = osnovica × stopa)."
+                  : "Osnovna djelatnost: PIO + zdravstvo + nezaposlenost + dječija zaštita (iznos u KM = osnovica × stopa)."
               }
             />
 
             {rsMode === "SUPPLEMENTARY" ? (
-              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+              <div className="grid grid-cols-1 gap-6 lg:grid-cols-2 items-start">
                 <div>
                   <FieldLabel label="Doprinos PIO (%)" hint="Unos u % (npr. 18)." />
                   <div className="grid grid-cols-2 gap-3">
@@ -296,17 +308,24 @@ export default function AdminConstantsRSPanel({
 
                 <div>
                   <FieldLabel label="Ukupno doprinosi (KM)" hint="Za dopunsku: ukupno = PIO." />
-                  <Input
-                    value={totalContribAmount === null ? "" : totalContribAmount.toFixed(2)}
-                    onChange={() => {}}
-                    readOnly
-                    placeholder="ukupno"
-                  />
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="col-span-2">
+                      <Input
+                        value={totalContribAmount === null ? "" : totalContribAmount.toFixed(2)}
+                        onChange={() => {}}
+                        readOnly
+                        placeholder="ukupno"
+                      />
+                    </div>
+                  </div>
+                  <p className="mt-2 text-xs text-slate-500">
+                    Read-only: ukupno (KM) = PIO iznos.
+                  </p>
                 </div>
               </div>
             ) : (
               <>
-                <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+                <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
                   <div>
                     <FieldLabel
                       label="Doprinos PIO (%)"
@@ -364,10 +383,35 @@ export default function AdminConstantsRSPanel({
                         onChange={(v) =>
                           setForm({ ...form, unemployment_rate_percent: v })
                         }
-                        placeholder="1.5"
+                        placeholder="0.6"
                       />
                       <Input
                         value={unempAmount === null ? "" : unempAmount.toFixed(2)}
+                        onChange={() => {}}
+                        readOnly
+                        placeholder="iznos (KM)"
+                      />
+                    </div>
+                    <p className="mt-2 text-xs text-slate-500">
+                      Lijevo: % • Desno: iznos (KM) = osnovica × stopa.
+                    </p>
+                  </div>
+
+                  <div>
+                    <FieldLabel
+                      label="Dječija zaštita (%)"
+                      hint="Unesi stopu u %. Ispod vidiš iznos u KM."
+                    />
+                    <div className="grid grid-cols-2 gap-3">
+                      <Input
+                        value={childProtectionRatePercent}
+                        onChange={setChildProtectionRatePercent}
+                        placeholder="1.7"
+                      />
+                      <Input
+                        value={
+                          childProtectionAmount === null ? "" : childProtectionAmount.toFixed(2)
+                        }
                         onChange={() => {}}
                         readOnly
                         placeholder="iznos (KM)"
