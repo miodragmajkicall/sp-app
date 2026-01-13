@@ -45,11 +45,11 @@ type ConstantsForm = {
   health_rate_percent: string;
   unemployment_rate_percent: string;
 
-  // RS + BD: avg gross wage + base percent -> calculated base (KM)
+  // RS: avg gross wage + base percent -> calculated base (KM)
   avg_gross_wage_prev_year_bam: string;
   contrib_base_percent_of_avg_gross: string;
 
-  // FBiH: monthly base (KM)
+  // FBiH + BD: fixed monthly base (KM)
   monthly_contrib_base_bam: string;
 
   // Optional min base (KM) (kept generic; RS primary should not show it in UI)
@@ -238,16 +238,19 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
   const healthRate = percentStrToRateDecimal(form.health_rate_percent);
   const unempRate = percentStrToRateDecimal(form.unemployment_rate_percent);
 
-  const calculatedBase =
-    j === "RS" || j === "BD"
-      ? computeCalculatedBaseBam(
-          form.avg_gross_wage_prev_year_bam,
-          form.contrib_base_percent_of_avg_gross
-        )
-      : null;
-
   const isRS = j === "RS";
   const isBD = j === "BD";
+  const isFBiH = j === "FBiH";
+
+  // RS: avg gross * % ; BD: fixed base (KM) ; FBiH: fixed base (KM)
+  const calculatedBase = isRS
+    ? computeCalculatedBaseBam(
+        form.avg_gross_wage_prev_year_bam,
+        form.contrib_base_percent_of_avg_gross
+      )
+    : isBD
+    ? toNumOrNull(form.monthly_contrib_base_bam)
+    : null;
 
   const rsMode = isRS ? rsContributionMode(form.scenario_key) : null;
 
@@ -305,8 +308,8 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
       pension_amount_bam: pensionAmount,
       total_contrib_amount_bam: totalContribAmount,
 
-      base_min_bam:
-        j === "FBiH" || j === "BD" ? toNumOrNull(form.contrib_base_min_bam) : null,
+      // NOTE: BD više ne koristi min osnovicu u V1 (ako zatreba, vratićemo uz spec)
+      base_min_bam: isFBiH ? toNumOrNull(form.contrib_base_min_bam) : null,
     },
 
     meta: {
@@ -333,18 +336,16 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
     }
   }
 
-  if (j === "FBiH") {
+  if (isFBiH) {
     payload.base.monthly_contrib_base_bam = toNumOrNull(
       form.monthly_contrib_base_bam
     );
   }
 
   if (isBD) {
-    payload.base.avg_gross_prev_year_bam = toNumOrNull(
-      form.avg_gross_wage_prev_year_bam
-    );
-    payload.base.base_percent_of_avg_gross = toNumOrNull(
-      form.contrib_base_percent_of_avg_gross
+    // BD: fiksna osnovica (KM)
+    payload.base.monthly_contrib_base_bam = toNumOrNull(
+      form.monthly_contrib_base_bam
     );
     payload.base.calculated_contrib_base_bam = calculatedBase;
 
@@ -386,8 +387,11 @@ function hydrateFormFromPayload(j: Jurisdiction, payload: any): ConstantsForm {
 
   const vat_entry_threshold_bam = numToStr(vat.entry_threshold_bam);
   const flat_tax_monthly_amount_bam = numToStr(tax.flat_tax_monthly_amount_bam);
-  const contrib_base_min_bam = numToStr(contrib.base_min_bam);
 
+  // base_min samo za FBiH u V1
+  const contrib_base_min_bam = j === "FBiH" ? numToStr(contrib.base_min_bam) : "";
+
+  // RS fields
   let avg_gross_wage_prev_year_bam = "";
   let contrib_base_percent_of_avg_gross = "";
 
@@ -396,13 +400,15 @@ function hydrateFormFromPayload(j: Jurisdiction, payload: any): ConstantsForm {
     contrib_base_percent_of_avg_gross = numToStr(
       base.contrib_base_percent_of_avg_gross
     );
-  } else if (j === "BD") {
-    avg_gross_wage_prev_year_bam = numToStr(base.avg_gross_prev_year_bam);
-    contrib_base_percent_of_avg_gross = numToStr(base.base_percent_of_avg_gross);
   }
 
+  // monthly base: FBiH + BD
   const monthly_contrib_base_bam =
-    j === "FBiH" ? numToStr(base.monthly_contrib_base_bam) : "";
+    j === "FBiH"
+      ? numToStr(base.monthly_contrib_base_bam)
+      : j === "BD"
+      ? numToStr(base.monthly_contrib_base_bam ?? base.calculated_contrib_base_bam)
+      : "";
 
   return {
     scenario_key,
@@ -618,7 +624,8 @@ export default function AdminConstantsPage() {
       });
     }
 
-    if (activeTab === "RS" || activeTab === "BD") {
+    // RS: validacija % prosječne bruto plate (osnovica)
+    if (activeTab === "RS") {
       percentFields.push({
         name: "% prosječne bruto plate za osnovicu",
         value: form.contrib_base_percent_of_avg_gross,
@@ -635,6 +642,12 @@ export default function AdminConstantsPage() {
       const mb = toNumOrNull(form.monthly_contrib_base_bam);
       if (mb === null || mb <= 0)
         return "FBiH: mjesečna osnovica doprinosa (KM) mora biti > 0.";
+    }
+
+    if (activeTab === "BD") {
+      const mb = toNumOrNull(form.monthly_contrib_base_bam);
+      if (mb === null || mb <= 0)
+        return "BD: osnovica doprinosa (KM) mora biti > 0.";
     }
 
     return null;
