@@ -17,6 +17,9 @@ type ConstantsForm = {
   health_rate_percent: string;
   unemployment_rate_percent: string;
 
+  // RS: child protection (primary only)
+  child_protection_rate_percent: string;
+
   avg_gross_wage_prev_year_bam: string;
   contrib_base_percent_of_avg_gross: string;
 
@@ -101,24 +104,9 @@ export default function AdminConstantsRSPanel({
       ? computeContributionAmount(calculatedBase, form.unemployment_rate_percent)
       : null;
 
-  // NEW: child protection (RS primary only)
-  const [childProtectionRatePercent, setChildProtectionRatePercent] = (() => {
-    const payloadAny = (form as any);
-    const current =
-      typeof payloadAny.child_protection_rate_percent === "string"
-        ? payloadAny.child_protection_rate_percent
-        : "";
-
-    const setter = (v: string) => {
-      setForm({ ...(form as any), child_protection_rate_percent: v });
-    };
-
-    return [current, setter] as const;
-  })();
-
   const childProtectionAmount =
     rsMode === "PRIMARY"
-      ? computeContributionAmount(calculatedBase, childProtectionRatePercent)
+      ? computeContributionAmount(calculatedBase, form.child_protection_rate_percent)
       : null;
 
   const totalContribAmount =
@@ -404,8 +392,10 @@ export default function AdminConstantsRSPanel({
                     />
                     <div className="grid grid-cols-2 gap-3">
                       <Input
-                        value={childProtectionRatePercent}
-                        onChange={setChildProtectionRatePercent}
+                        value={form.child_protection_rate_percent}
+                        onChange={(v) =>
+                          setForm({ ...form, child_protection_rate_percent: v })
+                        }
                         placeholder="1.7"
                       />
                       <Input

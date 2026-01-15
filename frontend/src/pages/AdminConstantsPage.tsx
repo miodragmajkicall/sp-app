@@ -45,14 +45,17 @@ type ConstantsForm = {
   health_rate_percent: string;
   unemployment_rate_percent: string;
 
-  // RS: avg gross wage + base percent -> calculated base (KM)
+  // RS: child protection (primary only)
+  child_protection_rate_percent: string;
+
+  // RS: avg gross wage + base percent (KM + %)
   avg_gross_wage_prev_year_bam: string;
   contrib_base_percent_of_avg_gross: string;
 
   // FBiH + BD: fixed monthly base (KM)
   monthly_contrib_base_bam: string;
 
-  // Optional min base (KM) (kept generic; RS primary should not show it in UI)
+  // legacy (kept in form type only; NOT used in payload V1)
   contrib_base_min_bam: string;
 
   // Notes / sources
@@ -184,6 +187,8 @@ function defaultForm(j: Jurisdiction, scenario_key?: string): ConstantsForm {
     health_rate_percent: rsIsSupplementary ? "" : "12",
     unemployment_rate_percent: rsIsSupplementary ? "" : "1.5",
 
+    child_protection_rate_percent: rsIsSupplementary ? "" : "1.7",
+
     avg_gross_wage_prev_year_bam: "",
     contrib_base_percent_of_avg_gross: rsBasePctDefault,
 
@@ -196,40 +201,15 @@ function defaultForm(j: Jurisdiction, scenario_key?: string): ConstantsForm {
   };
 }
 
-function computeCalculatedBaseBam(
-  avgGrossStr: string,
-  basePercentStr: string
-): number | null {
-  const avg = toNumOrNull(avgGrossStr);
-  const p = toNumOrNull(basePercentStr);
-  if (avg === null || p === null) return null;
-  const pct = clampPercent(p);
-  return avg * (pct / 100);
-}
-
-function computeContributionAmount(
-  base: number | null,
-  ratePercentStr: string
-): number | null {
-  if (base === null) return null;
-  const p = toNumOrNull(ratePercentStr);
-  if (p === null) return null;
-  const pct = clampPercent(p);
-  return base * (pct / 100);
-}
-
-function computeTotalContribAmount(values: Array<number | null>): number | null {
-  const nums = values.filter(
-    (x): x is number => typeof x === "number" && Number.isFinite(x)
-  );
-  if (nums.length === 0) return null;
-  return nums.reduce((a, b) => a + b, 0);
-}
-
 function rsContributionMode(scenarioKey: string): "PRIMARY" | "SUPPLEMENTARY" {
   return scenarioKey === "rs_supplementary" ? "SUPPLEMENTARY" : "PRIMARY";
 }
 
+/**
+ * V1: Input-only payload builder.
+ * - Payload MUST match only the fields admin can input in UI.
+ * - No UI-derived values (amounts, totals, calculated base, timestamps).
+ */
 function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
   const vatRate = percentStrToRateDecimal(form.vat_standard_rate_percent);
   const incomeTaxRate = percentStrToRateDecimal(form.income_tax_rate_percent);
@@ -237,52 +217,13 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
   const pensionRate = percentStrToRateDecimal(form.pension_rate_percent);
   const healthRate = percentStrToRateDecimal(form.health_rate_percent);
   const unempRate = percentStrToRateDecimal(form.unemployment_rate_percent);
+  const childRate = percentStrToRateDecimal(form.child_protection_rate_percent);
 
   const isRS = j === "RS";
   const isBD = j === "BD";
   const isFBiH = j === "FBiH";
 
-  // RS: avg gross * % ; BD: fixed base (KM) ; FBiH: fixed base (KM)
-  const calculatedBase = isRS
-    ? computeCalculatedBaseBam(
-        form.avg_gross_wage_prev_year_bam,
-        form.contrib_base_percent_of_avg_gross
-      )
-    : isBD
-    ? toNumOrNull(form.monthly_contrib_base_bam)
-    : null;
-
   const rsMode = isRS ? rsContributionMode(form.scenario_key) : null;
-
-  const pensionAmount =
-    isRS || isBD
-      ? computeContributionAmount(calculatedBase, form.pension_rate_percent)
-      : null;
-
-  const healthAmount =
-    isRS && rsMode === "PRIMARY"
-      ? computeContributionAmount(calculatedBase, form.health_rate_percent)
-      : isBD
-      ? computeContributionAmount(calculatedBase, form.health_rate_percent)
-      : null;
-
-  const unempAmount =
-    isRS && rsMode === "PRIMARY"
-      ? computeContributionAmount(calculatedBase, form.unemployment_rate_percent)
-      : isBD
-      ? computeContributionAmount(calculatedBase, form.unemployment_rate_percent)
-      : null;
-
-  const totalContribAmount =
-    isRS
-      ? computeTotalContribAmount(
-          rsMode === "SUPPLEMENTARY"
-            ? [pensionAmount]
-            : [pensionAmount, healthAmount, unempAmount]
-        )
-      : isBD
-      ? computeTotalContribAmount([pensionAmount, healthAmount, unempAmount])
-      : null;
 
   const payload: any = {
     scenario_key: form.scenario_key,
@@ -303,19 +244,11 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
 
     contributions: {
       pension_rate: pensionRate,
-
-      // amounts (KM)
-      pension_amount_bam: pensionAmount,
-      total_contrib_amount_bam: totalContribAmount,
-
-      // NOTE: BD više ne koristi min osnovicu u V1 (ako zatreba, vratićemo uz spec)
-      base_min_bam: isFBiH ? toNumOrNull(form.contrib_base_min_bam) : null,
     },
 
     meta: {
       source_note: (form.source_note ?? "").trim() || null,
       source_reference: (form.source_reference ?? "").trim() || null,
-      updated_at_ui: new Date().toISOString(),
     },
   };
 
@@ -326,33 +259,21 @@ function buildPayloadFromForm(j: Jurisdiction, form: ConstantsForm): any {
     payload.base.contrib_base_percent_of_avg_gross = toNumOrNull(
       form.contrib_base_percent_of_avg_gross
     );
-    payload.base.calculated_contrib_base_bam = calculatedBase;
 
     if (rsMode === "PRIMARY") {
       payload.contributions.health_rate = healthRate;
       payload.contributions.unemployment_rate = unempRate;
-      payload.contributions.health_amount_bam = healthAmount;
-      payload.contributions.unemployment_amount_bam = unempAmount;
+      payload.contributions.child_rate = childRate;
     }
   }
 
-  if (isFBiH) {
+  if (isFBiH || isBD) {
     payload.base.monthly_contrib_base_bam = toNumOrNull(
       form.monthly_contrib_base_bam
     );
-  }
-
-  if (isBD) {
-    // BD: fiksna osnovica (KM)
-    payload.base.monthly_contrib_base_bam = toNumOrNull(
-      form.monthly_contrib_base_bam
-    );
-    payload.base.calculated_contrib_base_bam = calculatedBase;
 
     payload.contributions.health_rate = healthRate;
     payload.contributions.unemployment_rate = unempRate;
-    payload.contributions.health_amount_bam = healthAmount;
-    payload.contributions.unemployment_amount_bam = unempAmount;
   }
 
   return payload;
@@ -371,7 +292,8 @@ function hydrateFormFromPayload(j: Jurisdiction, payload: any): ConstantsForm {
   const scenario_key =
     typeof p.scenario_key === "string" ? p.scenario_key : d.scenario_key;
 
-  const currency = typeof base.currency === "string" ? base.currency : d.currency;
+  const currency =
+    typeof base.currency === "string" ? base.currency : d.currency;
 
   const vat_standard_rate_percent =
     rateDecimalToPercentStr(vat.standard_rate) || d.vat_standard_rate_percent;
@@ -385,11 +307,11 @@ function hydrateFormFromPayload(j: Jurisdiction, payload: any): ConstantsForm {
   const unemployment_rate_percent =
     rateDecimalToPercentStr(contrib.unemployment_rate) || "";
 
+  const child_protection_rate_percent =
+    j === "RS" ? rateDecimalToPercentStr(contrib.child_rate) || "" : "";
+
   const vat_entry_threshold_bam = numToStr(vat.entry_threshold_bam);
   const flat_tax_monthly_amount_bam = numToStr(tax.flat_tax_monthly_amount_bam);
-
-  // base_min samo za FBiH u V1
-  const contrib_base_min_bam = j === "FBiH" ? numToStr(contrib.base_min_bam) : "";
 
   // RS fields
   let avg_gross_wage_prev_year_bam = "";
@@ -404,11 +326,7 @@ function hydrateFormFromPayload(j: Jurisdiction, payload: any): ConstantsForm {
 
   // monthly base: FBiH + BD
   const monthly_contrib_base_bam =
-    j === "FBiH"
-      ? numToStr(base.monthly_contrib_base_bam)
-      : j === "BD"
-      ? numToStr(base.monthly_contrib_base_bam ?? base.calculated_contrib_base_bam)
-      : "";
+    j === "FBiH" || j === "BD" ? numToStr(base.monthly_contrib_base_bam) : "";
 
   return {
     scenario_key,
@@ -425,12 +343,15 @@ function hydrateFormFromPayload(j: Jurisdiction, payload: any): ConstantsForm {
     health_rate_percent,
     unemployment_rate_percent,
 
+    child_protection_rate_percent,
+
     avg_gross_wage_prev_year_bam,
     contrib_base_percent_of_avg_gross,
 
     monthly_contrib_base_bam,
 
-    contrib_base_min_bam,
+    // legacy (unused in payload)
+    contrib_base_min_bam: "",
 
     source_note: typeof meta.source_note === "string" ? meta.source_note : "",
     source_reference:
@@ -614,13 +535,21 @@ export default function AdminConstantsPage() {
 
     const isRS = activeTab === "RS";
     const isBD = activeTab === "BD";
+    const isFBiH = activeTab === "FBiH";
     const rsMode = isRS ? rsContributionMode(form.scenario_key) : null;
 
-    if ((isRS && rsMode === "PRIMARY") || isBD) {
+    if ((isRS && rsMode === "PRIMARY") || isBD || isFBiH) {
       percentFields.push({ name: "Zdravstvo (%)", value: form.health_rate_percent });
       percentFields.push({
         name: "Nezaposlenost (%)",
         value: form.unemployment_rate_percent,
+      });
+    }
+
+    if (isRS && rsMode === "PRIMARY") {
+      percentFields.push({
+        name: "Dječija zaštita (%)",
+        value: form.child_protection_rate_percent,
       });
     }
 
@@ -966,7 +895,6 @@ export default function AdminConstantsPage() {
             <div className="mt-6">
               {activeTab === "RS" ? (
                 <AdminConstantsRSPanel
-                  jurisdiction={activeTab}
                   form={form as any}
                   setForm={setForm as any}
                   advanced={advanced}
@@ -1003,7 +931,7 @@ export default function AdminConstantsPage() {
         subtitle="Svi setovi za odabrani entitet i scenario. Aktivni je onaj koji pokriva izabrani datum (as_of)."
         right={
           <div className="text-sm text-slate-600">
-            {loading ? "Učitavanje..." : `${activeHistory.length} item(s)`}
+            {loading ? "Učitavanje..." : `${items.length} item(s)`}
           </div>
         }
       >
@@ -1027,11 +955,9 @@ export default function AdminConstantsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200 bg-white">
-                {activeHistory.map((row) => {
+                {items.map((row) => {
                   const scenarioKey =
-                    (row as any)?.scenario_key ||
-                    (row as any)?.payload?.scenario_key ||
-                    "-";
+                    (row as any)?.scenario_key || (row as any)?.payload?.scenario_key || "-";
 
                   const label =
                     scenarioKey === "-" ? "-" : scenarioLabelFromKey(String(scenarioKey));
@@ -1063,28 +989,22 @@ export default function AdminConstantsPage() {
                       <td className="px-4 py-3 text-xs text-slate-600">
                         <div
                           className="min-w-0 truncate"
-                          title={`${row.created_by ?? "-"} / ${
-                            row.created_reason ?? "-"
-                          }`}
+                          title={`${row.created_by ?? "-"} / ${row.created_reason ?? "-"}`}
                         >
-                          created: {row.created_by ?? "-"} /{" "}
-                          {row.created_reason ?? "-"}
+                          created: {row.created_by ?? "-"} / {row.created_reason ?? "-"}
                         </div>
                         <div
                           className="min-w-0 truncate"
-                          title={`${row.updated_by ?? "-"} / ${
-                            row.updated_reason ?? "-"
-                          }`}
+                          title={`${row.updated_by ?? "-"} / ${row.updated_reason ?? "-"}`}
                         >
-                          updated: {row.updated_by ?? "-"} /{" "}
-                          {row.updated_reason ?? "-"}
+                          updated: {row.updated_by ?? "-"} / {row.updated_reason ?? "-"}
                         </div>
                       </td>
                     </tr>
                   );
                 })}
 
-                {activeHistory.length === 0 && (
+                {items.length === 0 && (
                   <tr>
                     <td className="px-4 py-10 text-sm text-slate-500" colSpan={4}>
                       Nema setova za prikaz.
