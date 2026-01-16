@@ -285,11 +285,12 @@ def test_admin_constants_rejects_negative_rate():
     assert "tax.income_tax_rate" in res.json()["detail"]
 
 
-def test_admin_constants_rs_base_calculation_mismatch_rejected():
+def test_admin_constants_rs_base_calculation_mismatch_allowed_input_only_payload():
     _wipe_constants()
     client = TestClient(app)
 
-    # RS: calculated_contrib_base_bam must match avg * (percent/100) if all present
+    # Input-only payload: backend does NOT enforce calculated_contrib_base_bam matching avg*(percent/100)
+    # (computed logic is handled outside constants payload definition).
     res = client.post(
         "/admin/constants",
         json={
@@ -302,16 +303,19 @@ def test_admin_constants_rs_base_calculation_mismatch_rejected():
                 "base": {
                     "avg_gross_wage_prev_year_bam": 2000.0,
                     "contrib_base_percent_of_avg_gross": 80.0,
-                    "calculated_contrib_base_bam": 1000.0,  # should be 1600.0
+                    "calculated_contrib_base_bam": 1000.0,  # intentionally "mismatch"
                 },
                 "vat": {"standard_rate": 0.17},
             },
             "created_by": "tester",
-            "created_reason": "rs base mismatch",
+            "created_reason": "rs base mismatch allowed",
         },
     )
-    assert res.status_code == 400, res.text
-    assert "calculated_contrib_base_bam mismatch" in res.json()["detail"]
+    assert res.status_code == 200, res.text
+    created = res.json()
+    assert created["payload"]["base"]["avg_gross_wage_prev_year_bam"] == 2000.0
+    assert created["payload"]["base"]["contrib_base_percent_of_avg_gross"] == 80.0
+    assert created["payload"]["base"]["calculated_contrib_base_bam"] == 1000.0
 
 
 def test_admin_constants_fbih_monthly_base_must_be_positive():

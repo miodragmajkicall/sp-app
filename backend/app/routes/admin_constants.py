@@ -145,7 +145,8 @@ def _rollover_close_previous_if_needed(
 
 
 # ----------------------------
-# Payload semantic validation
+# Minimal semantic validation
+# (NO payload mutation, NO computed checks)
 # ----------------------------
 
 
@@ -190,56 +191,28 @@ def _validate_positive(*, name: str, v: Any) -> None:
         raise HTTPException(status_code=400, detail=f"{name} must be > 0. Got {n}.")
 
 
-def _validate_calculated_base(
-    *,
-    name_prefix: str,
-    avg: Any,
-    pct: Any,
-    calc: Any,
-) -> None:
-    avg_n = _as_number(avg)
-    pct_n = _as_number(pct)
-    calc_n = _as_number(calc)
-    if avg_n is None or pct_n is None or calc_n is None:
-        return
-
-    if avg_n <= 0:
-        raise HTTPException(status_code=400, detail=f"{name_prefix}.avg must be > 0. Got {avg_n}.")
-    if pct_n < 0 or pct_n > 100:
-        raise HTTPException(status_code=400, detail=f"{name_prefix}.percent must be 0..100. Got {pct_n}.")
-
-    expected = avg_n * (pct_n / 100.0)
-    # allow small rounding differences (UI may send 2 decimals)
-    if abs(calc_n - expected) > 0.01:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"{name_prefix}.calculated_contrib_base_bam mismatch. "
-                f"Expected {expected:.2f} from avg={avg_n} and percent={pct_n}, got {calc_n}."
-            ),
-        )
-
-
-def _validate_payload_semantics(*, jurisdiction: str, scenario_key: str, payload: Any) -> None:
+def _validate_payload_semantics(*, jurisdiction: str, payload: Any) -> None:
+    """
+    Minimalne validacije koje nisu "computed":
+    - stope 0..1 (decimal)
+    - procenti 0..100
+    - osnovice > 0
+    Ostavlja slobodu FE da definiše tačan shape; backend samo sanity-check ako su ključevi prisutni.
+    """
     if not isinstance(payload, dict):
         return
 
-    # Validate key rates if present (both new and legacy shapes).
+    # Common (if present)
     _validate_rate_0_1(name="vat.standard_rate", v=_get_path(payload, ["vat", "standard_rate"]))
-
-    # New-ish shape in UI
     _validate_rate_0_1(name="tax.income_tax_rate", v=_get_path(payload, ["tax", "income_tax_rate"]))
+
+    # Contributions (new-ish UI shape if present)
     _validate_rate_0_1(name="contributions.pension_rate", v=_get_path(payload, ["contributions", "pension_rate"]))
     _validate_rate_0_1(name="contributions.health_rate", v=_get_path(payload, ["contributions", "health_rate"]))
-    _validate_rate_0_1(
-        name="contributions.unemployment_rate", v=_get_path(payload, ["contributions", "unemployment_rate"])
-    )
+    _validate_rate_0_1(name="contributions.unemployment_rate", v=_get_path(payload, ["contributions", "unemployment_rate"]))
 
-    # Legacy tax payload used by existing tax integration tests
-    _validate_rate_0_1(name="tax.income_tax_rate", v=_get_path(payload, ["tax", "income_tax_rate"]))
-    _validate_rate_0_1(
-        name="tax.pension_contribution_rate", v=_get_path(payload, ["tax", "pension_contribution_rate"])
-    )
+    # Legacy tax payload (still supported if present)
+    _validate_rate_0_1(name="tax.pension_contribution_rate", v=_get_path(payload, ["tax", "pension_contribution_rate"]))
     _validate_rate_0_1(name="tax.health_contribution_rate", v=_get_path(payload, ["tax", "health_contribution_rate"]))
     _validate_rate_0_1(
         name="tax.unemployment_contribution_rate", v=_get_path(payload, ["tax", "unemployment_contribution_rate"])
@@ -249,32 +222,15 @@ def _validate_payload_semantics(*, jurisdiction: str, scenario_key: str, payload
     base = payload.get("base") if isinstance(payload.get("base"), dict) else {}
 
     if jurisdiction == "FBiH":
-        # FBiH: monthly base (KM) should be > 0 if provided
         _validate_positive(name="base.monthly_contrib_base_bam", v=base.get("monthly_contrib_base_bam"))
 
     if jurisdiction == "RS":
-        # RS: avg gross + percent -> calculated base (if provided)
         _validate_positive(name="base.avg_gross_wage_prev_year_bam", v=base.get("avg_gross_wage_prev_year_bam"))
-        _validate_percent_0_100(
-            name="base.contrib_base_percent_of_avg_gross", v=base.get("contrib_base_percent_of_avg_gross")
-        )
-        _validate_calculated_base(
-            name_prefix="RS.base",
-            avg=base.get("avg_gross_wage_prev_year_bam"),
-            pct=base.get("contrib_base_percent_of_avg_gross"),
-            calc=base.get("calculated_contrib_base_bam"),
-        )
+        _validate_percent_0_100(name="base.contrib_base_percent_of_avg_gross", v=base.get("contrib_base_percent_of_avg_gross"))
 
     if jurisdiction == "BD":
-        # BD: avg gross + percent -> calculated base (if provided)
         _validate_positive(name="base.avg_gross_prev_year_bam", v=base.get("avg_gross_prev_year_bam"))
         _validate_percent_0_100(name="base.base_percent_of_avg_gross", v=base.get("base_percent_of_avg_gross"))
-        _validate_calculated_base(
-            name_prefix="BD.base",
-            avg=base.get("avg_gross_prev_year_bam"),
-            pct=base.get("base_percent_of_avg_gross"),
-            calc=base.get("calculated_contrib_base_bam"),
-        )
 
 
 @router.get(
@@ -285,7 +241,7 @@ def _validate_payload_semantics(*, jurisdiction: str, scenario_key: str, payload
 )
 def admin_constants_list(
     jurisdiction: Optional[str] = Query(None, description="RS / FBiH / BD"),
-    scenario_key: Optional[str] = Query(None, description="scenario_key (npr. rs_pausal)"),
+    scenario_key: Optional[str] = Query(None, description="scenario_key (npr. rs_primary)"),
 ) -> AppConstantsSetListResponse:
     db = _get_db()
     try:
@@ -319,26 +275,8 @@ def admin_constants_create(payload: AppConstantsSetCreate) -> AppConstantsSetRea
     try:
         _validate_scenario(payload.jurisdiction, payload.scenario_key)
 
-        # Ensure payload contains scenario_key for transparency/back-compat
-        if isinstance(payload.payload, dict):
-            p_scn = payload.payload.get("scenario_key")
-            if p_scn is None:
-                payload.payload["scenario_key"] = payload.scenario_key
-            elif isinstance(p_scn, str) and p_scn != payload.scenario_key:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "payload.scenario_key must match scenario_key field. "
-                        f"payload={p_scn}, scenario_key={payload.scenario_key}"
-                    ),
-                )
-
-        # Semantic validation BEFORE any rollover mutation
-        _validate_payload_semantics(
-            jurisdiction=payload.jurisdiction,
-            scenario_key=payload.scenario_key,
-            payload=payload.payload,
-        )
+        # Minimal semantic validation BEFORE any rollover mutation
+        _validate_payload_semantics(jurisdiction=payload.jurisdiction, payload=payload.payload)
 
         # 1) Rollover only within same (jurisdiction+scenario)
         _rollover_close_previous_if_needed(
@@ -365,7 +303,7 @@ def admin_constants_create(payload: AppConstantsSetCreate) -> AppConstantsSetRea
             scenario_key=payload.scenario_key,
             effective_from=payload.effective_from,
             effective_to=payload.effective_to,
-            payload=payload.payload,
+            payload=payload.payload,  # 1:1 with FE (no mutation)
             created_by=payload.created_by,
             created_reason=payload.created_reason,
             updated_by=None,
@@ -420,28 +358,8 @@ def admin_constants_update(constants_id: int, payload: AppConstantsSetUpdate) ->
             row.effective_to = payload.effective_to
 
         if payload.payload is not None:
-            # keep scenario_key consistent
-            if isinstance(payload.payload, dict):
-                p_scn = payload.payload.get("scenario_key")
-                if p_scn is None:
-                    payload.payload["scenario_key"] = row.scenario_key
-                elif isinstance(p_scn, str) and p_scn != row.scenario_key:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "payload.scenario_key must match row.scenario_key. "
-                            f"payload={p_scn}, row={row.scenario_key}"
-                        ),
-                    )
-
-            # Semantic validation for updated payload (use new_j/new_s)
-            _validate_payload_semantics(
-                jurisdiction=new_j,
-                scenario_key=new_s,
-                payload=payload.payload,
-            )
-
-            row.payload = payload.payload
+            _validate_payload_semantics(jurisdiction=new_j, payload=payload.payload)
+            row.payload = payload.payload  # 1:1 with FE (no mutation)
 
         row.updated_by = payload.updated_by
         row.updated_reason = payload.updated_reason
