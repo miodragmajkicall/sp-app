@@ -42,6 +42,7 @@ import SettingsPage from "./pages/SettingsPage";
 import AdminConstantsPage from "./pages/AdminConstantsPage";
 
 import { getProfileSettings } from "./services/settingsApi";
+import { getApiBaseUrl } from "./services/apiClient";
 import type { ProfileSettingsRead } from "./types/settings";
 
 // Ovaj logo je “svijetli” (svijetao tekst) i treba tamnu pozadinu — idealno za deep-navy sidebar.
@@ -192,10 +193,32 @@ function App() {
   const displayBusinessName = businessName ? businessName : `SP ${tenant}`;
 
   const logoUrl = useMemo(() => {
-    const id = profile?.logo_attachment_id ?? null;
-    if (!id) return null;
-    return buildLogoUrl(id);
-  }, [profile?.logo_attachment_id]);
+    if (!profile) return null;
+
+    // Prefer NEW logo endpoint: /settings/profile/logo
+    // (backend vraća logo_asset_id kroz profile; frontend types možda ga ne sadrže,
+    // zato čitamo preko "any" bez pucanja kompilacije)
+    const p: any = profile;
+    const logoAssetId: number | null =
+      p.logo_asset_id == null ? null : Number(p.logo_asset_id);
+
+    if (logoAssetId) {
+      return buildTenantLogoUrl(logoAssetId);
+    }
+
+    // Fallback: legacy attachment
+    const legacyAttachmentId = (profile as any).logo_attachment_id ?? null;
+    if (legacyAttachmentId) {
+      return buildLegacyAttachmentUrl(Number(legacyAttachmentId));
+    }
+
+    return null;
+  }, [profile]);
+
+  // ako se promijeni URL (npr. nakon uploada), resetujemo error state
+  useEffect(() => {
+    setLogoFailed(false);
+  }, [logoUrl]);
 
   return (
     <BrowserRouter>
@@ -375,8 +398,17 @@ function App() {
   );
 }
 
-function buildLogoUrl(attachmentId: number): string {
-  return `/attachments/${attachmentId}`;
+function buildTenantLogoUrl(logoAssetId: number): string {
+  const base = getApiBaseUrl().replace(/\/$/, "");
+  // Backend: GET /settings/profile/logo (file); cache-bust preko asset id
+  return `${base}/settings/profile/logo?v=${encodeURIComponent(
+    String(logoAssetId),
+  )}`;
+}
+
+function buildLegacyAttachmentUrl(attachmentId: number): string {
+  const base = getApiBaseUrl().replace(/\/$/, "");
+  return `${base}/attachments/${attachmentId}`;
 }
 
 export default App;

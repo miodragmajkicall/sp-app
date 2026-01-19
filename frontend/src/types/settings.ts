@@ -19,14 +19,24 @@ export interface ProfileSettingsRead {
   business_name: string;
   address: string | null;
   tax_id: string | null;
+
+  // Back-compat (staro)
   logo_attachment_id: number | null;
+
+  // Novo (tenant_assets)
+  logo_asset_id: number | null;
 }
 
 export interface ProfileSettingsUpsert {
   business_name: string;
   address?: string | null;
   tax_id?: string | null;
+
+  // Zadržano radi kompatibilnosti sa backendom:
+  // VAŽNO: backend u PUT /settings/profile trenutno uvijek setuje row.logo_asset_id = payload.logo_asset_id,
+  // pa moramo slati trenutnu vrijednost da se logo ne "obriše" nenamjerno.
   logo_attachment_id?: number | null;
+  logo_asset_id?: number | null;
 }
 
 /* =========================

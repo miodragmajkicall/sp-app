@@ -1,6 +1,7 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/SettingsPage.tsx
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
 import type {
   ProfileSettingsRead,
   TaxProfileSettingsRead,
@@ -10,6 +11,7 @@ import type {
   TaxRegime,
   ScenarioKey,
 } from "../types/settings";
+
 import {
   getProfileSettings,
   putProfileSettings,
@@ -17,6 +19,8 @@ import {
   putTaxProfileSettings,
   getSubscriptionSettings,
 } from "../services/settingsApi";
+
+import { apiClient, getApiBaseUrl } from "../services/apiClient";
 
 function toNumberOrNull(value: string): number | null {
   const trimmed = value.trim();
@@ -53,8 +57,6 @@ function formatScenarioLabel(s: ScenarioKey): string {
 }
 
 function formatPlanLabel(plan: SubscriptionPlan): string {
-  // za sada ostaje kompatibilno sa backendom (Basic/Standard/Premium)
-  // kasnije možemo mapirati Standard->Pro ili slično
   return plan;
 }
 
@@ -78,6 +80,7 @@ function getDefaultScenarioForEntity(entity: TenantEntity): ScenarioKey {
 
 export default function SettingsPage() {
   const queryClient = useQueryClient();
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const profileQuery = useQuery<ProfileSettingsRead, Error>({
     queryKey: ["settings", "profile"],
@@ -98,6 +101,7 @@ export default function SettingsPage() {
     business_name: "",
     address: "",
     tax_id: "",
+    // legacy / back-compat (ako još postoji)
     logo_attachment_id: "",
   });
 
@@ -122,11 +126,13 @@ export default function SettingsPage() {
   // init forms when queries load (do not overwrite while saving)
   useEffect(() => {
     if (!profileQuery.data) return;
-    const p = profileQuery.data;
+    const p: any = profileQuery.data;
+
     setProfileForm({
       business_name: p.business_name ?? "",
       address: p.address ?? "",
       tax_id: p.tax_id ?? "",
+      // back-compat
       logo_attachment_id:
         p.logo_attachment_id == null ? "" : String(p.logo_attachment_id),
     });
@@ -137,11 +143,8 @@ export default function SettingsPage() {
     const t = taxQuery.data;
 
     const entity = t.entity;
-    const rawScenario = t.scenario_key ?? null;
+    const rawScenario = (t.scenario_key ?? null) as any;
 
-    // Key change:
-    // - Ako backend scenario_key nije postavljen ili je nevalidan za entity,
-    //   auto-izaberemo default scenario (da izbjegnemo prazno stanje i dummy kalkulacije).
     const scenarioToUse = isScenarioValidForEntity(entity, rawScenario)
       ? (rawScenario as ScenarioKey)
       : getDefaultScenarioForEntity(entity);
@@ -161,10 +164,10 @@ export default function SettingsPage() {
   // keep scenario_key consistent when entity changes
   useEffect(() => {
     const entity = taxForm.entity;
-    const current = taxForm.scenario_key ? (taxForm.scenario_key as ScenarioKey) : null;
+    const current = taxForm.scenario_key
+      ? (taxForm.scenario_key as ScenarioKey)
+      : null;
 
-    // Key change:
-    // - Uvijek garantujemo validan scenario za entity.
     if (current && isScenarioValidForEntity(entity, current)) return;
 
     setTaxForm((t) => ({
@@ -175,21 +178,36 @@ export default function SettingsPage() {
 
   const tenantCode = useMemo(() => {
     return (
-      profileQuery.data?.tenant_code ||
-      taxQuery.data?.tenant_code ||
-      subQuery.data?.tenant_code ||
+      (profileQuery.data as any)?.tenant_code ||
+      (taxQuery.data as any)?.tenant_code ||
+      (subQuery.data as any)?.tenant_code ||
       "t-demo"
     );
   }, [profileQuery.data, taxQuery.data, subQuery.data]);
 
   const hasTaxProfileMinimum = useMemo(() => {
-    // novo pravilo: scenario_key je minimum da profil smatramo podešenim
     return Boolean(taxQuery.data?.scenario_key);
   }, [taxQuery.data]);
 
   const scenarioOptions = useMemo(() => {
     return SCENARIOS_BY_ENTITY[taxForm.entity];
   }, [taxForm.entity]);
+
+  const currentPlan: SubscriptionPlan = (subQuery.data?.plan ?? "Basic") as any;
+
+  // Logo preview URL (novi endpoint)
+  const logoPreviewUrl = useMemo(() => {
+    // Backend: GET /settings/profile/logo vraća file (404 ako nema)
+    // Cache-bust: koristimo logo_asset_id ako postoji
+    const p: any = profileQuery.data;
+    const assetId = p?.logo_asset_id ?? null;
+
+    const base = getApiBaseUrl().replace(/\/$/, "");
+    const url = `${base}/settings/profile/logo`;
+
+    if (assetId) return `${url}?v=${encodeURIComponent(String(assetId))}`;
+    return `${url}?v=${encodeURIComponent(String(Date.now()))}`;
+  }, [profileQuery.data]);
 
   /* =========================
    * Mutations
@@ -203,7 +221,7 @@ export default function SettingsPage() {
         business_name: profileForm.business_name.trim(),
         address: profileForm.address.trim() ? profileForm.address.trim() : null,
         tax_id: profileForm.tax_id.trim() ? profileForm.tax_id.trim() : null,
-        // za sada ostaje radi kompatibilnosti; u sljedećem koraku to mijenjamo na upload
+        // back-compat: privremeno ostaje
         logo_attachment_id: toNumberOrNull(profileForm.logo_attachment_id),
       });
     },
@@ -233,11 +251,50 @@ export default function SettingsPage() {
     },
   });
 
+  const logoUploadMutation = useMutation({
+    mutationFn: async (file: File) => {
+      const fd = new FormData();
+      fd.append("file", file);
+
+      const res = await apiClient.post("/settings/profile/logo", fd, {
+        headers: {
+          // axios će sam setovati boundary; dovoljno je da ne forsiramo JSON
+          "Content-Type": "multipart/form-data",
+        },
+      });
+
+      return res.data as any;
+    },
+    onSuccess: async () => {
+      // osvježi profil, jer se logo_asset_id promijenio
+      await queryClient.invalidateQueries({ queryKey: ["settings", "profile"] });
+
+      // resetuj file input da se može uploadovati isti fajl opet
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    },
+  });
+
+  const logoDeleteMutation = useMutation({
+    mutationFn: async () => {
+      await apiClient.delete("/settings/profile/logo");
+    },
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["settings", "profile"] });
+    },
+  });
+
   const anyLoading =
     profileQuery.isLoading || taxQuery.isLoading || subQuery.isLoading;
   const anyError = profileQuery.isError || taxQuery.isError || subQuery.isError;
 
-  const currentPlan: SubscriptionPlan = (subQuery.data?.plan ?? "Basic") as any;
+  const profileHasLogo = useMemo(() => {
+    const p: any = profileQuery.data;
+    // novi način
+    if (p?.logo_asset_id != null) return true;
+    // fallback (legacy)
+    if (p?.logo_attachment_id != null) return true;
+    return false;
+  }, [profileQuery.data]);
 
   return (
     <div className="space-y-6">
@@ -368,25 +425,101 @@ export default function SettingsPage() {
                 />
               </div>
 
-              {/* LOGO (prepared for upload) */}
+              {/* LOGO (upload + preview + delete) */}
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <div className="flex items-start justify-between gap-3">
-                  <div>
+                  <div className="min-w-0">
                     <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
                       Logo
                     </div>
                     <p className="mt-1 text-[11px] text-slate-600">
-                      U sljedećem koraku uvodimo upload logotipa (konverzija i
-                      automatska zamjena starog loga). Za sada je vezano preko
-                      attachment ID.
+                      Upload logotipa (PNG/JPG/WebP). Sistem automatski konvertuje u
+                      PNG i smanjuje na max 512px.
                     </p>
                   </div>
                 </div>
 
-                <div className="mt-3">
-                  <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                    Attachment ID (privremeno)
-                  </label>
+                <div className="mt-3 flex items-center gap-3">
+                  <div className="h-14 w-24 rounded-md border border-slate-200 bg-white grid place-items-center overflow-hidden">
+                    {profileHasLogo ? (
+                      <img
+                        src={logoPreviewUrl}
+                        alt="Logo preview"
+                        className="h-full w-full object-contain"
+                        onError={(e) => {
+                          // ako 404, prikaži placeholder
+                          (e.currentTarget as HTMLImageElement).style.display = "none";
+                        }}
+                      />
+                    ) : (
+                      <span className="text-[11px] text-slate-400">nema</span>
+                    )}
+                  </div>
+
+                  <div className="flex-1 min-w-0">
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/png,image/jpeg,image/webp"
+                      className="block w-full text-xs text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-slate-800"
+                      onChange={(e) => {
+                        const f = e.target.files?.[0];
+                        if (!f) return;
+                        logoUploadMutation.mutate(f);
+                      }}
+                      disabled={logoUploadMutation.isPending}
+                    />
+
+                    <div className="mt-2 flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // manual refresh
+                          queryClient.invalidateQueries({
+                            queryKey: ["settings", "profile"],
+                          });
+                        }}
+                        className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
+                      >
+                        Osvježi
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => logoDeleteMutation.mutate()}
+                        disabled={logoDeleteMutation.isPending}
+                        className="rounded-md border border-red-200 bg-white px-3 py-1.5 text-[11px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
+                      >
+                        {logoDeleteMutation.isPending ? "Briše se..." : "Obriši logo"}
+                      </button>
+                    </div>
+
+                    {logoUploadMutation.error && (
+                      <p className="mt-2 text-[11px] text-red-600">
+                        {logoUploadMutation.error instanceof Error
+                          ? logoUploadMutation.error.message
+                          : "Greška pri upload-u."}
+                      </p>
+                    )}
+                    {logoDeleteMutation.error && (
+                      <p className="mt-2 text-[11px] text-red-600">
+                        {logoDeleteMutation.error instanceof Error
+                          ? logoDeleteMutation.error.message
+                          : "Greška pri brisanju."}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                {/* Legacy / back-compat */}
+                <div className="mt-4 border-t border-slate-200 pt-3">
+                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                    Attachment ID (legacy)
+                  </div>
+                  <p className="mt-1 text-[11px] text-slate-600">
+                    Ovo je privremeno radi kompatibilnosti sa starim rješenjem.
+                    Preporuka: koristi upload iznad.
+                  </p>
                   <input
                     value={profileForm.logo_attachment_id}
                     onChange={(e) =>
@@ -395,7 +528,7 @@ export default function SettingsPage() {
                         logo_attachment_id: e.target.value,
                       }))
                     }
-                    className="mt-1 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                    className="mt-2 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
                     placeholder="npr. 12"
                   />
                 </div>
@@ -510,10 +643,7 @@ export default function SettingsPage() {
                     }))
                   }
                 />
-                <label
-                  htmlFor="has_additional_activity"
-                  className="text-xs text-slate-700"
-                >
+                <label htmlFor="has_additional_activity" className="text-xs text-slate-700">
                   Dopunska djelatnost / drugi osnov
                 </label>
               </div>
@@ -600,8 +730,7 @@ export default function SettingsPage() {
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-slate-800">Pretplata</h3>
               <p className="mt-1 text-[11px] text-slate-500">
-                Ovdje se prikazuje status pretplate. Promjena plana ide kroz
-                naplatu (Billing).
+                Ovdje se prikazuje status pretplate. Promjena plana ide kroz naplatu (Billing).
               </p>
             </div>
 
@@ -628,15 +757,13 @@ export default function SettingsPage() {
                 </div>
 
                 <p className="mt-2 text-[11px] text-slate-600">
-                  U sljedećem koraku dodajemo Billing stranicu i Stripe (ili drugi
-                  provider) za nadogradnju/obnovu plana.
+                  U sljedećem koraku dodajemo Billing stranicu i Stripe (ili drugi provider) za nadogradnju/obnovu plana.
                 </p>
               </div>
 
               <button
                 type="button"
                 onClick={() => {
-                  // za sada stub; kasnije će /billing biti stvarna stranica
                   window.location.href = "/billing";
                 }}
                 className="mt-1 inline-flex w-full items-center justify-center rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white shadow-sm hover:bg-slate-800"
@@ -659,9 +786,8 @@ export default function SettingsPage() {
               <div className="rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600">
                 <p className="font-medium text-slate-700">Napomena</p>
                 <p className="mt-1">
-                  Backend trenutno podržava “plan” kao feature-toggle. UI ovdje
-                  više ne nudi ručnu promjenu plana, da se izbjegne pogrešna
-                  očekivanja u produkciji.
+                  Backend trenutno podržava “plan” kao feature-toggle. UI ovdje više ne nudi ručnu promjenu plana,
+                  da se izbjegne pogrešna očekivanja u produkciji.
                 </p>
               </div>
             </div>

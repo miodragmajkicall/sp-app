@@ -21,13 +21,44 @@ export async function getProfileSettings(): Promise<ProfileSettingsRead> {
 export async function putProfileSettings(
   payload: ProfileSettingsUpsert,
 ): Promise<ProfileSettingsRead> {
+  // Važno: backend trenutno setuje i logo_asset_id i logo_attachment_id na vrijednosti iz payload-a.
+  // Ako ih ne pošaljemo, Pydantic ih defaultuje na None i logo bi se mogao "nulirati".
   const res = await apiClient.put<ProfileSettingsRead>("/settings/profile", {
     business_name: payload.business_name,
     address: payload.address ?? null,
     tax_id: payload.tax_id ?? null,
     logo_attachment_id: payload.logo_attachment_id ?? null,
+    logo_asset_id: payload.logo_asset_id ?? null,
   });
   return normalizeProfile(res.data);
+}
+
+export async function uploadProfileLogo(file: File): Promise<ProfileSettingsRead> {
+  const form = new FormData();
+  form.append("file", file);
+
+  const res = await apiClient.post<ProfileSettingsRead>(
+    "/settings/profile/logo",
+    form,
+    {
+      headers: {
+        // override JSON header; browser sets correct multipart boundary
+        "Content-Type": "multipart/form-data",
+      },
+    },
+  );
+  return normalizeProfile(res.data);
+}
+
+export async function deleteProfileLogo(): Promise<void> {
+  await apiClient.delete("/settings/profile/logo");
+}
+
+export async function fetchProfileLogoBlob(): Promise<Blob> {
+  const res = await apiClient.get("/settings/profile/logo", {
+    responseType: "blob",
+  });
+  return res.data as Blob;
 }
 
 function normalizeProfile(r: any): ProfileSettingsRead {
@@ -38,6 +69,7 @@ function normalizeProfile(r: any): ProfileSettingsRead {
     tax_id: r.tax_id ?? null,
     logo_attachment_id:
       r.logo_attachment_id == null ? null : Number(r.logo_attachment_id),
+    logo_asset_id: r.logo_asset_id == null ? null : Number(r.logo_asset_id),
   };
 }
 
