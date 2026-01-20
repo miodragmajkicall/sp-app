@@ -18,9 +18,10 @@ import {
   getTaxProfileSettings,
   putTaxProfileSettings,
   getSubscriptionSettings,
+  fetchProfileLogoBlob,
 } from "../services/settingsApi";
 
-import { apiClient, getApiBaseUrl } from "../services/apiClient";
+import { apiClient } from "../services/apiClient";
 
 function toNumberOrNull(value: string): number | null {
   const trimmed = value.trim();
@@ -101,8 +102,6 @@ export default function SettingsPage() {
     business_name: "",
     address: "",
     tax_id: "",
-    // legacy / back-compat (ako još postoji)
-    logo_attachment_id: "",
   });
 
   const [taxForm, setTaxForm] = useState<{
@@ -123,6 +122,9 @@ export default function SettingsPage() {
     monthly_unemployment: "",
   });
 
+  const [selectedLogoName, setSelectedLogoName] = useState<string>("");
+  const [logoObjectUrl, setLogoObjectUrl] = useState<string | null>(null);
+
   // init forms when queries load (do not overwrite while saving)
   useEffect(() => {
     if (!profileQuery.data) return;
@@ -132,9 +134,6 @@ export default function SettingsPage() {
       business_name: p.business_name ?? "",
       address: p.address ?? "",
       tax_id: p.tax_id ?? "",
-      // back-compat
-      logo_attachment_id:
-        p.logo_attachment_id == null ? "" : String(p.logo_attachment_id),
     });
   }, [profileQuery.data]);
 
@@ -195,19 +194,62 @@ export default function SettingsPage() {
 
   const currentPlan: SubscriptionPlan = (subQuery.data?.plan ?? "Basic") as any;
 
-  // Logo preview URL (novi endpoint)
-  const logoPreviewUrl = useMemo(() => {
-    // Backend: GET /settings/profile/logo vraća file (404 ako nema)
-    // Cache-bust: koristimo logo_asset_id ako postoji
+  const profileHasLogo = useMemo(() => {
     const p: any = profileQuery.data;
-    const assetId = p?.logo_asset_id ?? null;
-
-    const base = getApiBaseUrl().replace(/\/$/, "");
-    const url = `${base}/settings/profile/logo`;
-
-    if (assetId) return `${url}?v=${encodeURIComponent(String(assetId))}`;
-    return `${url}?v=${encodeURIComponent(String(Date.now()))}`;
+    return p?.logo_asset_id != null;
   }, [profileQuery.data]);
+
+  const logoAssetIdForReload = useMemo(() => {
+    const p: any = profileQuery.data;
+    return p?.logo_asset_id ?? null;
+  }, [profileQuery.data]);
+
+  // Logo preview preko blob-a (radi i sa X-Tenant-Code headerom)
+  useEffect(() => {
+    let isActive = true;
+
+    async function loadLogo() {
+      if (!profileHasLogo) {
+        if (logoObjectUrl) URL.revokeObjectURL(logoObjectUrl);
+        setLogoObjectUrl(null);
+        return;
+      }
+
+      try {
+        const blob = await fetchProfileLogoBlob();
+        if (!isActive) return;
+
+        const nextUrl = URL.createObjectURL(blob);
+
+        setLogoObjectUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return nextUrl;
+        });
+      } catch {
+        if (!isActive) return;
+        setLogoObjectUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return null;
+        });
+      }
+    }
+
+    loadLogo();
+
+    return () => {
+      isActive = false;
+    };
+    // assetId u deps da se reload desi nakon upload/replace
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileHasLogo, logoAssetIdForReload]);
+
+  useEffect(() => {
+    return () => {
+      // cleanup on unmount
+      if (logoObjectUrl) URL.revokeObjectURL(logoObjectUrl);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /* =========================
    * Mutations
@@ -221,8 +263,6 @@ export default function SettingsPage() {
         business_name: profileForm.business_name.trim(),
         address: profileForm.address.trim() ? profileForm.address.trim() : null,
         tax_id: profileForm.tax_id.trim() ? profileForm.tax_id.trim() : null,
-        // back-compat: privremeno ostaje
-        logo_attachment_id: toNumberOrNull(profileForm.logo_attachment_id),
       });
     },
     onSuccess: async () => {
@@ -266,11 +306,11 @@ export default function SettingsPage() {
       return res.data as any;
     },
     onSuccess: async () => {
-      // osvježi profil, jer se logo_asset_id promijenio
       await queryClient.invalidateQueries({ queryKey: ["settings", "profile"] });
 
       // resetuj file input da se može uploadovati isti fajl opet
       if (fileInputRef.current) fileInputRef.current.value = "";
+      setSelectedLogoName("");
     },
   });
 
@@ -286,15 +326,6 @@ export default function SettingsPage() {
   const anyLoading =
     profileQuery.isLoading || taxQuery.isLoading || subQuery.isLoading;
   const anyError = profileQuery.isError || taxQuery.isError || subQuery.isError;
-
-  const profileHasLogo = useMemo(() => {
-    const p: any = profileQuery.data;
-    // novi način
-    if (p?.logo_asset_id != null) return true;
-    // fallback (legacy)
-    if (p?.logo_attachment_id != null) return true;
-    return false;
-  }, [profileQuery.data]);
 
   return (
     <div className="space-y-6">
@@ -440,15 +471,17 @@ export default function SettingsPage() {
                 </div>
 
                 <div className="mt-3 flex items-center gap-3">
-                  <div className="h-14 w-24 rounded-md border border-slate-200 bg-white grid place-items-center overflow-hidden">
-                    {profileHasLogo ? (
+                  <div className="grid h-14 w-24 place-items-center overflow-hidden rounded-md border border-slate-200 bg-white">
+                    {logoObjectUrl ? (
                       <img
-                        src={logoPreviewUrl}
+                        src={logoObjectUrl}
                         alt="Logo preview"
                         className="h-full w-full object-contain"
-                        onError={(e) => {
-                          // ako 404, prikaži placeholder
-                          (e.currentTarget as HTMLImageElement).style.display = "none";
+                        onError={() => {
+                          setLogoObjectUrl((prev) => {
+                            if (prev) URL.revokeObjectURL(prev);
+                            return null;
+                          });
                         }}
                       />
                     ) : (
@@ -456,7 +489,7 @@ export default function SettingsPage() {
                     )}
                   </div>
 
-                  <div className="flex-1 min-w-0">
+                  <div className="min-w-0 flex-1">
                     <input
                       ref={fileInputRef}
                       type="file"
@@ -465,19 +498,23 @@ export default function SettingsPage() {
                       onChange={(e) => {
                         const f = e.target.files?.[0];
                         if (!f) return;
+                        setSelectedLogoName(f.name);
                         logoUploadMutation.mutate(f);
                       }}
                       disabled={logoUploadMutation.isPending}
                     />
 
+                    {selectedLogoName && (
+                      <div className="mt-1 truncate text-[11px] text-slate-500">
+                        Odabran fajl: <span className="font-medium">{selectedLogoName}</span>
+                      </div>
+                    )}
+
                     <div className="mt-2 flex items-center gap-2">
                       <button
                         type="button"
                         onClick={() => {
-                          // manual refresh
-                          queryClient.invalidateQueries({
-                            queryKey: ["settings", "profile"],
-                          });
+                          profileQuery.refetch();
                         }}
                         className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
                       >
@@ -509,28 +546,6 @@ export default function SettingsPage() {
                       </p>
                     )}
                   </div>
-                </div>
-
-                {/* Legacy / back-compat */}
-                <div className="mt-4 border-t border-slate-200 pt-3">
-                  <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                    Attachment ID (legacy)
-                  </div>
-                  <p className="mt-1 text-[11px] text-slate-600">
-                    Ovo je privremeno radi kompatibilnosti sa starim rješenjem.
-                    Preporuka: koristi upload iznad.
-                  </p>
-                  <input
-                    value={profileForm.logo_attachment_id}
-                    onChange={(e) =>
-                      setProfileForm((p) => ({
-                        ...p,
-                        logo_attachment_id: e.target.value,
-                      }))
-                    }
-                    className="mt-2 w-full rounded-md border border-slate-300 bg-white px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-                    placeholder="npr. 12"
-                  />
                 </div>
               </div>
 

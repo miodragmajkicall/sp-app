@@ -21,15 +21,23 @@ export async function getProfileSettings(): Promise<ProfileSettingsRead> {
 export async function putProfileSettings(
   payload: ProfileSettingsUpsert,
 ): Promise<ProfileSettingsRead> {
-  // Važno: backend trenutno setuje i logo_asset_id i logo_attachment_id na vrijednosti iz payload-a.
-  // Ako ih ne pošaljemo, Pydantic ih defaultuje na None i logo bi se mogao "nulirati".
-  const res = await apiClient.put<ProfileSettingsRead>("/settings/profile", {
+  // Profesionalno: šaljemo samo polja koja su eksplicitno definisana.
+  // Time ne možemo nenamjerno "nulirati" logo_* vrijednosti.
+  const body: Record<string, any> = {
     business_name: payload.business_name,
     address: payload.address ?? null,
     tax_id: payload.tax_id ?? null,
-    logo_attachment_id: payload.logo_attachment_id ?? null,
-    logo_asset_id: payload.logo_asset_id ?? null,
-  });
+  };
+
+  // Opciona polja (legacy/new) uključujemo samo ako su eksplicitno poslata
+  if (payload.logo_attachment_id !== undefined) {
+    body.logo_attachment_id = payload.logo_attachment_id;
+  }
+  if (payload.logo_asset_id !== undefined) {
+    body.logo_asset_id = payload.logo_asset_id;
+  }
+
+  const res = await apiClient.put<ProfileSettingsRead>("/settings/profile", body);
   return normalizeProfile(res.data);
 }
 
