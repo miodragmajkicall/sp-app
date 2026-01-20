@@ -186,12 +186,18 @@ def upsert_profile_settings(
     x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
     db: Session = Depends(get_session),
 ):
+    """
+    Profesionalno rješenje: zadržavamo PUT, ali opcionalna polja tretiramo patch-semantikom.
+    Time sprječavamo nenamjerno nuliranje loga i drugih vrijednosti kada polje nije poslato.
+    """
     tenant = require_tenant_code(x_tenant_code)
     ensure_tenant_exists(db, tenant)
 
     row = db.execute(
         select(TenantProfileSettings).where(TenantProfileSettings.tenant_code == tenant)
     ).scalar_one_or_none()
+
+    fields_set = payload.model_fields_set  # pydantic v2: koja su polja eksplicitno poslata
 
     if row is None:
         row = TenantProfileSettings(
@@ -200,15 +206,36 @@ def upsert_profile_settings(
         )
         db.add(row)
 
+        # Opcionalna polja postavljamo samo ako su poslata u payload-u
+        if "address" in fields_set:
+            row.address = payload.address
+        if "tax_id" in fields_set:
+            row.tax_id = payload.tax_id
+        if "logo_attachment_id" in fields_set:
+            row.logo_attachment_id = payload.logo_attachment_id
+        if "logo_asset_id" in fields_set:
+            row.logo_asset_id = payload.logo_asset_id
+
+        db.commit()
+        db.refresh(row)
+        return row
+
+    # business_name je obavezno i uvijek se setuje
     row.business_name = payload.business_name
-    row.address = payload.address
-    row.tax_id = payload.tax_id
+
+    # Opcionalna polja: mijenjamo samo ako su eksplicitno poslata
+    if "address" in fields_set:
+        row.address = payload.address
+    if "tax_id" in fields_set:
+        row.tax_id = payload.tax_id
 
     # Back-compat (staro):
-    row.logo_attachment_id = payload.logo_attachment_id
+    if "logo_attachment_id" in fields_set:
+        row.logo_attachment_id = payload.logo_attachment_id
 
     # Novo:
-    row.logo_asset_id = payload.logo_asset_id
+    if "logo_asset_id" in fields_set:
+        row.logo_asset_id = payload.logo_asset_id
 
     db.commit()
     db.refresh(row)
