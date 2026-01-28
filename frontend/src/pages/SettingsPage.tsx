@@ -10,6 +10,7 @@ import type {
   TenantEntity,
   TaxRegime,
   ScenarioKey,
+  TaxProfileUiSchemaResponse,
 } from "../types/settings";
 
 import {
@@ -19,6 +20,7 @@ import {
   putTaxProfileSettings,
   getSubscriptionSettings,
   fetchProfileLogoBlob,
+  getTaxProfileUiSchema,
 } from "../services/settingsApi";
 
 import { apiClient } from "../services/apiClient";
@@ -38,23 +40,6 @@ function formatTenantLabel(tenantCode?: string | null): string {
 
 function formatRegimeLabel(regime: TaxRegime): string {
   return regime === "pausal" ? "Paušal" : "2% (stvarni prihod)";
-}
-
-function formatScenarioLabel(s: ScenarioKey): string {
-  switch (s) {
-    case "rs_primary":
-      return "RS – Osnovna djelatnost";
-    case "rs_supplementary":
-      return "RS – Dopunska djelatnost (uz zaposlenje)";
-    case "fbih_obrt":
-      return "FBiH – Obrt";
-    case "fbih_slobodna":
-      return "FBiH – Slobodna djelatnost";
-    case "bd_samostalna":
-      return "Brčko – Samostalna djelatnost";
-    default:
-      return s;
-  }
 }
 
 function formatPlanLabel(plan: SubscriptionPlan): string {
@@ -160,7 +145,7 @@ export default function SettingsPage() {
     });
   }, [taxQuery.data]);
 
-  // keep scenario_key consistent when entity changes
+  // keep scenario_key consistent when entity changes (fallback)
   useEffect(() => {
     const entity = taxForm.entity;
     const current = taxForm.scenario_key
@@ -188,10 +173,6 @@ export default function SettingsPage() {
     return Boolean(taxQuery.data?.scenario_key);
   }, [taxQuery.data]);
 
-  const scenarioOptions = useMemo(() => {
-    return SCENARIOS_BY_ENTITY[taxForm.entity];
-  }, [taxForm.entity]);
-
   const currentPlan: SubscriptionPlan = (subQuery.data?.plan ?? "Basic") as any;
 
   const profileHasLogo = useMemo(() => {
@@ -203,6 +184,51 @@ export default function SettingsPage() {
     const p: any = profileQuery.data;
     return p?.logo_asset_id ?? null;
   }, [profileQuery.data]);
+
+  // TAX UI schema (backend-driven)
+  const taxUiSchemaQuery = useQuery<TaxProfileUiSchemaResponse, Error>({
+    queryKey: ["settings", "tax-ui-schema", taxForm.entity, taxForm.scenario_key],
+    queryFn: async () => {
+      return getTaxProfileUiSchema();
+    },
+    enabled: !taxQuery.isLoading && !taxQuery.isError,
+    staleTime: 15_000,
+  });
+
+  const uiScenarioOptions = useMemo(() => {
+    const data = taxUiSchemaQuery.data;
+    if (!data?.scenario_options?.length) {
+      // fallback (hardcoded)
+      return SCENARIOS_BY_ENTITY[taxForm.entity].map((key) => ({
+        key,
+        label: key,
+        hint: null,
+        entity: taxForm.entity,
+      }));
+    }
+    return data.scenario_options;
+  }, [taxUiSchemaQuery.data, taxForm.entity]);
+
+  // If backend schema says current scenario_key is invalid, fallback
+  useEffect(() => {
+    const data = taxUiSchemaQuery.data;
+    if (!data) return;
+
+    const opts = data.scenario_options ?? [];
+    if (!opts.length) return;
+
+    const current = taxForm.scenario_key;
+    if (!current) return;
+
+    const isValid = opts.some((o) => String(o.key) === String(current));
+    if (isValid) return;
+
+    // pick first available
+    setTaxForm((t) => ({
+      ...t,
+      scenario_key: (opts[0].key as any) ?? "",
+    }));
+  }, [taxUiSchemaQuery.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Logo preview preko blob-a (radi i sa X-Tenant-Code headerom)
   useEffect(() => {
@@ -288,6 +314,9 @@ export default function SettingsPage() {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["settings", "tax"] });
+      await queryClient.invalidateQueries({
+        queryKey: ["settings", "tax-ui-schema"],
+      });
     },
   });
 
@@ -326,6 +355,20 @@ export default function SettingsPage() {
   const anyLoading =
     profileQuery.isLoading || taxQuery.isLoading || subQuery.isLoading;
   const anyError = profileQuery.isError || taxQuery.isError || subQuery.isError;
+
+  const taxUiSchemaBanner = useMemo(() => {
+    const d = taxUiSchemaQuery.data;
+    if (!d) return null;
+
+    const parts: string[] = [];
+    if (d.constants_set_id != null) parts.push(`Set #${d.constants_set_id}`);
+    if (d.constants_effective_from) parts.push(`od ${d.constants_effective_from}`);
+    if (d.constants_effective_to) parts.push(`do ${d.constants_effective_to}`);
+    if (d.constants_currency) parts.push(`valuta ${d.constants_currency}`);
+
+    if (!parts.length) return null;
+    return parts.join(" • ");
+  }, [taxUiSchemaQuery.data]);
 
   return (
     <div className="space-y-6">
@@ -506,7 +549,8 @@ export default function SettingsPage() {
 
                     {selectedLogoName && (
                       <div className="mt-1 truncate text-[11px] text-slate-500">
-                        Odabran fajl: <span className="font-medium">{selectedLogoName}</span>
+                        Odabran fajl:{" "}
+                        <span className="font-medium">{selectedLogoName}</span>
                       </div>
                     )}
 
@@ -573,9 +617,23 @@ export default function SettingsPage() {
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-slate-800">Poreski profil</h3>
               <p className="mt-1 text-[11px] text-slate-500">
-                Birate entitet i šemu obračuna. EVIDENT će kasnije automatski
-                povlačiti parametre iz Admin konstanti.
+                Birate entitet i šemu obračuna. EVIDENT će automatski povlačiti
+                parametre iz Admin konstanti.
               </p>
+
+              {taxUiSchemaBanner && (
+                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-700">
+                  <span className="font-medium">Admin konstante:</span>{" "}
+                  {taxUiSchemaBanner}
+                </div>
+              )}
+
+              {taxUiSchemaQuery.isError && (
+                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                  UI schema nije dostupna ({taxUiSchemaQuery.error?.message}). Koristim
+                  fallback vrijednosti.
+                </div>
+              )}
             </div>
 
             <div className="space-y-3">
@@ -615,9 +673,9 @@ export default function SettingsPage() {
                     className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
                   >
                     <option value="">Odaberi…</option>
-                    {scenarioOptions.map((s) => (
-                      <option key={s} value={s}>
-                        {formatScenarioLabel(s)}
+                    {uiScenarioOptions.map((s) => (
+                      <option key={String(s.key)} value={String(s.key)}>
+                        {s.label}
                       </option>
                     ))}
                   </select>
@@ -629,7 +687,7 @@ export default function SettingsPage() {
 
               <div>
                 <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                  Režim oporezivanja (još uvijek prisutan radi kompatibilnosti)
+                  Režim oporezivanja (legacy; kasnije se uklanja iz UI)
                 </label>
                 <select
                   value={taxForm.regime}
@@ -665,12 +723,12 @@ export default function SettingsPage() {
 
               <div className="rounded-lg border border-slate-200 bg-white p-3">
                 <div className="text-xs font-medium text-slate-800">
-                  Iznosi doprinosa (privremeno ručno / kasnije automatski)
+                  Iznosi doprinosa (legacy ručno; kasnije automatski)
                 </div>
                 <p className="mt-1 text-[11px] text-slate-500">
-                  Nakon povezivanja sa Admin konstantama, polja će se automatski
-                  popunjavati po šemi i pravilima, uz mogućnost kontrolisanog ručnog
-                  “override” unosa. Trenutno: režim ({formatRegimeLabel(taxForm.regime)}).
+                  UI schema sa backend-a je spremna. Sljedeći korak: polja će se
+                  renderovati dinamički iz Admin konstanti (base / stope), uz
+                  kontrolisani override. Trenutno: režim ({formatRegimeLabel(taxForm.regime)}).
                 </p>
 
                 <div className="mt-3 grid grid-cols-1 gap-3">

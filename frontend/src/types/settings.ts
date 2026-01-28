@@ -12,6 +12,46 @@ export type ScenarioKey =
   | "bd_samostalna";
 
 /* =========================
+ * SETTINGS UI SCHEMA (Tax)
+ * ========================= */
+
+export interface UiField {
+  key: string;
+  label: string;
+  hint?: string | null;
+  required?: boolean;
+  unit?: string | null; // npr. "BAM", "%", "decimal"
+}
+
+export interface UiScenarioOption {
+  key: ScenarioKey | string; // backend može vratiti poznati ScenarioKey; držimo string fallback
+  label: string;
+  hint?: string | null;
+  entity: TenantEntity;
+}
+
+export interface TaxProfileUiSchemaResponse {
+  entity: TenantEntity;
+  scenario_key: ScenarioKey | string;
+
+  allowed_regimes: TaxRegime[];
+
+  scenario_options: UiScenarioOption[];
+
+  contribution_components: string[];
+
+  base_fields: UiField[];
+  contribution_rate_fields: UiField[];
+  tax_fields: UiField[];
+  vat_fields: UiField[];
+
+  constants_set_id?: number | null;
+  constants_effective_from?: string | null; // ISO date string
+  constants_effective_to?: string | null; // ISO date string
+  constants_currency?: string | null;
+}
+
+/* =========================
  * PROFILE
  * ========================= */
 export interface ProfileSettingsRead {

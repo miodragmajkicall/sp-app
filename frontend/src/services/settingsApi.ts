@@ -5,6 +5,7 @@ import type {
   ProfileSettingsUpsert,
   TaxProfileSettingsRead,
   TaxProfileSettingsUpsert,
+  TaxProfileUiSchemaResponse,
   SubscriptionSettingsRead,
   SubscriptionSettingsUpsert,
 } from "../types/settings";
@@ -103,6 +104,37 @@ export async function putTaxProfileSettings(
     monthly_unemployment: payload.monthly_unemployment ?? null,
   });
   return normalizeTaxProfile(res.data);
+}
+
+export async function getTaxProfileUiSchema(params?: {
+  asOf?: string; // YYYY-MM-DD
+}): Promise<TaxProfileUiSchemaResponse> {
+  const res = await apiClient.get<TaxProfileUiSchemaResponse>("/settings/tax/ui-schema", {
+    params: params?.asOf ? { as_of: params.asOf } : undefined,
+  });
+
+  // backend već vraća shape koji FE može direktno koristiti;
+  // ovdje samo osiguramo default-e da UI ne puca na undefined.
+  const r: any = res.data ?? {};
+  return {
+    entity: (r.entity ?? "RS") as any,
+    scenario_key: r.scenario_key ?? "",
+    allowed_regimes: Array.isArray(r.allowed_regimes) ? r.allowed_regimes : [],
+    scenario_options: Array.isArray(r.scenario_options) ? r.scenario_options : [],
+    contribution_components: Array.isArray(r.contribution_components)
+      ? r.contribution_components
+      : [],
+    base_fields: Array.isArray(r.base_fields) ? r.base_fields : [],
+    contribution_rate_fields: Array.isArray(r.contribution_rate_fields)
+      ? r.contribution_rate_fields
+      : [],
+    tax_fields: Array.isArray(r.tax_fields) ? r.tax_fields : [],
+    vat_fields: Array.isArray(r.vat_fields) ? r.vat_fields : [],
+    constants_set_id: r.constants_set_id ?? null,
+    constants_effective_from: r.constants_effective_from ?? null,
+    constants_effective_to: r.constants_effective_to ?? null,
+    constants_currency: r.constants_currency ?? null,
+  };
 }
 
 function normalizeTaxProfile(r: any): TaxProfileSettingsRead {
