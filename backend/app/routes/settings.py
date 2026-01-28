@@ -17,7 +17,7 @@ from fastapi import (
     Query,
 )
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import select, or_
 from sqlalchemy.orm import Session
 
 from app.db import get_session
@@ -27,6 +27,7 @@ from app.models import (
     TenantTaxProfileSettings,
     TenantSubscriptionSettings,
     TenantAsset,
+    AppConstantsSet,
 )
 from app.schemas.settings import (
     ProfileSettingsRead,
@@ -36,6 +37,11 @@ from app.schemas.settings import (
     TaxScenarioOption,
     SubscriptionSettingsRead,
     SubscriptionSettingsUpsert,
+)
+from app.schemas.settings_ui import (
+    TaxProfileUiSchemaResponse,
+    UiScenarioOption,
+    UiField,
 )
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -154,6 +160,185 @@ def _scenario_catalog_for(entity: str, has_additional_activity: bool) -> List[Ta
             entity="Brcko",
         )
     ]
+
+
+# -------------------------------
+# UI schema helpers (Settings Tax)
+# -------------------------------
+
+def _entity_to_jurisdiction(entity: str) -> str:
+    # Admin constants koriste RS / FBiH / BD
+    if entity == "RS":
+        return "RS"
+    if entity == "FBiH":
+        return "FBiH"
+    return "BD"  # Brcko -> BD
+
+
+def _default_scenario_for_entity(entity: str) -> str:
+    if entity == "RS":
+        return "rs_primary"
+    if entity == "FBiH":
+        return "fbih_obrt"
+    return "bd_samostalna"
+
+
+def _ui_scenario_options_for_entity(entity: str) -> list[UiScenarioOption]:
+    # Namjerno: vraćamo kompletan katalog po entitetu (usklađeno sa FE dropdown-om)
+    if entity == "RS":
+        return [
+            UiScenarioOption(
+                key="rs_primary",
+                label="RS – Osnovna djelatnost",
+                hint="Osnovna djelatnost (primary).",
+                entity="RS",
+            ),
+            UiScenarioOption(
+                key="rs_supplementary",
+                label="RS – Dopunska djelatnost (uz zaposlenje)",
+                hint="Dopunska djelatnost (supplementary).",
+                entity="RS",
+            ),
+        ]
+    if entity == "FBiH":
+        return [
+            UiScenarioOption(
+                key="fbih_obrt",
+                label="FBiH – Obrt",
+                hint="Obrt i srodne djelatnosti.",
+                entity="FBiH",
+            ),
+            UiScenarioOption(
+                key="fbih_slobodna",
+                label="FBiH – Slobodna djelatnost",
+                hint="Slobodna zanimanja.",
+                entity="FBiH",
+            ),
+        ]
+    return [
+        UiScenarioOption(
+            key="bd_samostalna",
+            label="Brčko – Samostalna djelatnost",
+            hint="Jedinstvena šema za BD.",
+            entity="Brcko",
+        )
+    ]
+
+
+def _find_current_constants_set(
+    *,
+    db: Session,
+    jurisdiction: str,
+    scenario_key: str,
+    as_of,  # date
+) -> Optional[AppConstantsSet]:
+    stmt = (
+        select(AppConstantsSet)
+        .where(
+            AppConstantsSet.jurisdiction == jurisdiction,
+            AppConstantsSet.scenario_key == scenario_key,
+            AppConstantsSet.effective_from <= as_of,
+            or_(AppConstantsSet.effective_to.is_(None), AppConstantsSet.effective_to >= as_of),
+        )
+        .order_by(AppConstantsSet.effective_from.desc(), AppConstantsSet.id.desc())
+        .limit(1)
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def _payload_currency(payload: object) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    base = payload.get("base")
+    if isinstance(base, dict):
+        cur = base.get("currency")
+        if isinstance(cur, str) and cur.strip():
+            return cur.strip()
+    return None
+
+
+def _ui_fields_for(entity: str, scenario_key: str) -> tuple[list[str], list[UiField], list[UiField], list[UiField], list[UiField]]:
+    """
+    Returns:
+      (components, base_fields, contrib_rate_fields, tax_fields, vat_fields)
+    """
+    # contribution components by scenario (align with FE payload builder)
+    if entity == "RS":
+        if scenario_key == "rs_supplementary":
+            components = ["pension"]
+            contrib_rate_fields = [
+                UiField(key="contributions.pension_rate", label="PIO stopa", hint="Decimal (npr. 0.18)", unit="decimal"),
+            ]
+        else:
+            components = ["pension", "health", "unemployment", "child"]
+            contrib_rate_fields = [
+                UiField(key="contributions.pension_rate", label="PIO stopa", hint="Decimal (npr. 0.18)", unit="decimal"),
+                UiField(key="contributions.health_rate", label="Zdravstvo stopa", hint="Decimal (npr. 0.12)", unit="decimal"),
+                UiField(key="contributions.unemployment_rate", label="Nezaposlenost stopa", hint="Decimal (npr. 0.015)", unit="decimal"),
+                UiField(key="contributions.child_rate", label="Dječija zaštita stopa", hint="Decimal (npr. 0.017)", unit="decimal"),
+            ]
+
+        base_fields = [
+            UiField(
+                key="base.avg_gross_wage_prev_year_bam",
+                label="Prosječna bruto plata (prethodna godina)",
+                hint="KM. Koristi se za računanje osnovice doprinosa.",
+                required=False,
+                unit="BAM",
+            ),
+            UiField(
+                key="base.contrib_base_percent_of_avg_gross",
+                label="% prosječne bruto plate za osnovicu",
+                hint="Procenat (0–100).",
+                required=False,
+                unit="%",
+            ),
+        ]
+    elif entity == "FBiH":
+        components = ["pension", "health", "unemployment"]
+        base_fields = [
+            UiField(
+                key="base.monthly_contrib_base_bam",
+                label="Mjesečna osnovica doprinosa",
+                hint="KM. FBiH: fiksna mjesečna osnovica.",
+                required=True,
+                unit="BAM",
+            )
+        ]
+        contrib_rate_fields = [
+            UiField(key="contributions.pension_rate", label="PIO stopa", hint="Decimal (npr. 0.18)", unit="decimal"),
+            UiField(key="contributions.health_rate", label="Zdravstvo stopa", hint="Decimal (npr. 0.12)", unit="decimal"),
+            UiField(key="contributions.unemployment_rate", label="Nezaposlenost stopa", hint="Decimal (npr. 0.015)", unit="decimal"),
+        ]
+    else:
+        # Brcko
+        components = ["pension", "health", "unemployment"]
+        base_fields = [
+            UiField(
+                key="base.monthly_contrib_base_bam",
+                label="Mjesečna osnovica doprinosa",
+                hint="KM. BD: fiksna mjesečna osnovica (V1 UI/Spec).",
+                required=True,
+                unit="BAM",
+            )
+        ]
+        contrib_rate_fields = [
+            UiField(key="contributions.pension_rate", label="PIO stopa", hint="Decimal (npr. 0.18)", unit="decimal"),
+            UiField(key="contributions.health_rate", label="Zdravstvo stopa", hint="Decimal (npr. 0.12)", unit="decimal"),
+            UiField(key="contributions.unemployment_rate", label="Nezaposlenost stopa", hint="Decimal (npr. 0.015)", unit="decimal"),
+        ]
+
+    # tax/vat (common) – za sada schema-only, UI može da prikaže kasnije
+    tax_fields = [
+        UiField(key="tax.income_tax_rate", label="Porez na dohodak stopa", hint="Decimal (npr. 0.10)", unit="decimal"),
+        UiField(key="tax.flat_tax_monthly_amount_bam", label="Paušalni porez (mjesečno)", hint="KM (opciono)", unit="BAM"),
+    ]
+    vat_fields = [
+        UiField(key="vat.standard_rate", label="PDV standardna stopa", hint="Decimal (npr. 0.17)", unit="decimal"),
+        UiField(key="vat.entry_threshold_bam", label="PDV prag ulaska", hint="KM (opciono)", unit="BAM"),
+    ]
+
+    return components, base_fields, contrib_rate_fields, tax_fields, vat_fields
 
 
 # ======================================================
@@ -494,6 +679,78 @@ def get_tax_scenarios_catalog(
     has_additional_activity: bool = Query(False, description="Za RS razlikuje osnovnu i dopunsku djelatnost"),
 ) -> list[TaxScenarioOption]:
     return _scenario_catalog_for(entity=entity, has_additional_activity=has_additional_activity)
+
+
+@router.get(
+    "/tax/ui-schema",
+    response_model=TaxProfileUiSchemaResponse,
+    summary="UI schema za Settings -> Poreski profil (povezano sa Admin Constants)",
+)
+def get_tax_profile_ui_schema(
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    as_of: Optional[str] = Query(None, description="YYYY-MM-DD (opciono). Default = danas (server)."),
+    db: Session = Depends(get_session),
+) -> TaxProfileUiSchemaResponse:
+    """
+    Vraća informaciju UI-u:
+    - koji su validni scenariji za entitet
+    - koja polja imaju smisla (base / contribution components)
+    - meta o trenutno aktivnom Admin Constants setu (ako postoji)
+    """
+    tenant = require_tenant_code(x_tenant_code)
+    ensure_tenant_exists(db, tenant)
+
+    # učitaj tenant tax settings (ako nema, default)
+    row = db.execute(
+        select(TenantTaxProfileSettings).where(TenantTaxProfileSettings.tenant_code == tenant)
+    ).scalar_one_or_none()
+
+    entity = (row.entity if row is not None else "RS") or "RS"
+    scenario_key = (row.scenario_key if row is not None else None)
+    if not scenario_key:
+        scenario_key = _default_scenario_for_entity(entity)
+
+    # parse as_of
+    from datetime import date as _date  # local import to avoid clutter
+    if as_of:
+        try:
+            as_of_date = _date.fromisoformat(as_of)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid as_of. Expected YYYY-MM-DD.") from exc
+    else:
+        as_of_date = _date.today()
+
+    jurisdiction = _entity_to_jurisdiction(entity)
+    cur_set = _find_current_constants_set(
+        db=db,
+        jurisdiction=jurisdiction,
+        scenario_key=scenario_key,
+        as_of=as_of_date,
+    )
+
+    payload = cur_set.payload if cur_set is not None else None
+    currency = _payload_currency(payload) or "BAM"
+
+    components, base_fields, contrib_rate_fields, tax_fields, vat_fields = _ui_fields_for(
+        entity=entity,
+        scenario_key=scenario_key,
+    )
+
+    return TaxProfileUiSchemaResponse(
+        entity=entity,  # type: ignore[arg-type]
+        scenario_key=scenario_key,
+        allowed_regimes=["pausal", "two_percent"],
+        scenario_options=_ui_scenario_options_for_entity(entity),
+        contribution_components=components,
+        base_fields=base_fields,
+        contribution_rate_fields=contrib_rate_fields,
+        tax_fields=tax_fields,
+        vat_fields=vat_fields,
+        constants_set_id=(cur_set.id if cur_set is not None else None),
+        constants_effective_from=(cur_set.effective_from.isoformat() if cur_set is not None else None),
+        constants_effective_to=(cur_set.effective_to.isoformat() if (cur_set is not None and cur_set.effective_to is not None) else None),
+        constants_currency=currency,
+    )
 
 
 # ======================================================

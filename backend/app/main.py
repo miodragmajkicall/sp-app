@@ -102,10 +102,21 @@ app = FastAPI(
 # ======================================================
 #  CORS (za frontend/web & mobilne klijente)
 # ======================================================
+#
+# VAŽNO:
+# - Ako je allow_credentials=True, allow_origins NE SMIJE biti ["*"].
+#   U tom slučaju Starlette/FastAPI neće slati Access-Control-Allow-Origin,
+#   a browser će blokirati zahtjeve (tačno ono što vidiš u konzoli).
+#
+# Dev origins (Vite default = 5173). Kasnije, za produkciju sužavamo.
+DEV_ALLOWED_ORIGINS = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # kasnije možemo suziti na konkretne domene
+    allow_origins=DEV_ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
