@@ -52,6 +52,37 @@ const SCENARIOS_BY_ENTITY: Record<TenantEntity, ScenarioKey[]> = {
   Brcko: ["bd_samostalna"],
 };
 
+const SCENARIO_META: Record<
+  ScenarioKey,
+  { label: string; hint: string; entity: TenantEntity }
+> = {
+  rs_primary: {
+    label: "RS – Osnovna djelatnost",
+    hint: "Osnovna djelatnost (primary).",
+    entity: "RS",
+  },
+  rs_supplementary: {
+    label: "RS – Dopunska djelatnost (uz zaposlenje)",
+    hint: "Dopunska djelatnost (supplementary).",
+    entity: "RS",
+  },
+  fbih_obrt: {
+    label: "FBiH – Obrt",
+    hint: "Obrt i srodne djelatnosti.",
+    entity: "FBiH",
+  },
+  fbih_slobodna: {
+    label: "FBiH – Slobodna djelatnost",
+    hint: "Slobodna zanimanja.",
+    entity: "FBiH",
+  },
+  bd_samostalna: {
+    label: "Brčko – Samostalna djelatnost",
+    hint: "Jedinstvena šema za Brčko distrikt.",
+    entity: "Brcko",
+  },
+};
+
 function isScenarioValidForEntity(
   entity: TenantEntity,
   scenario: ScenarioKey | null,
@@ -110,7 +141,6 @@ export default function SettingsPage() {
   const [selectedLogoName, setSelectedLogoName] = useState<string>("");
   const [logoObjectUrl, setLogoObjectUrl] = useState<string | null>(null);
 
-  // init forms when queries load (do not overwrite while saving)
   useEffect(() => {
     if (!profileQuery.data) return;
     const p: any = profileQuery.data;
@@ -127,7 +157,7 @@ export default function SettingsPage() {
     const t = taxQuery.data;
 
     const entity = t.entity;
-    const rawScenario = (t.scenario_key ?? null) as any;
+    const rawScenario = (t.scenario_key ?? null) as ScenarioKey | null;
 
     const scenarioToUse = isScenarioValidForEntity(entity, rawScenario)
       ? (rawScenario as ScenarioKey)
@@ -137,7 +167,10 @@ export default function SettingsPage() {
       entity,
       regime: t.regime,
       scenario_key: scenarioToUse,
-      has_additional_activity: t.has_additional_activity,
+      has_additional_activity:
+        entity === "RS"
+          ? scenarioToUse === "rs_supplementary"
+          : t.has_additional_activity,
       monthly_pension: t.monthly_pension == null ? "" : String(t.monthly_pension),
       monthly_health: t.monthly_health == null ? "" : String(t.monthly_health),
       monthly_unemployment:
@@ -145,20 +178,40 @@ export default function SettingsPage() {
     });
   }, [taxQuery.data]);
 
-  // keep scenario_key consistent when entity changes (fallback)
+  // Drži scenario validnim kad se promijeni entity
   useEffect(() => {
     const entity = taxForm.entity;
     const current = taxForm.scenario_key
       ? (taxForm.scenario_key as ScenarioKey)
       : null;
 
-    if (current && isScenarioValidForEntity(entity, current)) return;
+    if (current && isScenarioValidForEntity(entity, current)) {
+      return;
+    }
 
     setTaxForm((t) => ({
       ...t,
       scenario_key: getDefaultScenarioForEntity(entity),
+      has_additional_activity:
+        entity === "RS" ? getDefaultScenarioForEntity(entity) === "rs_supplementary" : false,
     }));
   }, [taxForm.entity]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Za RS: checkbox i scenario moraju biti sinhronizovani
+  useEffect(() => {
+    if (taxForm.entity !== "RS") return;
+
+    const expectedScenario = taxForm.has_additional_activity
+      ? "rs_supplementary"
+      : "rs_primary";
+
+    if (taxForm.scenario_key === expectedScenario) return;
+
+    setTaxForm((t) => ({
+      ...t,
+      scenario_key: expectedScenario,
+    }));
+  }, [taxForm.entity, taxForm.has_additional_activity]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tenantCode = useMemo(() => {
     return (
@@ -170,8 +223,8 @@ export default function SettingsPage() {
   }, [profileQuery.data, taxQuery.data, subQuery.data]);
 
   const hasTaxProfileMinimum = useMemo(() => {
-    return Boolean(taxQuery.data?.scenario_key);
-  }, [taxQuery.data]);
+    return Boolean(taxForm.scenario_key);
+  }, [taxForm.scenario_key]);
 
   const currentPlan: SubscriptionPlan = (subQuery.data?.plan ?? "Basic") as any;
 
@@ -185,9 +238,8 @@ export default function SettingsPage() {
     return p?.logo_asset_id ?? null;
   }, [profileQuery.data]);
 
-  // TAX UI schema (backend-driven)
   const taxUiSchemaQuery = useQuery<TaxProfileUiSchemaResponse, Error>({
-    queryKey: ["settings", "tax-ui-schema", taxForm.entity, taxForm.scenario_key],
+    queryKey: ["settings", "tax-ui-schema"],
     queryFn: async () => {
       return getTaxProfileUiSchema();
     },
@@ -196,41 +248,28 @@ export default function SettingsPage() {
   });
 
   const uiScenarioOptions = useMemo(() => {
-    const data = taxUiSchemaQuery.data;
-    if (!data?.scenario_options?.length) {
-      // fallback (hardcoded)
-      return SCENARIOS_BY_ENTITY[taxForm.entity].map((key) => ({
-        key,
-        label: key,
-        hint: null,
-        entity: taxForm.entity,
-      }));
-    }
-    return data.scenario_options;
-  }, [taxUiSchemaQuery.data, taxForm.entity]);
+    return SCENARIOS_BY_ENTITY[taxForm.entity].map((key) => ({
+      key,
+      label: SCENARIO_META[key].label,
+      hint: SCENARIO_META[key].hint,
+      entity: SCENARIO_META[key].entity,
+    }));
+  }, [taxForm.entity]);
 
-  // If backend schema says current scenario_key is invalid, fallback
+  // Ako se scenario ručno promijeni na RS, sinhronizuj checkbox
   useEffect(() => {
-    const data = taxUiSchemaQuery.data;
-    if (!data) return;
+    if (taxForm.entity !== "RS") return;
+    if (!taxForm.scenario_key) return;
 
-    const opts = data.scenario_options ?? [];
-    if (!opts.length) return;
+    const shouldBeSupplementary = taxForm.scenario_key === "rs_supplementary";
+    if (taxForm.has_additional_activity === shouldBeSupplementary) return;
 
-    const current = taxForm.scenario_key;
-    if (!current) return;
-
-    const isValid = opts.some((o) => String(o.key) === String(current));
-    if (isValid) return;
-
-    // pick first available
     setTaxForm((t) => ({
       ...t,
-      scenario_key: (opts[0].key as any) ?? "",
+      has_additional_activity: shouldBeSupplementary,
     }));
-  }, [taxUiSchemaQuery.data]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [taxForm.entity, taxForm.scenario_key]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Logo preview preko blob-a (radi i sa X-Tenant-Code headerom)
   useEffect(() => {
     let isActive = true;
 
@@ -265,21 +304,16 @@ export default function SettingsPage() {
     return () => {
       isActive = false;
     };
-    // assetId u deps da se reload desi nakon upload/replace
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileHasLogo, logoAssetIdForReload]);
 
   useEffect(() => {
     return () => {
-      // cleanup on unmount
       if (logoObjectUrl) URL.revokeObjectURL(logoObjectUrl);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /* =========================
-   * Mutations
-   * ========================= */
   const profileMutation = useMutation({
     mutationFn: async () => {
       if (!profileForm.business_name.trim()) {
@@ -327,7 +361,6 @@ export default function SettingsPage() {
 
       const res = await apiClient.post("/settings/profile/logo", fd, {
         headers: {
-          // axios će sam setovati boundary; dovoljno je da ne forsiramo JSON
           "Content-Type": "multipart/form-data",
         },
       });
@@ -337,7 +370,6 @@ export default function SettingsPage() {
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["settings", "profile"] });
 
-      // resetuj file input da se može uploadovati isti fajl opet
       if (fileInputRef.current) fileInputRef.current.value = "";
       setSelectedLogoName("");
     },
@@ -372,7 +404,6 @@ export default function SettingsPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-col gap-2">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -390,7 +421,6 @@ export default function SettingsPage() {
           </div>
         </div>
 
-        {/* Info banner */}
         <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-700 shadow-sm">
           <div className="font-medium text-slate-800">
             Postavke firme i poreskog profila
@@ -410,7 +440,6 @@ export default function SettingsPage() {
         </div>
       </div>
 
-      {/* Loading / Error */}
       {anyLoading && (
         <div className="rounded-xl border border-slate-200 bg-white p-4 text-sm text-slate-600 shadow-sm">
           Učitavam postavke...
@@ -444,10 +473,8 @@ export default function SettingsPage() {
         </div>
       )}
 
-      {/* Content */}
       {!anyLoading && !anyError && (
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-          {/* PROFILE */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-slate-800">Profil firme</h3>
@@ -499,7 +526,6 @@ export default function SettingsPage() {
                 />
               </div>
 
-              {/* LOGO (upload + preview + delete) */}
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                 <div className="flex items-start justify-between gap-3">
                   <div className="min-w-0">
@@ -612,7 +638,6 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* TAX PROFILE */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-slate-800">Poreski profil</h3>
@@ -709,6 +734,7 @@ export default function SettingsPage() {
                   id="has_additional_activity"
                   type="checkbox"
                   checked={taxForm.has_additional_activity}
+                  disabled={taxForm.entity !== "RS"}
                   onChange={(e) =>
                     setTaxForm((t) => ({
                       ...t,
@@ -718,6 +744,9 @@ export default function SettingsPage() {
                 />
                 <label htmlFor="has_additional_activity" className="text-xs text-slate-700">
                   Dopunska djelatnost / drugi osnov
+                  {taxForm.entity !== "RS" && (
+                    <span className="ml-1 text-slate-400">(primjenjuje se samo za RS)</span>
+                  )}
                 </label>
               </div>
 
@@ -798,7 +827,6 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* SUBSCRIPTION */}
           <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-slate-800">Pretplata</h3>
@@ -850,6 +878,7 @@ export default function SettingsPage() {
                   profileQuery.refetch();
                   taxQuery.refetch();
                   subQuery.refetch();
+                  taxUiSchemaQuery.refetch();
                 }}
                 className="inline-flex w-full items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
               >

@@ -120,10 +120,40 @@ def _normalize_jurisdiction(entity_value: str) -> str:
     return "RS"
 
 
-def _find_current_constants_set(*, db: Session, jurisdiction: str, as_of: date) -> Optional[AppConstantsSet]:
+def _default_scenario_key_for_profile(prof: TenantTaxProfileSettings) -> Optional[str]:
+    """
+    Fallback mapiranje za profile koji još nemaju eksplicitno postavljen scenario_key.
+
+    Važno za backward compatibility:
+    - stari testovi i stari podaci mogu imati entity + has_additional_activity,
+      bez scenario_key.
+    """
+    entity = (prof.entity or "").strip()
+
+    if entity == "RS":
+        return "rs_supplementary" if bool(prof.has_additional_activity) else "rs_primary"
+    if entity == "FBiH":
+        return "fbih_obrt"
+    if entity in {"Brcko", "BD"}:
+        return "bd_samostalna"
+
+    return None
+
+
+def _find_current_constants_set(
+    *,
+    db: Session,
+    jurisdiction: str,
+    as_of: date,
+    scenario_key: Optional[str] = None,
+) -> Optional[AppConstantsSet]:
     """
     Vraća set koji je aktivan na datum `as_of`:
       effective_from <= as_of AND (effective_to IS NULL OR effective_to >= as_of)
+
+    Ako je scenario_key zadat, lookup je strožiji:
+      jurisdiction + scenario_key + date
+
     Ako ih ima više (ne bi smjelo), uzima najnoviji po effective_from.
     """
     stmt = (
@@ -136,6 +166,10 @@ def _find_current_constants_set(*, db: Session, jurisdiction: str, as_of: date) 
         .order_by(AppConstantsSet.effective_from.desc(), AppConstantsSet.id.desc())
         .limit(1)
     )
+
+    if scenario_key:
+        stmt = stmt.where(AppConstantsSet.scenario_key == scenario_key)
+
     return db.execute(stmt).scalar_one_or_none()
 
 
@@ -153,43 +187,115 @@ def _tax_config_from_constants_payload(payload: dict[str, Any]) -> Optional[TaxD
     Izvlači TAX stope iz JSON payload-a u app_constants_sets.
 
     Podržani oblici:
-      A) root keys:
-         {
+
+    A) Legacy root keys:
+       {
+         "income_tax_rate": 0.10,
+         "pension_contribution_rate": 0.18,
+         ...
+         "currency": "BAM"
+       }
+
+    B) Legacy nested under "tax":
+       {
+         "tax": {
            "income_tax_rate": 0.10,
            "pension_contribution_rate": 0.18,
            ...
            "currency": "BAM"
          }
+       }
 
-      B) nested under "tax":
-         { "tax": { ... isti ključevi ... } }
+    C) V2 payload shape:
+       {
+         "base": {
+           "currency": "BAM"
+         },
+         "tax": {
+           "income_tax_rate": 0.10,
+           "flat_costs_rate": 0.30
+         },
+         "contributions": {
+           "pension_rate": 0.18,
+           "health_rate": 0.12,
+           "unemployment_rate": 0.015
+         }
+       }
 
     Ako payload nema ništa relevantno → vrati None.
     """
     if not isinstance(payload, dict):
         return None
 
-    src = payload
-    if isinstance(payload.get("tax"), dict):
-        src = payload["tax"]
+    tax_block = payload.get("tax") if isinstance(payload.get("tax"), dict) else {}
+    contrib_block = payload.get("contributions") if isinstance(payload.get("contributions"), dict) else {}
+    base_block = payload.get("base") if isinstance(payload.get("base"), dict) else {}
 
-    interesting_keys = {
-        "income_tax_rate",
-        "pension_contribution_rate",
-        "health_contribution_rate",
-        "unemployment_contribution_rate",
-        "flat_costs_rate",
-        "currency",
-    }
-    if not any(k in src for k in interesting_keys):
+    has_any_relevant = any(
+        key in payload
+        for key in {
+            "income_tax_rate",
+            "pension_contribution_rate",
+            "health_contribution_rate",
+            "unemployment_contribution_rate",
+            "flat_costs_rate",
+            "currency",
+        }
+    ) or any(
+        key in tax_block
+        for key in {
+            "income_tax_rate",
+            "pension_contribution_rate",
+            "health_contribution_rate",
+            "unemployment_contribution_rate",
+            "flat_costs_rate",
+            "currency",
+        }
+    ) or any(
+        key in contrib_block
+        for key in {
+            "pension_rate",
+            "health_rate",
+            "unemployment_rate",
+        }
+    ) or ("currency" in base_block)
+
+    if not has_any_relevant:
         return None
 
-    inc = _decimal_from_payload(src.get("income_tax_rate"))
-    pen = _decimal_from_payload(src.get("pension_contribution_rate"))
-    hea = _decimal_from_payload(src.get("health_contribution_rate"))
-    une = _decimal_from_payload(src.get("unemployment_contribution_rate"))
-    flat = _decimal_from_payload(src.get("flat_costs_rate"))
-    cur = src.get("currency")
+    inc = _decimal_from_payload(
+        tax_block.get("income_tax_rate", payload.get("income_tax_rate"))
+    )
+
+    # Legacy ili V2 contributions mapping
+    pen = _decimal_from_payload(
+        contrib_block.get(
+            "pension_rate",
+            tax_block.get("pension_contribution_rate", payload.get("pension_contribution_rate")),
+        )
+    )
+    hea = _decimal_from_payload(
+        contrib_block.get(
+            "health_rate",
+            tax_block.get("health_contribution_rate", payload.get("health_contribution_rate")),
+        )
+    )
+    une = _decimal_from_payload(
+        contrib_block.get(
+            "unemployment_rate",
+            tax_block.get("unemployment_contribution_rate", payload.get("unemployment_contribution_rate")),
+        )
+    )
+
+    flat = _decimal_from_payload(
+        tax_block.get("flat_costs_rate", payload.get("flat_costs_rate"))
+    )
+
+    cur = (
+        base_block.get("currency")
+        or tax_block.get("currency")
+        or payload.get("currency")
+    )
 
     return TaxDummyConfig(
         income_tax_rate=inc if inc is not None else DEFAULT_TAX_CONFIG.income_tax_rate,
@@ -205,7 +311,8 @@ def _resolve_tax_config(db: Session, tenant_code: str, as_of: date) -> TaxDummyC
     """
     Hijerarhija izvora konfiguracije (prioritet):
       1) tax_settings (tenant override)
-      2) app_constants_sets (effective-dated po jurisdikciji)  **samo ako tenant ima /settings/tax profil**
+      2) app_constants_sets (effective-dated po jurisdikciji + scenario_key)
+         **samo ako tenant ima /settings/tax profil**
       3) DEFAULT_TAX_CONFIG (fallback)
     """
     # 1) tenant override
@@ -227,9 +334,29 @@ def _resolve_tax_config(db: Session, tenant_code: str, as_of: date) -> TaxDummyC
 
     if prof is not None and (prof.entity or "").strip():
         jurisdiction = _normalize_jurisdiction(prof.entity)
-        cs = _find_current_constants_set(db=db, jurisdiction=jurisdiction, as_of=as_of)
+        scenario_key = (prof.scenario_key or "").strip() or _default_scenario_key_for_profile(prof)
+
+        cs = _find_current_constants_set(
+            db=db,
+            jurisdiction=jurisdiction,
+            scenario_key=scenario_key,
+            as_of=as_of,
+        )
         if cs is not None:
             cfg = _tax_config_from_constants_payload(cs.payload or {})
+            if cfg is not None:
+                return cfg
+
+        # Backward fallback:
+        # ako za taj scenario nema seta, pokušaj po jurisdikciji (stari podaci)
+        cs_fallback = _find_current_constants_set(
+            db=db,
+            jurisdiction=jurisdiction,
+            as_of=as_of,
+            scenario_key=None,
+        )
+        if cs_fallback is not None:
+            cfg = _tax_config_from_constants_payload(cs_fallback.payload or {})
             if cfg is not None:
                 return cfg
 

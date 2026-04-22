@@ -1,6 +1,7 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/TaxPage.tsx
 import { useEffect, useMemo, useState } from "react";
 import { apiClient, getApiBaseUrl } from "../services/apiClient";
+import { getTaxProfileUiSchema } from "../services/settingsApi";
 import {
   MonthlyTaxSummaryRead,
   TaxYearlyMode,
@@ -11,6 +12,7 @@ import {
   finalizeTaxMonthly,
   finalizeTaxYearly,
 } from "../services/taxApi";
+import type { TaxProfileUiSchemaResponse } from "../types/settings";
 
 type TaxTab = "monthly" | "yearly";
 
@@ -49,7 +51,6 @@ function getMonthlyFieldAsNumber(
 function parseFilenameFromContentDisposition(cd?: string | null): string | null {
   if (!cd) return null;
 
-  // content-disposition: attachment; filename="xyz.csv"
   const match = /filename\*?=(?:UTF-8'')?("?)([^";]+)\1/i.exec(cd);
   if (!match) return null;
 
@@ -74,8 +75,34 @@ function triggerDownload(blob: Blob, filename: string) {
 function openBlobInNewTab(blob: Blob) {
   const url = URL.createObjectURL(blob);
   window.open(url, "_blank", "noopener,noreferrer");
-  // Ne revoke odmah; pusti tab da učita. Možeš revoke kasnije ako želiš.
   setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
+function formatEntityLabel(entity?: string | null): string {
+  if (!entity) return "-";
+  if (entity === "Brcko") return "Brčko";
+  return entity;
+}
+
+function formatScenarioLabel(scenarioKey?: string | null): string {
+  if (!scenarioKey) return "-";
+
+  const labels: Record<string, string> = {
+    rs_primary: "RS – Osnovna djelatnost",
+    rs_supplementary: "RS – Dopunska djelatnost",
+    fbih_obrt: "FBiH – Obrt",
+    fbih_slobodna: "FBiH – Slobodna djelatnost",
+    bd_samostalna: "Brčko – Samostalna djelatnost",
+  };
+
+  return labels[scenarioKey] ?? scenarioKey;
+}
+
+function formatDateLocal(value?: string | null): string {
+  if (!value) return "-";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return value;
+  return d.toLocaleDateString("sr-Latn-BA");
 }
 
 export default function TaxPage() {
@@ -102,6 +129,10 @@ export default function TaxPage() {
   const [yearlyError, setYearlyError] = useState<string | null>(null);
   const [yearlySummary, setYearlySummary] = useState<YearlyTaxSummaryRead | null>(null);
 
+  const [taxUiSchema, setTaxUiSchema] = useState<TaxProfileUiSchemaResponse | null>(null);
+  const [taxUiSchemaLoading, setTaxUiSchemaLoading] = useState(false);
+  const [taxUiSchemaError, setTaxUiSchemaError] = useState<string | null>(null);
+
   const [yearlyMode, setYearlyMode] = useState<TaxYearlyMode>(() => {
     const raw = window.localStorage.getItem("spapp.tax.yearlyMode");
     return raw === "two_percent" ? "two_percent" : "pausal";
@@ -112,13 +143,34 @@ export default function TaxPage() {
   }, [yearlyMode]);
 
   const currency =
-    yearlySummary?.currency ?? history[0]?.currency ?? summary?.currency ?? "BAM";
+    taxUiSchema?.constants_currency ??
+    yearlySummary?.currency ??
+    history[0]?.currency ??
+    summary?.currency ??
+    "BAM";
 
   const monthName = useMemo(() => {
     return new Date(year, month - 1, 1).toLocaleDateString("sr-Latn-BA", {
       month: "long",
     });
   }, [year, month]);
+
+  const selectedMonthHistoryItem = useMemo(() => {
+    return history.find((h) => h.year === year && h.month === month) ?? null;
+  }, [history, year, month]);
+
+  const monthlyStatusLabel = useMemo(() => {
+    const source = selectedMonthHistoryItem ?? summary;
+    if (!source) return loading ? "Čeka učitavanje..." : "-";
+    return source.is_final ? "Zaključan (finalizovan obračun)" : "Još nije finalizovan";
+  }, [selectedMonthHistoryItem, summary, loading]);
+
+  const taxProfileBadgeTone = useMemo(() => {
+    if (taxUiSchema?.constants_set_id) {
+      return "border-emerald-200 bg-emerald-50 text-emerald-800";
+    }
+    return "border-amber-200 bg-amber-50 text-amber-800";
+  }, [taxUiSchema?.constants_set_id]);
 
   async function fetchAutoMonthly() {
     setLoading(true);
@@ -133,6 +185,22 @@ export default function TaxPage() {
       setErrorMsg(err?.message ?? "Greška pri učitavanju mjesečnog auto obračuna.");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function fetchTaxProfileContext() {
+    setTaxUiSchemaLoading(true);
+    setTaxUiSchemaError(null);
+
+    try {
+      const data = await getTaxProfileUiSchema();
+      setTaxUiSchema(data);
+    } catch (err: any) {
+      console.error("Failed to load tax profile UI schema:", err);
+      setTaxUiSchema(null);
+      setTaxUiSchemaError(err?.message ?? "Greška pri učitavanju poreskog profila.");
+    } finally {
+      setTaxUiSchemaLoading(false);
     }
   }
 
@@ -221,12 +289,6 @@ export default function TaxPage() {
     }
   }
 
-  /**
-   * Export helper:
-   * - radi preko apiClient (nosí X-Tenant-Code header),
-   * - responseType: blob,
-   * - izvuče filename iz Content-Disposition ako postoji.
-   */
   async function exportFile(opts: {
     path: string;
     params: Record<string, any>;
@@ -267,6 +329,7 @@ export default function TaxPage() {
     fetchAutoMonthly().catch(() => {});
     fetchHistoryForYear().catch(() => {});
     fetchYearlyPreview().catch(() => {});
+    fetchTaxProfileContext().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -334,6 +397,114 @@ export default function TaxPage() {
             Godišnje
           </button>
         </div>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Aktivni poreski profil
+            </div>
+            <h3 className="mt-1 text-base font-semibold text-slate-900">
+              {taxUiSchemaLoading
+                ? "Učitavam poreski profil..."
+                : `${formatEntityLabel(taxUiSchema?.entity)} / ${formatScenarioLabel(
+                    taxUiSchema?.scenario_key,
+                  )}`}
+            </h3>
+            <p className="mt-1 text-xs text-slate-600">
+              Ovaj ekran prikazuje obračun na osnovu aktivnog poreskog profila i
+              trenutno važećih Admin konstanti za tenant.
+            </p>
+          </div>
+
+          <div
+            className={`inline-flex items-center rounded-full border px-3 py-1 text-[11px] font-medium ${taxProfileBadgeTone}`}
+          >
+            {taxUiSchemaLoading
+              ? "Provjera izvora obračuna..."
+              : taxUiSchema?.constants_set_id
+              ? `Admin Constants #${taxUiSchema.constants_set_id}`
+              : "Fallback konfiguracija"}
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Entitet / scenario
+            </div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">
+              {taxUiSchemaLoading
+                ? "Učitavam..."
+                : `${formatEntityLabel(taxUiSchema?.entity)} / ${
+                    taxUiSchema?.scenario_key ?? "-"
+                  }`}
+            </div>
+            <div className="mt-1 text-[11px] text-slate-500">
+              {taxUiSchemaLoading
+                ? "—"
+                : formatScenarioLabel(taxUiSchema?.scenario_key)}
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Aktivni set konstanti
+            </div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">
+              {taxUiSchemaLoading
+                ? "Učitavam..."
+                : taxUiSchema?.constants_set_id
+                ? `#${taxUiSchema.constants_set_id}`
+                : "Nije pronađen"}
+            </div>
+            <div className="mt-1 text-[11px] text-slate-500">
+              {taxUiSchemaLoading
+                ? "—"
+                : taxUiSchema?.constants_set_id
+                ? "Obračun koristi active effective-dated set"
+                : "Koristi se fallback / podrazumijevana konfiguracija"}
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Važenje seta
+            </div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">
+              {taxUiSchemaLoading
+                ? "Učitavam..."
+                : formatDateLocal(taxUiSchema?.constants_effective_from)}
+            </div>
+            <div className="mt-1 text-[11px] text-slate-500">
+              do{" "}
+              {taxUiSchemaLoading
+                ? "—"
+                : taxUiSchema?.constants_effective_to
+                ? formatDateLocal(taxUiSchema.constants_effective_to)
+                : "daljnjeg"}
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+              Valuta obračuna
+            </div>
+            <div className="mt-1 text-sm font-semibold text-slate-900">
+              {taxUiSchemaLoading ? "Učitavam..." : taxUiSchema?.constants_currency ?? currency}
+            </div>
+            <div className="mt-1 text-[11px] text-slate-500">
+              Aktivna valuta za prikaz i obračun
+            </div>
+          </div>
+        </div>
+
+        {taxUiSchemaError && (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            {taxUiSchemaError}
+          </div>
+        )}
       </div>
 
       <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
@@ -409,11 +580,14 @@ export default function TaxPage() {
                 onClick={() => {
                   fetchHistoryForYear().catch(() => {});
                   fetchYearlyPreview().catch(() => {});
+                  fetchTaxProfileContext().catch(() => {});
                 }}
-                disabled={historyLoading || yearlyLoading}
+                disabled={historyLoading || yearlyLoading || taxUiSchemaLoading}
                 className="text-xs px-4 py-2 rounded border border-slate-300 hover:bg-slate-50 disabled:opacity-60"
               >
-                {historyLoading || yearlyLoading ? "Učitavam..." : `Osvježi godišnje (${year}.)`}
+                {historyLoading || yearlyLoading || taxUiSchemaLoading
+                  ? "Učitavam..."
+                  : `Osvježi godišnje (${year}.)`}
               </button>
             </>
           )}
@@ -456,7 +630,6 @@ export default function TaxPage() {
         </div>
       )}
 
-      {/* ========================= TAB: MONTHLY ========================= */}
       {tab === "monthly" && (
         <div className="space-y-5">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
@@ -464,15 +637,7 @@ export default function TaxPage() {
               <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">
                 Status mjeseca
               </p>
-              <p className="text-xs text-slate-600">
-                {summary
-                  ? summary.is_final
-                    ? "Zaključan (finalizovan obračun)"
-                    : "Još nije finalizovan"
-                  : loading
-                  ? "Čeka učitavanje..."
-                  : "-"}
-              </p>
+              <p className="text-xs text-slate-600">{monthlyStatusLabel}</p>
               <p className="text-[11px] text-slate-400">
                 Status dolazi iz polja <span className="font-mono">is_final</span>.
               </p>
@@ -569,7 +734,6 @@ export default function TaxPage() {
         </div>
       )}
 
-      {/* ========================= TAB: YEARLY ========================= */}
       {tab === "yearly" && (
         <div className="space-y-5">
           {(historyError || yearlyError) && (
