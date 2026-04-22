@@ -1,11 +1,12 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/App.tsx
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   BrowserRouter,
   NavLink,
   Navigate,
   Route,
   Routes,
+  useLocation,
 } from "react-router-dom";
 
 import {
@@ -41,11 +42,12 @@ import ExportInspectionPage from "./pages/ExportInspectionPage";
 import SettingsPage from "./pages/SettingsPage";
 import AdminConstantsPage from "./pages/AdminConstantsPage";
 
-import { getProfileSettings } from "./services/settingsApi";
-import { getApiBaseUrl } from "./services/apiClient";
+import {
+  getProfileSettings,
+  fetchProfileLogoBlob,
+} from "./services/settingsApi";
 import type { ProfileSettingsRead } from "./types/settings";
 
-// Ovaj logo je “svijetli” (svijetao tekst) i treba tamnu pozadinu — idealno za deep-navy sidebar.
 import EvidentLogoOnDark from "./assets/evident-logo-horizontal.svg";
 
 type NavItem = {
@@ -56,6 +58,15 @@ type NavItem = {
 };
 
 function App() {
+  return (
+    <BrowserRouter>
+      <AppShell />
+    </BrowserRouter>
+  );
+}
+
+function AppShell() {
+  const location = useLocation();
   const isDev = import.meta.env.DEV;
 
   const linkBase =
@@ -163,252 +174,282 @@ function App() {
     );
   }
 
-  // =========================
-  // Profile (firma/preduzetnik) — header block
-  // =========================
   const [profile, setProfile] = useState<ProfileSettingsRead | null>(null);
   const [profileErr, setProfileErr] = useState<string | null>(null);
+  const [logoSrc, setLogoSrc] = useState<string | null>(null);
   const [logoFailed, setLogoFailed] = useState(false);
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      try {
-        const p = await getProfileSettings();
-        if (!alive) return;
-        setProfile(p);
-        setProfileErr(null);
-      } catch (e: any) {
-        if (!alive) return;
-        setProfile(null);
-        setProfileErr("Profil firme nije dostupan.");
-      }
-    })();
-    return () => {
-      alive = false;
-    };
+  const refreshProfile = useCallback(async () => {
+    try {
+      const p = await getProfileSettings();
+      setProfile(p);
+      setProfileErr(null);
+    } catch {
+      setProfile(null);
+      setProfileErr("Profil firme nije dostupan.");
+    }
   }, []);
+
+  const refreshLogo = useCallback(async () => {
+    try {
+      const blob = await fetchProfileLogoBlob();
+
+      if (!blob || blob.size === 0) {
+        setLogoSrc((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return null;
+        });
+        return;
+      }
+
+      const objectUrl = URL.createObjectURL(blob);
+
+      setLogoSrc((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return objectUrl;
+      });
+      setLogoFailed(false);
+    } catch {
+      setLogoSrc((prev) => {
+        if (prev) URL.revokeObjectURL(prev);
+        return null;
+      });
+    }
+  }, []);
+
+  const refreshAll = useCallback(async () => {
+    await refreshProfile();
+    await refreshLogo();
+  }, [refreshProfile, refreshLogo]);
+
+  useEffect(() => {
+    refreshAll();
+  }, [refreshAll]);
+
+  useEffect(() => {
+    if (location.pathname === "/settings") {
+      refreshAll();
+    }
+  }, [location.pathname, refreshAll]);
+
+  useEffect(() => {
+    function sync() {
+      refreshAll();
+    }
+
+    function onVisible() {
+      if (document.visibilityState === "visible") {
+        refreshAll();
+      }
+    }
+
+    window.addEventListener(
+      "profile-settings-updated",
+      sync as EventListener,
+    );
+    window.addEventListener("focus", sync);
+    document.addEventListener("visibilitychange", onVisible);
+
+    return () => {
+      window.removeEventListener(
+        "profile-settings-updated",
+        sync as EventListener,
+      );
+      window.removeEventListener("focus", sync);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [refreshAll]);
+
+  useEffect(() => {
+    if (!isDev) return;
+
+    const id = window.setInterval(() => {
+      refreshAll();
+    }, 15000);
+
+    return () => window.clearInterval(id);
+  }, [isDev, refreshAll]);
+
+  useEffect(() => {
+    setLogoFailed(false);
+  }, [logoSrc]);
+
+  useEffect(() => {
+    return () => {
+      if (logoSrc) URL.revokeObjectURL(logoSrc);
+    };
+  }, [logoSrc]);
 
   const businessName = (profile?.business_name ?? "").trim();
   const displayBusinessName = businessName ? businessName : `SP ${tenant}`;
 
-  const logoUrl = useMemo(() => {
-    if (!profile) return null;
-
-    // Prefer NEW logo endpoint: /settings/profile/logo
-    // (backend vraća logo_asset_id kroz profile; frontend types možda ga ne sadrže,
-    // zato čitamo preko "any" bez pucanja kompilacije)
-    const p: any = profile;
-    const logoAssetId: number | null =
-      p.logo_asset_id == null ? null : Number(p.logo_asset_id);
-
-    if (logoAssetId) {
-      return buildTenantLogoUrl(logoAssetId);
-    }
-
-    // Fallback: legacy attachment
-    const legacyAttachmentId = (profile as any).logo_attachment_id ?? null;
-    if (legacyAttachmentId) {
-      return buildLegacyAttachmentUrl(Number(legacyAttachmentId));
-    }
-
-    return null;
-  }, [profile]);
-
-  // ako se promijeni URL (npr. nakon uploada), resetujemo error state
-  useEffect(() => {
-    setLogoFailed(false);
-  }, [logoUrl]);
-
   return (
-    <BrowserRouter>
-      <div className="min-h-screen bg-slate-100 flex">
-        {/* Sidebar */}
-        <aside className="w-64 text-slate-100 flex flex-col bg-gradient-to-b from-slate-950 to-slate-900">
-          {/* BRAND: bez bijele kapsule */}
-          <div className="px-5 py-4 border-b border-slate-800/70">
-            <img
-              src={EvidentLogoOnDark}
-              alt="Evident"
-              className="h-12 w-auto"
-            />
-            <p className="text-[13px] text-slate-400 mt-1 whitespace-nowrap">
-              Poslovanje • Knjigovodstvo • Porezi
-            </p>
+    <div className="min-h-screen bg-slate-100 flex">
+      <aside className="w-64 text-slate-100 flex flex-col bg-gradient-to-b from-slate-950 to-slate-900">
+        <div className="px-5 py-4 border-b border-slate-800/70">
+          <img
+            src={EvidentLogoOnDark}
+            alt="Evident"
+            className="h-12 w-auto"
+          />
+          <p className="text-[13px] text-slate-400 mt-1 whitespace-nowrap">
+            Poslovanje • Knjigovodstvo • Porezi
+          </p>
+        </div>
+
+        <nav className="flex-1 px-3 py-4 space-y-6 text-sm">
+          <NavLink
+            to="/dashboard"
+            className={({ isActive }) =>
+              [linkBase, isActive ? linkActive : linkInactive].join(" ")
+            }
+          >
+            <LayoutDashboard className={iconCls} aria-hidden="true" />
+            <span className="min-w-0 truncate">Kontrolna tabla</span>
+          </NavLink>
+
+          <div className="space-y-1">
+            <div className={sectionTitleCls}>Poslovanje</div>
+            {navPoslovanje.map((item) => (
+              <NavItemLink key={item.to} item={item} />
+            ))}
           </div>
 
-          <nav className="flex-1 px-3 py-4 space-y-6 text-sm">
-            <NavLink
-              to="/dashboard"
-              className={({ isActive }) =>
-                [linkBase, isActive ? linkActive : linkInactive].join(" ")
-              }
-            >
-              <LayoutDashboard className={iconCls} aria-hidden="true" />
-              <span className="min-w-0 truncate">Kontrolna tabla</span>
-            </NavLink>
+          <div className="space-y-1">
+            <div className={sectionTitleCls}>Knjigovodstvo</div>
+            {navKnjigovodstvo.map((item) => (
+              <NavItemLink key={item.to} item={item} />
+            ))}
+          </div>
 
-            <div className="space-y-1">
-              <div className={sectionTitleCls}>Poslovanje</div>
-              {navPoslovanje.map((item) => (
-                <NavItemLink key={item.to} item={item} />
-              ))}
+          <div className="space-y-1">
+            <div className={sectionTitleCls}>Alati</div>
+            {navAlati.map((item) => (
+              <NavItemLink key={item.to} item={item} />
+            ))}
+          </div>
+
+          <div className="space-y-1">
+            <div className={sectionTitleCls}>Sistem</div>
+            {navSistem.map((item) => (
+              <NavItemLink key={item.to} item={item} />
+            ))}
+
+            <div className="grid grid-cols-[20px_1fr] items-center gap-3 rounded-md px-3 py-2 text-slate-500 cursor-default">
+              <span
+                className="h-5 w-5 rounded border border-slate-700"
+                aria-hidden="true"
+              />
+              <span className="min-w-0 truncate">Pomoć (uskoro)</span>
+            </div>
+          </div>
+        </nav>
+
+        {isDev && (
+          <div className="px-4 py-3 border-t border-slate-800/70 text-xs text-slate-500">
+            <p className="min-w-0 truncate" title={`Tenant: ${tenant}`}>
+              Tenant: <span className="font-mono text-slate-300">{tenant}</span>
+            </p>
+          </div>
+        )}
+      </aside>
+
+      <div className="flex-1 flex flex-col">
+        <header className="h-14 border-b border-slate-200 bg-white flex items-center justify-between px-6">
+          <div className="min-w-0 flex items-center gap-2">
+            <p className="text-sm font-semibold text-slate-900 truncate">
+              Evident
+            </p>
+
+            {isDev && (
+              <span
+                className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600"
+                title={`Demo okruženje • tenant ${tenant}`}
+              >
+                Demo
+              </span>
+            )}
+          </div>
+
+          <NavLink
+            to="/settings"
+            className="flex items-center gap-3 rounded-md px-2 py-1 hover:bg-slate-50 transition-colors"
+            title="Postavke firme"
+          >
+            <div className="text-right leading-tight min-w-0">
+              <p className="text-sm font-semibold text-slate-900 truncate max-w-[360px]">
+                {profileErr ? "SP (nije dostupno)" : displayBusinessName}
+              </p>
+              <p className="text-xs text-slate-500 truncate max-w-[360px]">
+                Postavke profila i logotipa
+              </p>
             </div>
 
-            <div className="space-y-1">
-              <div className={sectionTitleCls}>Knjigovodstvo</div>
-              {navKnjigovodstvo.map((item) => (
-                <NavItemLink key={item.to} item={item} />
-              ))}
-            </div>
-
-            <div className="space-y-1">
-              <div className={sectionTitleCls}>Alati</div>
-              {navAlati.map((item) => (
-                <NavItemLink key={item.to} item={item} />
-              ))}
-            </div>
-
-            <div className="space-y-1">
-              <div className={sectionTitleCls}>Sistem</div>
-              {navSistem.map((item) => (
-                <NavItemLink key={item.to} item={item} />
-              ))}
-
-              <div className="grid grid-cols-[20px_1fr] items-center gap-3 rounded-md px-3 py-2 text-slate-500 cursor-default">
-                <span
-                  className="h-5 w-5 rounded border border-slate-700"
-                  aria-hidden="true"
+            <div className="h-9 w-9 rounded-md border border-slate-200 bg-white grid place-items-center overflow-hidden shrink-0">
+              {logoSrc && !logoFailed ? (
+                <img
+                  src={logoSrc}
+                  alt="Logo firme"
+                  className="h-full w-full object-contain"
+                  onError={() => setLogoFailed(true)}
                 />
-                <span className="min-w-0 truncate">Pomoć (uskoro)</span>
-              </div>
-            </div>
-          </nav>
-
-          {/* Tenant info – dev only */}
-          {isDev && (
-            <div className="px-4 py-3 border-t border-slate-800/70 text-xs text-slate-500">
-              <p className="min-w-0 truncate" title={`Tenant: ${tenant}`}>
-                Tenant:{" "}
-                <span className="font-mono text-slate-300">{tenant}</span>
-              </p>
-            </div>
-          )}
-        </aside>
-
-        {/* Main content */}
-        <div className="flex-1 flex flex-col">
-          <header className="h-14 border-b border-slate-200 bg-white flex items-center justify-between px-6">
-            {/* Left: product name only (no internal/dev details in normal view) */}
-            <div className="min-w-0 flex items-center gap-2">
-              <p className="text-sm font-semibold text-slate-900 truncate">
-                Evident
-              </p>
-
-              {/* Dev indicator – discreet */}
-              {isDev && (
-                <span
-                  className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600"
-                  title={`Demo okruženje • tenant ${tenant}`}
-                >
-                  Demo
-                </span>
+              ) : (
+                <div className="h-full w-full grid place-items-center bg-slate-50">
+                  {logoSrc ? (
+                    <ImageIcon className="h-5 w-5 text-slate-400" />
+                  ) : (
+                    <Building2 className="h-5 w-5 text-slate-400" />
+                  )}
+                </div>
               )}
             </div>
+          </NavLink>
+        </header>
 
-            <NavLink
-              to="/settings"
-              className="flex items-center gap-3 rounded-md px-2 py-1 hover:bg-slate-50 transition-colors"
-              title="Postavke firme"
-            >
-              <div className="text-right leading-tight min-w-0">
-                <p className="text-sm font-semibold text-slate-900 truncate max-w-[360px]">
-                  {profileErr ? "SP (nije dostupno)" : displayBusinessName}
-                </p>
-                <p className="text-xs text-slate-500 truncate max-w-[360px]">
-                  Postavke profila i logotipa
-                </p>
-              </div>
+        <main className="flex-1 p-6">
+          <Routes>
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
 
-              <div className="h-9 w-9 rounded-md border border-slate-200 bg-white grid place-items-center overflow-hidden shrink-0">
-                {logoUrl && !logoFailed ? (
-                  <img
-                    src={logoUrl}
-                    alt="Logo firme"
-                    className="h-full w-full object-contain"
-                    onError={() => setLogoFailed(true)}
-                  />
-                ) : (
-                  <div className="h-full w-full grid place-items-center bg-slate-50">
-                    {logoUrl && logoFailed ? (
-                      <ImageIcon className="h-5 w-5 text-slate-400" />
-                    ) : (
-                      <Building2 className="h-5 w-5 text-slate-400" />
-                    )}
-                  </div>
-                )}
-              </div>
-            </NavLink>
-          </header>
+            <Route path="/invoices" element={<InvoicesListPage />} />
+            <Route path="/invoices/new" element={<InvoiceCreatePage />} />
+            <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
 
-          <main className="flex-1 p-6">
-            <Routes>
-              <Route path="/" element={<Navigate to="/dashboard" replace />} />
-              <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/input-invoices" element={<InputInvoicesPage />} />
+            <Route
+              path="/input-invoices/new"
+              element={<InputInvoiceCreatePage />}
+            />
+            <Route
+              path="/input-invoices/:id"
+              element={<InputInvoiceDetailPage />}
+            />
 
-              <Route path="/invoices" element={<InvoicesListPage />} />
-              <Route path="/invoices/new" element={<InvoiceCreatePage />} />
-              <Route path="/invoices/:id" element={<InvoiceDetailPage />} />
+            <Route path="/cash" element={<CashPage />} />
+            <Route path="/kpr" element={<KprPage />} />
+            <Route path="/promet" element={<PrometPage />} />
+            <Route path="/tax" element={<TaxPage />} />
+            <Route path="/reports" element={<ReportsPage />} />
+            <Route
+              path="/export/inspection"
+              element={<ExportInspectionPage />}
+            />
+            <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/admin/constants" element={<AdminConstantsPage />} />
 
-              <Route path="/input-invoices" element={<InputInvoicesPage />} />
-              <Route
-                path="/input-invoices/new"
-                element={<InputInvoiceCreatePage />}
-              />
-              <Route
-                path="/input-invoices/:id"
-                element={<InputInvoiceDetailPage />}
-              />
-
-              <Route path="/cash" element={<CashPage />} />
-              <Route path="/kpr" element={<KprPage />} />
-              <Route path="/promet" element={<PrometPage />} />
-              <Route path="/tax" element={<TaxPage />} />
-              <Route path="/reports" element={<ReportsPage />} />
-              <Route
-                path="/export/inspection"
-                element={<ExportInspectionPage />}
-              />
-              <Route path="/settings" element={<SettingsPage />} />
-              <Route path="/admin/constants" element={<AdminConstantsPage />} />
-
-              <Route
-                path="*"
-                element={
-                  <div className="text-sm text-red-600">
-                    404 – Stranica nije pronađena.
-                  </div>
-                }
-              />
-            </Routes>
-          </main>
-        </div>
+            <Route
+              path="*"
+              element={
+                <div className="text-sm text-red-600">
+                  404 – Stranica nije pronađena.
+                </div>
+              }
+            />
+          </Routes>
+        </main>
       </div>
-    </BrowserRouter>
+    </div>
   );
-}
-
-function buildTenantLogoUrl(logoAssetId: number): string {
-  const base = getApiBaseUrl().replace(/\/$/, "");
-  // Backend: GET /settings/profile/logo (file); cache-bust preko asset id
-  return `${base}/settings/profile/logo?v=${encodeURIComponent(
-    String(logoAssetId),
-  )}`;
-}
-
-function buildLegacyAttachmentUrl(attachmentId: number): string {
-  const base = getApiBaseUrl().replace(/\/$/, "");
-  return `${base}/attachments/${attachmentId}`;
 }
 
 export default App;

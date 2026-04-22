@@ -21,9 +21,9 @@ import {
   getSubscriptionSettings,
   fetchProfileLogoBlob,
   getTaxProfileUiSchema,
+  uploadProfileLogo,
+  deleteProfileLogo,
 } from "../services/settingsApi";
-
-import { apiClient } from "../services/apiClient";
 
 function toNumberOrNull(value: string): number | null {
   const trimmed = value.trim();
@@ -44,6 +44,10 @@ function formatRegimeLabel(regime: TaxRegime): string {
 
 function formatPlanLabel(plan: SubscriptionPlan): string {
   return plan;
+}
+
+function notifyProfileSettingsUpdated() {
+  window.dispatchEvent(new CustomEvent("profile-settings-updated"));
 }
 
 const SCENARIOS_BY_ENTITY: Record<TenantEntity, ScenarioKey[]> = {
@@ -143,7 +147,7 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (!profileQuery.data) return;
-    const p: any = profileQuery.data;
+    const p = profileQuery.data;
 
     setProfileForm({
       business_name: p.business_name ?? "",
@@ -178,7 +182,6 @@ export default function SettingsPage() {
     });
   }, [taxQuery.data]);
 
-  // Drži scenario validnim kad se promijeni entity
   useEffect(() => {
     const entity = taxForm.entity;
     const current = taxForm.scenario_key
@@ -193,11 +196,12 @@ export default function SettingsPage() {
       ...t,
       scenario_key: getDefaultScenarioForEntity(entity),
       has_additional_activity:
-        entity === "RS" ? getDefaultScenarioForEntity(entity) === "rs_supplementary" : false,
+        entity === "RS"
+          ? getDefaultScenarioForEntity(entity) === "rs_supplementary"
+          : false,
     }));
   }, [taxForm.entity]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Za RS: checkbox i scenario moraju biti sinhronizovani
   useEffect(() => {
     if (taxForm.entity !== "RS") return;
 
@@ -215,9 +219,9 @@ export default function SettingsPage() {
 
   const tenantCode = useMemo(() => {
     return (
-      (profileQuery.data as any)?.tenant_code ||
-      (taxQuery.data as any)?.tenant_code ||
-      (subQuery.data as any)?.tenant_code ||
+      profileQuery.data?.tenant_code ||
+      taxQuery.data?.tenant_code ||
+      subQuery.data?.tenant_code ||
       "t-demo"
     );
   }, [profileQuery.data, taxQuery.data, subQuery.data]);
@@ -226,16 +230,15 @@ export default function SettingsPage() {
     return Boolean(taxForm.scenario_key);
   }, [taxForm.scenario_key]);
 
-  const currentPlan: SubscriptionPlan = (subQuery.data?.plan ?? "Basic") as any;
+  const currentPlan: SubscriptionPlan = (subQuery.data?.plan ??
+    "Basic") as SubscriptionPlan;
 
   const profileHasLogo = useMemo(() => {
-    const p: any = profileQuery.data;
-    return p?.logo_asset_id != null;
+    return profileQuery.data?.logo_asset_id != null;
   }, [profileQuery.data]);
 
   const logoAssetIdForReload = useMemo(() => {
-    const p: any = profileQuery.data;
-    return p?.logo_asset_id ?? null;
+    return profileQuery.data?.logo_asset_id ?? null;
   }, [profileQuery.data]);
 
   const taxUiSchemaQuery = useQuery<TaxProfileUiSchemaResponse, Error>({
@@ -256,7 +259,6 @@ export default function SettingsPage() {
     }));
   }, [taxForm.entity]);
 
-  // Ako se scenario ručno promijeni na RS, sinhronizuj checkbox
   useEffect(() => {
     if (taxForm.entity !== "RS") return;
     if (!taxForm.scenario_key) return;
@@ -275,8 +277,10 @@ export default function SettingsPage() {
 
     async function loadLogo() {
       if (!profileHasLogo) {
-        if (logoObjectUrl) URL.revokeObjectURL(logoObjectUrl);
-        setLogoObjectUrl(null);
+        setLogoObjectUrl((prev) => {
+          if (prev) URL.revokeObjectURL(prev);
+          return null;
+        });
         return;
       }
 
@@ -304,15 +308,13 @@ export default function SettingsPage() {
     return () => {
       isActive = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profileHasLogo, logoAssetIdForReload]);
 
   useEffect(() => {
     return () => {
       if (logoObjectUrl) URL.revokeObjectURL(logoObjectUrl);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [logoObjectUrl]);
 
   const profileMutation = useMutation({
     mutationFn: async () => {
@@ -327,6 +329,7 @@ export default function SettingsPage() {
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["settings", "profile"] });
+      notifyProfileSettingsUpdated();
     },
   });
 
@@ -356,19 +359,11 @@ export default function SettingsPage() {
 
   const logoUploadMutation = useMutation({
     mutationFn: async (file: File) => {
-      const fd = new FormData();
-      fd.append("file", file);
-
-      const res = await apiClient.post("/settings/profile/logo", fd, {
-        headers: {
-          "Content-Type": "multipart/form-data",
-        },
-      });
-
-      return res.data as any;
+      return uploadProfileLogo(file);
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["settings", "profile"] });
+      notifyProfileSettingsUpdated();
 
       if (fileInputRef.current) fileInputRef.current.value = "";
       setSelectedLogoName("");
@@ -377,10 +372,14 @@ export default function SettingsPage() {
 
   const logoDeleteMutation = useMutation({
     mutationFn: async () => {
-      await apiClient.delete("/settings/profile/logo");
+      await deleteProfileLogo();
     },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["settings", "profile"] });
+      notifyProfileSettingsUpdated();
+
+      if (fileInputRef.current) fileInputRef.current.value = "";
+      setSelectedLogoName("");
     },
   });
 
@@ -400,6 +399,72 @@ export default function SettingsPage() {
 
     if (!parts.length) return null;
     return parts.join(" • ");
+  }, [taxUiSchemaQuery.data]);
+
+  const taxUiSummary = useMemo(() => {
+    const d = taxUiSchemaQuery.data;
+    if (!d) return [];
+
+    const sections: Array<{ title: string; items: string[] }> = [];
+
+    const makeItems = (
+      rows?: Array<{
+        key: string;
+        label: string;
+        hint?: string | null;
+        unit?: string | null;
+      }>,
+    ) => {
+      return (rows ?? []).map((row) => {
+        const suffix = row.unit ? ` (${row.unit})` : "";
+        return `${row.label}${suffix}`;
+      });
+    };
+
+    const components = (d.contribution_components ?? []).map((item) =>
+      String(item),
+    );
+
+    if (components.length) {
+      sections.push({
+        title: "Komponente doprinosa",
+        items: components,
+      });
+    }
+
+    const baseFields = makeItems(d.base_fields);
+    if (baseFields.length) {
+      sections.push({
+        title: "Osnovica / bazna polja",
+        items: baseFields,
+      });
+    }
+
+    const contribRateFields = makeItems(d.contribution_rate_fields);
+    if (contribRateFields.length) {
+      sections.push({
+        title: "Stope doprinosa",
+        items: contribRateFields,
+      });
+    }
+
+    const taxFields = makeItems(d.tax_fields);
+    if (taxFields.length) {
+      sections.push({
+        title: "Porez",
+        items: taxFields,
+      });
+    }
+
+    const vatFields = makeItems(d.vat_fields);
+    if (vatFields.length) {
+      sections.push({
+        title: "PDV",
+        items: vatFields,
+      });
+    }
+
+    return sections;
   }, [taxUiSchemaQuery.data]);
 
   return (
@@ -483,7 +548,7 @@ export default function SettingsPage() {
               </p>
             </div>
 
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div>
                 <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
                   Naziv poslovanja
@@ -526,95 +591,93 @@ export default function SettingsPage() {
                 />
               </div>
 
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                      Logo
-                    </div>
-                    <p className="mt-1 text-[11px] text-slate-600">
-                      Upload logotipa (PNG/JPG/WebP). Sistem automatski konvertuje u
-                      PNG i smanjuje na max 512px.
-                    </p>
-                  </div>
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                  Logo
                 </div>
+                <p className="mt-1 text-[11px] text-slate-600">
+                  Upload logotipa (PNG/JPG/WebP). Sistem automatski konvertuje u
+                  PNG i smanjuje na max 512px.
+                </p>
 
-                <div className="mt-3 flex items-center gap-3">
-                  <div className="grid h-14 w-24 place-items-center overflow-hidden rounded-md border border-slate-200 bg-white">
-                    {logoObjectUrl ? (
-                      <img
-                        src={logoObjectUrl}
-                        alt="Logo preview"
-                        className="h-full w-full object-contain"
-                        onError={() => {
-                          setLogoObjectUrl((prev) => {
-                            if (prev) URL.revokeObjectURL(prev);
-                            return null;
-                          });
-                        }}
-                      />
-                    ) : (
-                      <span className="text-[11px] text-slate-400">nema</span>
-                    )}
-                  </div>
-
-                  <div className="min-w-0 flex-1">
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      accept="image/png,image/jpeg,image/webp"
-                      className="block w-full text-xs text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-slate-800"
-                      onChange={(e) => {
-                        const f = e.target.files?.[0];
-                        if (!f) return;
-                        setSelectedLogoName(f.name);
-                        logoUploadMutation.mutate(f);
-                      }}
-                      disabled={logoUploadMutation.isPending}
-                    />
-
-                    {selectedLogoName && (
-                      <div className="mt-1 truncate text-[11px] text-slate-500">
-                        Odabran fajl:{" "}
-                        <span className="font-medium">{selectedLogoName}</span>
+                <div className="mt-4 rounded-xl border border-slate-200 bg-white p-4">
+                  <div className="flex flex-col gap-4 sm:flex-row sm:items-center">
+                    <div className="flex justify-center sm:block">
+                      <div className="grid h-32 w-40 place-items-center overflow-hidden rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
+                        {logoObjectUrl ? (
+                          <img
+                            src={logoObjectUrl}
+                            alt="Logo preview"
+                            className="max-h-full max-w-full object-contain"
+                            onError={() => {
+                              setLogoObjectUrl((prev) => {
+                                if (prev) URL.revokeObjectURL(prev);
+                                return null;
+                              });
+                            }}
+                          />
+                        ) : (
+                          <span className="text-[11px] text-slate-400">nema loga</span>
+                        )}
                       </div>
-                    )}
-
-                    <div className="mt-2 flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          profileQuery.refetch();
-                        }}
-                        className="rounded-md border border-slate-300 bg-white px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-50"
-                      >
-                        Osvježi
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => logoDeleteMutation.mutate()}
-                        disabled={logoDeleteMutation.isPending}
-                        className="rounded-md border border-red-200 bg-white px-3 py-1.5 text-[11px] font-medium text-red-700 hover:bg-red-50 disabled:opacity-60"
-                      >
-                        {logoDeleteMutation.isPending ? "Briše se..." : "Obriši logo"}
-                      </button>
                     </div>
 
-                    {logoUploadMutation.error && (
-                      <p className="mt-2 text-[11px] text-red-600">
-                        {logoUploadMutation.error instanceof Error
-                          ? logoUploadMutation.error.message
-                          : "Greška pri upload-u."}
-                      </p>
-                    )}
-                    {logoDeleteMutation.error && (
-                      <p className="mt-2 text-[11px] text-red-600">
-                        {logoDeleteMutation.error instanceof Error
-                          ? logoDeleteMutation.error.message
-                          : "Greška pri brisanju."}
-                      </p>
-                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <input
+                          ref={fileInputRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp"
+                          className="block w-full text-xs text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-slate-900 file:px-3 file:py-1.5 file:text-xs file:font-medium file:text-white hover:file:bg-slate-800 sm:w-auto"
+                          onChange={(e) => {
+                            const f = e.target.files?.[0];
+                            if (!f) return;
+                            setSelectedLogoName(f.name);
+                            logoUploadMutation.mutate(f);
+                          }}
+                          disabled={logoUploadMutation.isPending}
+                        />
+
+                        {profileHasLogo && (
+                          <span className="inline-flex items-center rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+                            Aktivni logo
+                          </span>
+                        )}
+                      </div>
+
+                      {selectedLogoName && (
+                        <div className="mt-2 truncate text-[11px] text-slate-500">
+                          Odabran fajl:{" "}
+                          <span className="font-medium">{selectedLogoName}</span>
+                        </div>
+                      )}
+
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => logoDeleteMutation.mutate()}
+                          disabled={!profileHasLogo || logoDeleteMutation.isPending}
+                          className="rounded-md border border-red-200 bg-white px-3 py-1.5 text-[11px] font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {logoDeleteMutation.isPending ? "Briše se..." : "Obriši logo"}
+                        </button>
+                      </div>
+
+                      {logoUploadMutation.error && (
+                        <p className="mt-2 text-[11px] text-red-600">
+                          {logoUploadMutation.error instanceof Error
+                            ? logoUploadMutation.error.message
+                            : "Greška pri upload-u."}
+                        </p>
+                      )}
+                      {logoDeleteMutation.error && (
+                        <p className="mt-2 text-[11px] text-red-600">
+                          {logoDeleteMutation.error instanceof Error
+                            ? logoDeleteMutation.error.message
+                            : "Greška pri brisanju."}
+                        </p>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -631,7 +694,7 @@ export default function SettingsPage() {
                 type="button"
                 onClick={() => profileMutation.mutate()}
                 disabled={profileMutation.isPending}
-                className="mt-1 inline-flex w-full items-center justify-center rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-60"
+                className="inline-flex w-full items-center justify-center rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-60"
               >
                 {profileMutation.isPending ? "Snima se..." : "Sačuvaj profil"}
               </button>
@@ -661,7 +724,7 @@ export default function SettingsPage() {
               )}
             </div>
 
-            <div className="space-y-3">
+            <div className="space-y-4">
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
@@ -692,7 +755,7 @@ export default function SettingsPage() {
                     onChange={(e) =>
                       setTaxForm((t) => ({
                         ...t,
-                        scenario_key: e.target.value as any,
+                        scenario_key: e.target.value as ScenarioKey,
                       }))
                     }
                     className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
@@ -750,61 +813,50 @@ export default function SettingsPage() {
                 </label>
               </div>
 
-              <div className="rounded-lg border border-slate-200 bg-white p-3">
-                <div className="text-xs font-medium text-slate-800">
-                  Iznosi doprinosa (legacy ručno; kasnije automatski)
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
+                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Parametri iz Admin konstanti
                 </div>
-                <p className="mt-1 text-[11px] text-slate-500">
-                  UI schema sa backend-a je spremna. Sljedeći korak: polja će se
-                  renderovati dinamički iz Admin konstanti (base / stope), uz
-                  kontrolisani override. Trenutno: režim ({formatRegimeLabel(taxForm.regime)}).
+                <p className="mt-2 text-[11px] text-slate-600">
+                  Za izabrani entitet i scenario sistem koristi aktivni set iz Admin
+                  konstanti. Ručni unos doprinosa više nije primarni workflow na ovoj
+                  stranici.
                 </p>
 
-                <div className="mt-3 grid grid-cols-1 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                      Mjesečni PIO (opciono)
-                    </label>
-                    <input
-                      value={taxForm.monthly_pension}
-                      onChange={(e) =>
-                        setTaxForm((t) => ({ ...t, monthly_pension: e.target.value }))
-                      }
-                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-                      placeholder="npr. 250"
-                    />
+                {taxUiSummary.length > 0 ? (
+                  <div className="mt-4 space-y-3">
+                    {taxUiSummary.map((section) => (
+                      <div
+                        key={section.title}
+                        className="rounded-md border border-slate-200 bg-white p-3"
+                      >
+                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                          {section.title}
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {section.items.map((item) => (
+                            <span
+                              key={item}
+                              className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-700"
+                            >
+                              {item}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
                   </div>
+                ) : (
+                  <div className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600">
+                    Nema dodatnih UI schema detalja za prikaz.
+                  </div>
+                )}
 
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                      Mjesečno zdravstvo (opciono)
-                    </label>
-                    <input
-                      value={taxForm.monthly_health}
-                      onChange={(e) =>
-                        setTaxForm((t) => ({ ...t, monthly_health: e.target.value }))
-                      }
-                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-                      placeholder="npr. 180"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                      Nezaposlenost (opciono)
-                    </label>
-                    <input
-                      value={taxForm.monthly_unemployment}
-                      onChange={(e) =>
-                        setTaxForm((t) => ({
-                          ...t,
-                          monthly_unemployment: e.target.value,
-                        }))
-                      }
-                      className="mt-1 w-full rounded-md border border-slate-300 px-2 py-1.5 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-                      placeholder="npr. 25"
-                    />
-                  </div>
+                <div className="mt-4 rounded-md border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600">
+                  Trenutni legacy režim:{" "}
+                  <span className="font-medium text-slate-800">
+                    {formatRegimeLabel(taxForm.regime)}
+                  </span>
                 </div>
               </div>
 
@@ -820,7 +872,7 @@ export default function SettingsPage() {
                 type="button"
                 onClick={() => taxMutation.mutate()}
                 disabled={taxMutation.isPending}
-                className="mt-1 inline-flex w-full items-center justify-center rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-60"
+                className="inline-flex w-full items-center justify-center rounded-md bg-slate-900 px-3 py-2 text-xs font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-60"
               >
                 {taxMutation.isPending ? "Snima se..." : "Sačuvaj poreski profil"}
               </button>
@@ -831,7 +883,8 @@ export default function SettingsPage() {
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-slate-800">Pretplata</h3>
               <p className="mt-1 text-[11px] text-slate-500">
-                Ovdje se prikazuje status pretplate. Promjena plana ide kroz naplatu (Billing).
+                Ovdje se prikazuje status pretplate. Promjena plana ide kroz naplatu
+                (Billing).
               </p>
             </div>
 
@@ -858,7 +911,8 @@ export default function SettingsPage() {
                 </div>
 
                 <p className="mt-2 text-[11px] text-slate-600">
-                  U sljedećem koraku dodajemo Billing stranicu i Stripe (ili drugi provider) za nadogradnju/obnovu plana.
+                  U sljedećem koraku dodajemo Billing stranicu i Stripe (ili drugi
+                  provider) za nadogradnju/obnovu plana.
                 </p>
               </div>
 
@@ -879,6 +933,7 @@ export default function SettingsPage() {
                   taxQuery.refetch();
                   subQuery.refetch();
                   taxUiSchemaQuery.refetch();
+                  notifyProfileSettingsUpdated();
                 }}
                 className="inline-flex w-full items-center justify-center rounded-md border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-50"
               >
@@ -888,8 +943,9 @@ export default function SettingsPage() {
               <div className="rounded-md border border-slate-200 bg-white p-3 text-xs text-slate-600">
                 <p className="font-medium text-slate-700">Napomena</p>
                 <p className="mt-1">
-                  Backend trenutno podržava “plan” kao feature-toggle. UI ovdje više ne nudi ručnu promjenu plana,
-                  da se izbjegne pogrešna očekivanja u produkciji.
+                  Backend trenutno podržava “plan” kao feature-toggle. UI ovdje više
+                  ne nudi ručnu promjenu plana, da se izbjegne pogrešna očekivanja u
+                  produkciji.
                 </p>
               </div>
             </div>
