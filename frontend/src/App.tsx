@@ -1,13 +1,6 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/App.tsx
-import React, { useCallback, useEffect, useState } from "react";
-import {
-  BrowserRouter,
-  NavLink,
-  Navigate,
-  Route,
-  Routes,
-  useLocation,
-} from "react-router-dom";
+import React, { useCallback, useEffect, useRef, useState } from "react";
+import { BrowserRouter, NavLink, Navigate, Route, Routes } from "react-router-dom";
 
 import {
   LayoutDashboard,
@@ -43,8 +36,8 @@ import SettingsPage from "./pages/SettingsPage";
 import AdminConstantsPage from "./pages/AdminConstantsPage";
 
 import {
-  getProfileSettings,
   fetchProfileLogoBlob,
+  getProfileSettings,
 } from "./services/settingsApi";
 import type { ProfileSettingsRead } from "./types/settings";
 
@@ -66,7 +59,6 @@ function App() {
 }
 
 function AppShell() {
-  const location = useLocation();
   const isDev = import.meta.env.DEV;
 
   const linkBase =
@@ -80,7 +72,7 @@ function AppShell() {
   const sectionTitleCls =
     "px-3 mb-2 text-[11px] font-semibold uppercase tracking-wide text-slate-500";
 
-  const tenant = "t-demo";
+  const fallbackTenant = "t-demo";
 
   const navPoslovanje: NavItem[] = [
     {
@@ -179,107 +171,135 @@ function AppShell() {
   const [logoSrc, setLogoSrc] = useState<string | null>(null);
   const [logoFailed, setLogoFailed] = useState(false);
 
-  const refreshProfile = useCallback(async () => {
-    try {
-      const p = await getProfileSettings();
-      setProfile(p);
-      setProfileErr(null);
-    } catch {
-      setProfile(null);
-      setProfileErr("Profil firme nije dostupan.");
+  const mountedRef = useRef(true);
+  const refreshInFlightRef = useRef(false);
+  const currentLogoUrlRef = useRef<string | null>(null);
+
+  const clearLogoSrc = useCallback(() => {
+    if (currentLogoUrlRef.current) {
+      URL.revokeObjectURL(currentLogoUrlRef.current);
+      currentLogoUrlRef.current = null;
     }
+    setLogoSrc(null);
   }, []);
 
-  const refreshLogo = useCallback(async () => {
-    try {
-      const blob = await fetchProfileLogoBlob();
+  const applyLogoBlob = useCallback(
+    (blob: Blob | null) => {
+      clearLogoSrc();
 
       if (!blob || blob.size === 0) {
-        setLogoSrc((prev) => {
-          if (prev) URL.revokeObjectURL(prev);
-          return null;
-        });
+        setLogoFailed(false);
         return;
       }
 
       const objectUrl = URL.createObjectURL(blob);
-
-      setLogoSrc((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return objectUrl;
-      });
+      currentLogoUrlRef.current = objectUrl;
+      setLogoSrc(objectUrl);
       setLogoFailed(false);
-    } catch {
-      setLogoSrc((prev) => {
-        if (prev) URL.revokeObjectURL(prev);
-        return null;
-      });
-    }
-  }, []);
+    },
+    [clearLogoSrc],
+  );
 
   const refreshAll = useCallback(async () => {
-    await refreshProfile();
-    await refreshLogo();
-  }, [refreshProfile, refreshLogo]);
-
-  useEffect(() => {
-    refreshAll();
-  }, [refreshAll]);
-
-  useEffect(() => {
-    if (location.pathname === "/settings") {
-      refreshAll();
+    if (refreshInFlightRef.current) {
+      return;
     }
-  }, [location.pathname, refreshAll]);
+
+    refreshInFlightRef.current = true;
+
+    try {
+      const nextProfile = await getProfileSettings();
+
+      if (!mountedRef.current) {
+        return;
+      }
+
+      setProfile(nextProfile);
+      setProfileErr(null);
+
+      const hasLogo =
+        nextProfile.logo_asset_id != null ||
+        nextProfile.logo_attachment_id != null;
+
+      if (!hasLogo) {
+        clearLogoSrc();
+        setLogoFailed(false);
+        return;
+      }
+
+      try {
+        const blob = await fetchProfileLogoBlob();
+
+        if (!mountedRef.current) {
+          return;
+        }
+
+        applyLogoBlob(blob);
+      } catch {
+        if (!mountedRef.current) {
+          return;
+        }
+
+        clearLogoSrc();
+        setLogoFailed(true);
+      }
+    } catch {
+      if (!mountedRef.current) {
+        return;
+      }
+
+      setProfile(null);
+      setProfileErr("Profil firme nije dostupan.");
+      clearLogoSrc();
+      setLogoFailed(false);
+    } finally {
+      refreshInFlightRef.current = false;
+    }
+  }, [applyLogoBlob, clearLogoSrc]);
 
   useEffect(() => {
-    function sync() {
-      refreshAll();
+    mountedRef.current = true;
+    void refreshAll();
+
+    function syncProfile() {
+      void refreshAll();
+    }
+
+    function onFocus() {
+      void refreshAll();
     }
 
     function onVisible() {
       if (document.visibilityState === "visible") {
-        refreshAll();
+        void refreshAll();
       }
     }
 
     window.addEventListener(
       "profile-settings-updated",
-      sync as EventListener,
+      syncProfile as EventListener,
     );
-    window.addEventListener("focus", sync);
+    window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisible);
 
     return () => {
+      mountedRef.current = false;
+
       window.removeEventListener(
         "profile-settings-updated",
-        sync as EventListener,
+        syncProfile as EventListener,
       );
-      window.removeEventListener("focus", sync);
+      window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisible);
+
+      if (currentLogoUrlRef.current) {
+        URL.revokeObjectURL(currentLogoUrlRef.current);
+        currentLogoUrlRef.current = null;
+      }
     };
   }, [refreshAll]);
 
-  useEffect(() => {
-    if (!isDev) return;
-
-    const id = window.setInterval(() => {
-      refreshAll();
-    }, 15000);
-
-    return () => window.clearInterval(id);
-  }, [isDev, refreshAll]);
-
-  useEffect(() => {
-    setLogoFailed(false);
-  }, [logoSrc]);
-
-  useEffect(() => {
-    return () => {
-      if (logoSrc) URL.revokeObjectURL(logoSrc);
-    };
-  }, [logoSrc]);
-
+  const tenant = (profile?.tenant_code ?? fallbackTenant).trim() || fallbackTenant;
   const businessName = (profile?.business_name ?? "").trim();
   const displayBusinessName = businessName ? businessName : `SP ${tenant}`;
 
@@ -300,6 +320,7 @@ function AppShell() {
         <nav className="flex-1 px-3 py-4 space-y-6 text-sm">
           <NavLink
             to="/dashboard"
+            end
             className={({ isActive }) =>
               [linkBase, isActive ? linkActive : linkInactive].join(" ")
             }
@@ -395,7 +416,7 @@ function AppShell() {
                 />
               ) : (
                 <div className="h-full w-full grid place-items-center bg-slate-50">
-                  {logoSrc ? (
+                  {logoFailed ? (
                     <ImageIcon className="h-5 w-5 text-slate-400" />
                   ) : (
                     <Building2 className="h-5 w-5 text-slate-400" />

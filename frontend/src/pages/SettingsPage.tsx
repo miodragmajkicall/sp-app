@@ -11,6 +11,7 @@ import type {
   TaxRegime,
   ScenarioKey,
   TaxProfileUiSchemaResponse,
+  UiResolvedValue,
 } from "../types/settings";
 
 import {
@@ -48,6 +49,23 @@ function formatPlanLabel(plan: SubscriptionPlan): string {
 
 function notifyProfileSettingsUpdated() {
   window.dispatchEvent(new CustomEvent("profile-settings-updated"));
+}
+
+function getResolvedSectionTitle(section: UiResolvedValue["section"]): string {
+  switch (section) {
+    case "meta":
+      return "Opšte";
+    case "base":
+      return "Osnovica";
+    case "contributions":
+      return "Doprinosi";
+    case "tax":
+      return "Porez";
+    case "vat":
+      return "PDV";
+    default:
+      return "Parametri";
+  }
 }
 
 const SCENARIOS_BY_ENTITY: Record<TenantEntity, ScenarioKey[]> = {
@@ -242,12 +260,21 @@ export default function SettingsPage() {
   }, [profileQuery.data]);
 
   const taxUiSchemaQuery = useQuery<TaxProfileUiSchemaResponse, Error>({
-    queryKey: ["settings", "tax-ui-schema"],
+    queryKey: [
+      "settings",
+      "tax-ui-schema",
+      taxForm.entity,
+      taxForm.scenario_key,
+    ],
     queryFn: async () => {
       return getTaxProfileUiSchema();
     },
-    enabled: !taxQuery.isLoading && !taxQuery.isError,
-    staleTime: 15_000,
+    enabled:
+      !taxQuery.isLoading &&
+      !taxQuery.isError &&
+      Boolean(taxForm.scenario_key),
+    staleTime: 0,
+    refetchOnWindowFocus: false,
   });
 
   const uiScenarioOptions = useMemo(() => {
@@ -354,6 +381,7 @@ export default function SettingsPage() {
       await queryClient.invalidateQueries({
         queryKey: ["settings", "tax-ui-schema"],
       });
+      await taxUiSchemaQuery.refetch();
     },
   });
 
@@ -401,70 +429,27 @@ export default function SettingsPage() {
     return parts.join(" • ");
   }, [taxUiSchemaQuery.data]);
 
-  const taxUiSummary = useMemo(() => {
-    const d = taxUiSchemaQuery.data;
-    if (!d) return [];
-
-    const sections: Array<{ title: string; items: string[] }> = [];
-
-    const makeItems = (
-      rows?: Array<{
-        key: string;
-        label: string;
-        hint?: string | null;
-        unit?: string | null;
-      }>,
-    ) => {
-      return (rows ?? []).map((row) => {
-        const suffix = row.unit ? ` (${row.unit})` : "";
-        return `${row.label}${suffix}`;
-      });
-    };
-
-    const components = (d.contribution_components ?? []).map((item) =>
-      String(item),
+  const resolvedValueSections = useMemo(() => {
+    const values = taxUiSchemaQuery.data?.resolved_values ?? [];
+    const visible = values.filter(
+      (item) => item.value != null && String(item.value).trim() !== "",
     );
 
-    if (components.length) {
-      sections.push({
-        title: "Komponente doprinosa",
-        items: components,
-      });
-    }
+    const orderedSections: UiResolvedValue["section"][] = [
+      "meta",
+      "base",
+      "contributions",
+      "tax",
+      "vat",
+    ];
 
-    const baseFields = makeItems(d.base_fields);
-    if (baseFields.length) {
-      sections.push({
-        title: "Osnovica / bazna polja",
-        items: baseFields,
-      });
-    }
-
-    const contribRateFields = makeItems(d.contribution_rate_fields);
-    if (contribRateFields.length) {
-      sections.push({
-        title: "Stope doprinosa",
-        items: contribRateFields,
-      });
-    }
-
-    const taxFields = makeItems(d.tax_fields);
-    if (taxFields.length) {
-      sections.push({
-        title: "Porez",
-        items: taxFields,
-      });
-    }
-
-    const vatFields = makeItems(d.vat_fields);
-    if (vatFields.length) {
-      sections.push({
-        title: "PDV",
-        items: vatFields,
-      });
-    }
-
-    return sections;
+    return orderedSections
+      .map((section) => ({
+        section,
+        title: getResolvedSectionTitle(section),
+        items: visible.filter((item) => item.section === section),
+      }))
+      .filter((section) => section.items.length > 0);
   }, [taxUiSchemaQuery.data]);
 
   return (
@@ -814,41 +799,55 @@ export default function SettingsPage() {
               </div>
 
               <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Parametri iz Admin konstanti
+                <div className="flex flex-col gap-1">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    Aktivni obračunski parametri
+                  </div>
+                  <p className="text-[11px] text-slate-600">
+                    Ove vrijednosti sistem automatski koristi u obračunima za
+                    trenutno odabrani scenario.
+                  </p>
                 </div>
-                <p className="mt-2 text-[11px] text-slate-600">
-                  Za izabrani entitet i scenario sistem koristi aktivni set iz Admin
-                  konstanti. Ručni unos doprinosa više nije primarni workflow na ovoj
-                  stranici.
-                </p>
 
-                {taxUiSummary.length > 0 ? (
-                  <div className="mt-4 space-y-3">
-                    {taxUiSummary.map((section) => (
+                {resolvedValueSections.length > 0 ? (
+                  <div className="mt-4 space-y-4">
+                    {resolvedValueSections.map((section) => (
                       <div
-                        key={section.title}
-                        className="rounded-md border border-slate-200 bg-white p-3"
+                        key={section.section}
+                        className="rounded-xl border border-slate-200 bg-white p-3"
                       >
-                        <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                        <div className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
                           {section.title}
                         </div>
-                        <div className="mt-2 flex flex-wrap gap-2">
+
+                        <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                           {section.items.map((item) => (
-                            <span
-                              key={item}
-                              className="inline-flex items-center rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[11px] text-slate-700"
+                            <div
+                              key={item.key}
+                              className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
                             >
-                              {item}
-                            </span>
+                              <div className="text-[11px] text-slate-500">
+                                {item.label}
+                              </div>
+                              <div className="mt-1 text-sm font-semibold text-slate-900">
+                                {item.value}
+                              </div>
+                            </div>
                           ))}
                         </div>
                       </div>
                     ))}
+
+                    <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800">
+                      Ove vrijednosti dolaze iz aktivnog seta Admin konstanti i
+                      primjenjuju se automatski u obračunima.
+                    </div>
                   </div>
                 ) : (
-                  <div className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600">
-                    Nema dodatnih UI schema detalja za prikaz.
+                  <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
+                    Za trenutno odabrani scenario još nema resolved vrijednosti za
+                    prikaz. Sačuvaj poreski profil i provjeri da li postoji aktivan
+                    set Admin konstanti.
                   </div>
                 )}
 

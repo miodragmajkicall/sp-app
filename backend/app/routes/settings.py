@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Optional, Tuple, List, Any
 
 from fastapi import (
     APIRouter,
@@ -42,6 +42,7 @@ from app.schemas.settings_ui import (
     TaxProfileUiSchemaResponse,
     UiScenarioOption,
     UiField,
+    UiResolvedValue,
 )
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -257,6 +258,197 @@ def _payload_currency(payload: object) -> Optional[str]:
     return None
 
 
+def _get_nested(payload: object, dotted_key: str) -> Any:
+    if not isinstance(payload, dict):
+        return None
+
+    current: Any = payload
+    for part in dotted_key.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+
+    return current
+
+
+def _format_decimal_rate(value: Any) -> Optional[str]:
+    if isinstance(value, (int, float)):
+        return f"{float(value) * 100:.2f}%"
+    return None
+
+
+def _format_percent_value(value: Any) -> Optional[str]:
+    if isinstance(value, (int, float)):
+        return f"{float(value):.2f}%"
+    return None
+
+
+def _format_bam(value: Any) -> Optional[str]:
+    if isinstance(value, (int, float)):
+        return f"{float(value):.2f} BAM"
+    return None
+
+
+def _format_generic_value(value: Any, unit: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+
+    if unit == "decimal":
+        return _format_decimal_rate(value)
+
+    if unit == "%":
+        return _format_percent_value(value)
+
+    if unit == "BAM":
+        return _format_bam(value)
+
+    if isinstance(value, bool):
+        return "Da" if value else "Ne"
+
+    if isinstance(value, (int, float)):
+        return f"{float(value):.2f}"
+
+    if isinstance(value, str):
+        return value
+
+    return str(value)
+
+
+def _append_resolved_value(
+    items: list[UiResolvedValue],
+    *,
+    section: str,
+    key: str,
+    label: str,
+    value: Any,
+    unit: Optional[str],
+) -> None:
+    formatted = _format_generic_value(value, unit)
+    if formatted is None:
+        return
+
+    items.append(
+        UiResolvedValue(
+            key=key,
+            label=label,
+            value=formatted,
+            unit=unit,
+            section=section,  # type: ignore[arg-type]
+        )
+    )
+
+
+def _resolved_values_from_payload(
+    *,
+    payload: object,
+    entity: str,
+    scenario_key: str,
+    currency: str,
+    base_fields: list[UiField],
+    contrib_rate_fields: list[UiField],
+    tax_fields: list[UiField],
+    vat_fields: list[UiField],
+) -> list[UiResolvedValue]:
+    if not isinstance(payload, dict):
+        return []
+
+    resolved: list[UiResolvedValue] = []
+
+    # Meta / currency
+    _append_resolved_value(
+        resolved,
+        section="meta",
+        key="base.currency",
+        label="Valuta",
+        value=currency,
+        unit=None,
+    )
+
+    # Base fields defined by UI schema
+    for field in base_fields:
+        _append_resolved_value(
+            resolved,
+            section="base",
+            key=field.key,
+            label=field.label,
+            value=_get_nested(payload, field.key),
+            unit=field.unit,
+        )
+
+    # Dodatna calculated base polja ako postoje u payload-u
+    calculated_base_keys = [
+        ("base.calculated_contrib_base_bam", "Izračunata osnovica doprinosa", "BAM"),
+        ("base.min_contrib_base_bam", "Minimalna osnovica doprinosa", "BAM"),
+        ("base.max_contrib_base_bam", "Maksimalna osnovica doprinosa", "BAM"),
+    ]
+    for key, label, unit in calculated_base_keys:
+        _append_resolved_value(
+            resolved,
+            section="base",
+            key=key,
+            label=label,
+            value=_get_nested(payload, key),
+            unit=unit,
+        )
+
+    # Contribution rates
+    for field in contrib_rate_fields:
+        _append_resolved_value(
+            resolved,
+            section="contributions",
+            key=field.key,
+            label=field.label,
+            value=_get_nested(payload, field.key),
+            unit=field.unit,
+        )
+
+    # Dodatni contribution amount/limit ključevi ako postoje
+    contribution_extra_keys = [
+        ("contributions.pension_amount_bam", "PIO iznos", "BAM"),
+        ("contributions.health_amount_bam", "Zdravstvo iznos", "BAM"),
+        ("contributions.unemployment_amount_bam", "Nezaposlenost iznos", "BAM"),
+        ("contributions.child_amount_bam", "Dječija zaštita iznos", "BAM"),
+    ]
+    for key, label, unit in contribution_extra_keys:
+        _append_resolved_value(
+            resolved,
+            section="contributions",
+            key=key,
+            label=label,
+            value=_get_nested(payload, key),
+            unit=unit,
+        )
+
+    # Tax fields
+    for field in tax_fields:
+        _append_resolved_value(
+            resolved,
+            section="tax",
+            key=field.key,
+            label=field.label,
+            value=_get_nested(payload, field.key),
+            unit=field.unit,
+        )
+
+    # VAT fields
+    for field in vat_fields:
+        _append_resolved_value(
+            resolved,
+            section="vat",
+            key=field.key,
+            label=field.label,
+            value=_get_nested(payload, field.key),
+            unit=field.unit,
+        )
+
+    # Scenario-specific polish: ako RS supplementary nema child/unemployment/puno base polja,
+    # i dalje neće biti prikazana jer ih append preskače ako ih nema u payload-u.
+    _ = entity
+    _ = scenario_key
+
+    return resolved
+
+
 def _ui_fields_for(entity: str, scenario_key: str) -> tuple[list[str], list[UiField], list[UiField], list[UiField], list[UiField]]:
     """
     Returns:
@@ -328,7 +520,6 @@ def _ui_fields_for(entity: str, scenario_key: str) -> tuple[list[str], list[UiFi
             UiField(key="contributions.unemployment_rate", label="Nezaposlenost stopa", hint="Decimal (npr. 0.015)", unit="decimal"),
         ]
 
-    # tax/vat (common) – za sada schema-only, UI može da prikaže kasnije
     tax_fields = [
         UiField(key="tax.income_tax_rate", label="Porez na dohodak stopa", hint="Decimal (npr. 0.10)", unit="decimal"),
         UiField(key="tax.flat_tax_monthly_amount_bam", label="Paušalni porez (mjesečno)", hint="KM (opciono)", unit="BAM"),
@@ -696,6 +887,7 @@ def get_tax_profile_ui_schema(
     - koji su validni scenariji za entitet
     - koja polja imaju smisla (base / contribution components)
     - meta o trenutno aktivnom Admin Constants setu (ako postoji)
+    - konkretne resolved vrijednosti iz payload-a aktivnog constants seta
     """
     tenant = require_tenant_code(x_tenant_code)
     ensure_tenant_exists(db, tenant)
@@ -736,6 +928,17 @@ def get_tax_profile_ui_schema(
         scenario_key=scenario_key,
     )
 
+    resolved_values = _resolved_values_from_payload(
+        payload=payload,
+        entity=entity,
+        scenario_key=scenario_key,
+        currency=currency,
+        base_fields=base_fields,
+        contrib_rate_fields=contrib_rate_fields,
+        tax_fields=tax_fields,
+        vat_fields=vat_fields,
+    )
+
     return TaxProfileUiSchemaResponse(
         entity=entity,  # type: ignore[arg-type]
         scenario_key=scenario_key,
@@ -746,6 +949,7 @@ def get_tax_profile_ui_schema(
         contribution_rate_fields=contrib_rate_fields,
         tax_fields=tax_fields,
         vat_fields=vat_fields,
+        resolved_values=resolved_values,
         constants_set_id=(cur_set.id if cur_set is not None else None),
         constants_effective_from=(cur_set.effective_from.isoformat() if cur_set is not None else None),
         constants_effective_to=(cur_set.effective_to.isoformat() if (cur_set is not None and cur_set.effective_to is not None) else None),

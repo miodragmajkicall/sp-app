@@ -30,6 +30,21 @@ export interface UiScenarioOption {
   entity: TenantEntity;
 }
 
+export type UiResolvedSection =
+  | "base"
+  | "contributions"
+  | "tax"
+  | "vat"
+  | "meta";
+
+export interface UiResolvedValue {
+  key: string;
+  label: string;
+  value?: string | null;
+  unit?: string | null;
+  section: UiResolvedSection;
+}
+
 export interface TaxProfileUiSchemaResponse {
   entity: TenantEntity;
   scenario_key: ScenarioKey | string;
@@ -44,6 +59,8 @@ export interface TaxProfileUiSchemaResponse {
   contribution_rate_fields: UiField[];
   tax_fields: UiField[];
   vat_fields: UiField[];
+
+  resolved_values: UiResolvedValue[];
 
   constants_set_id?: number | null;
   constants_effective_from?: string | null; // ISO date string

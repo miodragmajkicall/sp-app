@@ -8,6 +8,7 @@ import type {
   TaxProfileUiSchemaResponse,
   SubscriptionSettingsRead,
   SubscriptionSettingsUpsert,
+  UiResolvedValue,
 } from "../types/settings";
 
 /* =========================
@@ -116,6 +117,17 @@ export async function getTaxProfileUiSchema(params?: {
   // backend već vraća shape koji FE može direktno koristiti;
   // ovdje samo osiguramo default-e da UI ne puca na undefined.
   const r: any = res.data ?? {};
+
+  const resolvedValues: UiResolvedValue[] = Array.isArray(r.resolved_values)
+    ? r.resolved_values.map((item: any) => ({
+        key: String(item?.key ?? ""),
+        label: String(item?.label ?? ""),
+        value: item?.value == null ? null : String(item.value),
+        unit: item?.unit ?? null,
+        section: item?.section ?? "meta",
+      }))
+    : [];
+
   return {
     entity: (r.entity ?? "RS") as any,
     scenario_key: r.scenario_key ?? "",
@@ -130,6 +142,7 @@ export async function getTaxProfileUiSchema(params?: {
       : [],
     tax_fields: Array.isArray(r.tax_fields) ? r.tax_fields : [],
     vat_fields: Array.isArray(r.vat_fields) ? r.vat_fields : [],
+    resolved_values: resolvedValues,
     constants_set_id: r.constants_set_id ?? null,
     constants_effective_from: r.constants_effective_from ?? null,
     constants_effective_to: r.constants_effective_to ?? null,

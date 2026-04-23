@@ -28,6 +28,18 @@ class UiScenarioOption(BaseModel):
     entity: TenantEntity
 
 
+class UiResolvedValue(BaseModel):
+    """
+    Jedna resolved vrijednost iz aktivnog Admin Constants seta,
+    pripremljena za direktan prikaz u UI-u.
+    """
+    key: str
+    label: str
+    value: Optional[str] = None
+    unit: Optional[str] = None
+    section: Literal["base", "contributions", "tax", "vat", "meta"]
+
+
 class TaxProfileUiSchemaResponse(BaseModel):
     """
     UI schema za Settings -> Tax profile, derivirano iz:
@@ -53,9 +65,12 @@ class TaxProfileUiSchemaResponse(BaseModel):
     # UI: doprinos stope polja (ako postoje u scenariju)
     contribution_rate_fields: list[UiField] = Field(default_factory=list)
 
-    # UI: porezi / PDV (za kasnije – zadržano u schema da ne širimo endpoint opet)
+    # UI: porezi / PDV
     tax_fields: list[UiField] = Field(default_factory=list)
     vat_fields: list[UiField] = Field(default_factory=list)
+
+    # Novo: konkretne resolved vrijednosti iz aktivnog Admin Constants seta
+    resolved_values: list[UiResolvedValue] = Field(default_factory=list)
 
     # Meta: da UI može prikazati “izvor konstanti”
     constants_set_id: Optional[int] = None
