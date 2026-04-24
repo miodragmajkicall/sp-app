@@ -1,5 +1,8 @@
+import pytest
 import httpx
 from uuid import uuid4
+
+pytestmark = pytest.mark.live_api
 
 BASE_URL = "http://localhost:8000"
 

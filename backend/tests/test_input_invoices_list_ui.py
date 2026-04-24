@@ -1,4 +1,7 @@
 from __future__ import annotations
+import pytest
+
+pytestmark = pytest.mark.live_api
 
 import time
 from typing import Dict, Any

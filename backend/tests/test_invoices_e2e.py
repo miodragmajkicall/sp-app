@@ -1,5 +1,8 @@
+import pytest
 import time
 from decimal import Decimal
+
+pytestmark = pytest.mark.live_api
 
 import httpx
 

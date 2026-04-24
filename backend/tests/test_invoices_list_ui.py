@@ -1,4 +1,7 @@
+import pytest
 import time
+
+pytestmark = pytest.mark.live_api
 
 import httpx
 

@@ -1,3 +1,6 @@
+import pytest
+
+pytestmark = pytest.mark.live_api
 # backend/tests/test_tenants_errors.py
 import time
 import uuid
