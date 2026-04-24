@@ -35,3 +35,6 @@ backend/data/invoice_attachments/
 
 # Local test artifacts
 inspection_test.zip
+
+# Runtime tenant-uploaded assets
+backend/data/tenant_assets/
