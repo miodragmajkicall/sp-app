@@ -1,53 +1,63 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/admin-constants/AdminConstantsBDPanel.tsx
 
-import {
-  FieldLabel,
-  Input,
-  SectionTitle,
-  TextArea,
-  Button,
-} from "./adminConstantsUi";
+import { FieldLabel, Input, SectionTitle, TextArea, Button } from "./adminConstantsUi";
 
 type ConstantsForm = {
   scenario_key: string;
   currency: string;
 
-  // VAT
   vat_standard_rate_percent: string;
   vat_entry_threshold_bam: string;
 
-  // Tax
   income_tax_rate_percent: string;
   flat_tax_monthly_amount_bam: string;
 
-  // Contributions
   pension_rate_percent: string;
   health_rate_percent: string;
   unemployment_rate_percent: string;
 
-  // BD: fixed base in KM (reuse generic field used for FBiH)
   monthly_contrib_base_bam: string;
 
-  // legacy fields (kept in type to avoid breaking parent form typing)
   avg_gross_wage_prev_year_bam: string;
   contrib_base_percent_of_avg_gross: string;
   contrib_base_min_bam: string;
 
-  // Sources
   source_note: string;
   source_reference: string;
 };
 
-function FixedLabel({
-  label,
-  hint,
-}: {
-  label: string;
-  hint?: string;
-}) {
+function toNumOrNull(v: string): number | null {
+  const s = (v ?? "").trim();
+  if (s === "") return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
+function clampPercent(n: number): number {
+  if (n < 0) return 0;
+  if (n > 100) return 100;
+  return n;
+}
+
+function computeContributionAmount(base: number | null, ratePercentStr: string): number | null {
+  if (base === null) return null;
+  const p = toNumOrNull(ratePercentStr);
+  if (p === null) return null;
+  const pct = clampPercent(p);
+  return base * (pct / 100);
+}
+
+function computeTotalContribAmount(values: Array<number | null>): number | null {
+  const nums = values.filter((x): x is number => typeof x === "number" && Number.isFinite(x));
+  if (nums.length === 0) return null;
+  return nums.reduce((a, b) => a + b, 0);
+}
+
+function LabeledHeader({ label, hint }: { label: string; hint?: string }) {
   return (
-    <div className="h-[44px] flex items-end">
-      <FieldLabel label={label} hint={hint} />
+    <div className="min-h-[52px]">
+      <div className="text-sm font-medium text-slate-900">{label}</div>
+      {hint ? <div className="mt-1 text-xs leading-snug text-slate-500">{hint}</div> : null}
     </div>
   );
 }
@@ -67,6 +77,18 @@ export default function AdminConstantsBDPanel({
   raw: string;
   setRaw: (v: string) => void;
 }) {
+  const monthlyBase = toNumOrNull(form.monthly_contrib_base_bam);
+
+  const pensionAmount = computeContributionAmount(monthlyBase, form.pension_rate_percent);
+  const healthAmount = computeContributionAmount(monthlyBase, form.health_rate_percent);
+  const unempAmount = computeContributionAmount(monthlyBase, form.unemployment_rate_percent);
+
+  const totalContribAmount = computeTotalContribAmount([
+    pensionAmount,
+    healthAmount,
+    unempAmount,
+  ]);
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
@@ -75,9 +97,11 @@ export default function AdminConstantsBDPanel({
             Payload (unos kroz formu)
           </div>
           <div className="mt-1 text-sm text-slate-600">
-            Brčko distrikt – samostalna djelatnost.
+            Brčko distrikt panel za samostalnu djelatnost. Advanced JSON koristiš
+            samo za privremene ključeve koje UI još ne podržava.
           </div>
         </div>
+
         <div className="shrink-0">
           <Button variant="secondary" onClick={() => setAdvanced(!advanced)}>
             {advanced ? "Nazad na formu" : "Advanced JSON"}
@@ -87,125 +111,219 @@ export default function AdminConstantsBDPanel({
 
       {!advanced ? (
         <>
-          <SectionTitle
-            title="Osnovica doprinosa"
-            subtitle="BD: osnovica se u praksi propisuje kao fiksan iznos u KM (odlukom) i admin unosi taj iznos. Kod promjene odluke: snimi novi set (rollover)."
-          />
-
-          {/* 4 kolone poravnate: inputi uvijek na istoj visini */}
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-4">
-            <div className="flex flex-col">
-              <FixedLabel label="Scenario / šema" hint="Read-only." />
-              <Input value={form.scenario_key} readOnly />
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <div>
+              <LabeledHeader
+                label="Scenario / šema (read-only)"
+                hint="Odabrani BD scenario iz drop-down-a iznad."
+              />
+              <Input value={form.scenario_key} onChange={() => {}} readOnly />
             </div>
 
-            <div className="flex flex-col">
-              <FixedLabel label="Valuta" hint="BD V1: fiksno BAM." />
-              <Input value="BAM" readOnly />
+            <div>
+              <LabeledHeader
+                label="Valuta"
+                hint="Tipično BAM (konvertibilna marka)."
+              />
+              <Input
+                value={form.currency}
+                onChange={(v) => setForm({ ...form, currency: v })}
+                placeholder="BAM"
+              />
             </div>
 
-            <div className="flex flex-col lg:col-span-2">
-              <FixedLabel
-                label="Osnovica doprinosa (KM)"
-                hint="Fiksan iznos iz odluke BD (npr. 1200)."
+            <div>
+              <LabeledHeader
+                label="Mjesečna osnovica doprinosa"
+                hint="BD: fiksna osnovica u KM. Mora biti > 0."
               />
               <Input
                 value={form.monthly_contrib_base_bam}
-                onChange={(v) =>
-                  setForm({ ...form, monthly_contrib_base_bam: v })
-                }
-                placeholder="npr. 1200"
+                onChange={(v) => setForm({ ...form, monthly_contrib_base_bam: v })}
+                placeholder="npr. 1200.00"
               />
             </div>
           </div>
 
-          <div className="pt-4">
-            <SectionTitle title="Doprinosi" />
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
-              <div>
-                <FieldLabel label="PIO (%)" />
-                <Input
-                  value={form.pension_rate_percent}
-                  onChange={(v) => setForm({ ...form, pension_rate_percent: v })}
-                />
-              </div>
-
-              <div>
-                <FieldLabel label="Zdravstvo (%)" />
-                <Input
-                  value={form.health_rate_percent}
-                  onChange={(v) => setForm({ ...form, health_rate_percent: v })}
-                />
-              </div>
-
-              <div>
-                <FieldLabel label="Nezaposlenost (%)" />
-                <Input
-                  value={form.unemployment_rate_percent}
-                  onChange={(v) =>
-                    setForm({ ...form, unemployment_rate_percent: v })
-                  }
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="pt-4">
-            <SectionTitle title="Porez" />
+          <div className="pt-2">
+            <SectionTitle title="PDV" subtitle="Stopa i prag ulaska u PDV sistem." />
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <div>
-                <FieldLabel label="Porez na dohodak (%)" />
-                <Input
-                  value={form.income_tax_rate_percent}
-                  onChange={(v) =>
-                    setForm({ ...form, income_tax_rate_percent: v })
-                  }
+                <FieldLabel
+                  label="PDV stopa (%)"
+                  hint="Unos u procentima (npr. 17). Sistem čuva 0.17."
                 />
-              </div>
-
-              {/* BD V1: paušal ne prikazujemo (nije potreban); ostaje u formi samo radi kompatibilnosti */}
-            </div>
-          </div>
-
-          <div className="pt-4">
-            <SectionTitle title="PDV" />
-            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-              <div>
-                <FieldLabel label="PDV stopa (%)" />
                 <Input
                   value={form.vat_standard_rate_percent}
-                  onChange={(v) =>
-                    setForm({ ...form, vat_standard_rate_percent: v })
-                  }
+                  onChange={(v) => setForm({ ...form, vat_standard_rate_percent: v })}
+                  placeholder="17"
                 />
               </div>
+
               <div>
-                <FieldLabel label="PDV prag ulaska (KM)" />
+                <FieldLabel label="PDV prag ulaska (KM)" hint="Opciono; npr. 50000" />
                 <Input
                   value={form.vat_entry_threshold_bam}
-                  onChange={(v) =>
-                    setForm({ ...form, vat_entry_threshold_bam: v })
-                  }
+                  onChange={(v) => setForm({ ...form, vat_entry_threshold_bam: v })}
+                  placeholder="50000"
                 />
               </div>
             </div>
           </div>
 
-          <div className="pt-4">
-            <SectionTitle title="Izvori" />
+          <div className="pt-2">
+            <SectionTitle
+              title="Porez"
+              subtitle="Stopa poreza i opcionalni paušalni mjesečni iznos ako se primjenjuje."
+            />
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <div>
-                <FieldLabel label="Napomena / izvor" />
+                <FieldLabel
+                  label="Porez na dohodak (%)"
+                  hint="Unos u procentima (npr. 10). Sistem čuva 0.10."
+                />
+                <Input
+                  value={form.income_tax_rate_percent}
+                  onChange={(v) => setForm({ ...form, income_tax_rate_percent: v })}
+                  placeholder="10"
+                />
+              </div>
+
+              <div>
+                <FieldLabel
+                  label="Paušalni porez (KM mjesečno)"
+                  hint="Opciono (ako postoji fiksni mjesečni iznos)."
+                />
+                <Input
+                  value={form.flat_tax_monthly_amount_bam}
+                  onChange={(v) => setForm({ ...form, flat_tax_monthly_amount_bam: v })}
+                  placeholder="npr. 50.00"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="pt-2">
+            <SectionTitle
+              title="Doprinosi"
+              subtitle="BD: iznos u KM = mjesečna osnovica × stopa. Unosiš % stope; UI prikazuje iznose i zbir."
+            />
+
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+              <div>
+                <FieldLabel
+                  label="Doprinos PIO (%)"
+                  hint="Unesi stopu u %. Ispod vidiš iznos u KM."
+                />
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    value={form.pension_rate_percent}
+                    onChange={(v) => setForm({ ...form, pension_rate_percent: v })}
+                    placeholder="npr. 18"
+                  />
+                  <Input
+                    value={pensionAmount === null ? "" : pensionAmount.toFixed(2)}
+                    onChange={() => {}}
+                    readOnly
+                    placeholder="iznos (KM)"
+                  />
+                </div>
+                <p className="mt-2 text-xs text-slate-500">
+                  Lijevo: % • Desno: iznos (KM) = osnovica × stopa.
+                </p>
+              </div>
+
+              <div>
+                <FieldLabel
+                  label="Zdravstveno (%)"
+                  hint="Unesi stopu u %. Ispod vidiš iznos u KM."
+                />
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    value={form.health_rate_percent}
+                    onChange={(v) => setForm({ ...form, health_rate_percent: v })}
+                    placeholder="npr. 12"
+                  />
+                  <Input
+                    value={healthAmount === null ? "" : healthAmount.toFixed(2)}
+                    onChange={() => {}}
+                    readOnly
+                    placeholder="iznos (KM)"
+                  />
+                </div>
+                <p className="mt-2 text-xs text-slate-500">
+                  Lijevo: % • Desno: iznos (KM) = osnovica × stopa.
+                </p>
+              </div>
+
+              <div>
+                <FieldLabel
+                  label="Nezaposlenost (%)"
+                  hint="Unesi stopu u %. Ispod vidiš iznos u KM."
+                />
+                <div className="grid grid-cols-2 gap-3">
+                  <Input
+                    value={form.unemployment_rate_percent}
+                    onChange={(v) => setForm({ ...form, unemployment_rate_percent: v })}
+                    placeholder="npr. 1.5"
+                  />
+                  <Input
+                    value={unempAmount === null ? "" : unempAmount.toFixed(2)}
+                    onChange={() => {}}
+                    readOnly
+                    placeholder="iznos (KM)"
+                  />
+                </div>
+                <p className="mt-2 text-xs text-slate-500">
+                  Lijevo: % • Desno: iznos (KM) = osnovica × stopa.
+                </p>
+              </div>
+            </div>
+
+            <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
+              <div>
+                <FieldLabel
+                  label="Ukupno doprinosi (KM)"
+                  hint="Read-only: zbir iznosa doprinosa."
+                />
+                <Input
+                  value={totalContribAmount === null ? "" : totalContribAmount.toFixed(2)}
+                  onChange={() => {}}
+                  readOnly
+                  placeholder="ukupno"
+                />
+              </div>
+              <div className="hidden lg:block" />
+              <div className="hidden lg:block" />
+            </div>
+          </div>
+
+          <div className="pt-2">
+            <SectionTitle title="Izvori" subtitle="Napomena i referenca (audit-friendly)." />
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+              <div>
+                <FieldLabel
+                  label="Napomena / izvor (source_note)"
+                  hint="Kratko: odakle je uzeto (institucija/dokument)."
+                />
                 <TextArea
                   value={form.source_note}
                   onChange={(v) => setForm({ ...form, source_note: v })}
+                  rows={3}
+                  placeholder="npr. 'Poreska uprava BD / odluka ...'"
                 />
               </div>
+
               <div>
-                <FieldLabel label="Referenca" />
+                <FieldLabel
+                  label="Referenca (source_reference)"
+                  hint="Link, broj službenog glasnika, naziv akta, itd."
+                />
                 <TextArea
                   value={form.source_reference}
                   onChange={(v) => setForm({ ...form, source_reference: v })}
+                  rows={3}
+                  placeholder="npr. 'SG BD xx/2025...' ili URL"
                 />
               </div>
             </div>
@@ -214,15 +332,23 @@ export default function AdminConstantsBDPanel({
       ) : (
         <>
           <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-            Advanced JSON (BD).
+            Advanced JSON je za slučajeve kad želiš dodati dodatne ključeve prije
+            nego što ih UI dobije kao polja.
           </div>
-          <TextArea
-            value={raw}
-            onChange={setRaw}
-            rows={12}
-            mono
-            placeholder='{ "example": true }'
-          />
+
+          <div>
+            <FieldLabel
+              label="payload (JSON)"
+              hint="Mora biti validan JSON. Backend ga snima u app_constants_sets.payload."
+            />
+            <TextArea
+              value={raw}
+              onChange={setRaw}
+              rows={12}
+              mono
+              placeholder='{ "example": true }'
+            />
+          </div>
         </>
       )}
     </div>
