@@ -12,14 +12,17 @@ export function FieldLabel({
   htmlFor?: string;
 }) {
   return (
-    <div className="mb-1">
+    <div className="mb-1.5">
       <label
         htmlFor={htmlFor}
         className="block text-sm font-medium text-slate-700"
       >
         {label}
       </label>
-      {hint ? <p className="mt-1 text-xs text-slate-500">{hint}</p> : null}
+
+      {hint ? (
+        <p className="mt-1 text-xs leading-snug text-slate-500">{hint}</p>
+      ) : null}
     </div>
   );
 }
@@ -33,9 +36,14 @@ export function SectionTitle({
 }) {
   return (
     <div className="mb-4">
-      <h4 className="text-sm font-semibold text-slate-900">{title}</h4>
+      <h4 className="text-sm font-semibold tracking-wide text-slate-900">
+        {title}
+      </h4>
+
       {subtitle ? (
-        <p className="mt-1 text-sm text-slate-600">{subtitle}</p>
+        <p className="mt-1 text-sm leading-relaxed text-slate-600">
+          {subtitle}
+        </p>
       ) : null}
     </div>
   );
@@ -65,8 +73,10 @@ export function Input({
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       className={[
-        "block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm",
-        "placeholder:text-slate-400 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200",
+        "block w-full rounded-md border px-3 py-2 text-sm shadow-sm transition",
+        "border-slate-300 bg-white text-slate-900",
+        "placeholder:text-slate-400",
+        "focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200",
         readOnly ? "bg-slate-50 text-slate-700" : "",
       ].join(" ")}
     />
@@ -96,8 +106,10 @@ export function TextArea({
       rows={rows}
       placeholder={placeholder}
       className={[
-        "block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm",
-        "placeholder:text-slate-400 focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200",
+        "block w-full rounded-md border px-3 py-2 text-sm shadow-sm transition",
+        "border-slate-300 bg-white text-slate-900",
+        "placeholder:text-slate-400",
+        "focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200",
         mono ? "font-mono" : "",
       ].join(" ")}
     />
@@ -118,7 +130,8 @@ export function Button({
   type?: "button" | "submit";
 }) {
   const base =
-    "inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-semibold shadow-sm focus:outline-none focus:ring-2 focus:ring-offset-2";
+    "inline-flex items-center justify-center rounded-md px-3 py-2 text-sm font-semibold shadow-sm transition focus:outline-none focus:ring-2 focus:ring-offset-2";
+
   const variants: Record<string, string> = {
     primary:
       "bg-slate-900 text-white hover:bg-slate-800 focus:ring-slate-300",
@@ -138,7 +151,9 @@ export function Button({
       className={[
         base,
         variants[variant],
-        disabled ? "opacity-50 cursor-not-allowed" : "",
+        disabled
+          ? "cursor-not-allowed opacity-50 saturate-50"
+          : "active:scale-[0.99]",
       ].join(" ")}
     >
       {children}
@@ -167,17 +182,21 @@ export function Card({
 }) {
   return (
     <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
-      <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 lg:flex-row lg:items-start lg:justify-between">
+      <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 lg:flex-row lg:items-start lg:justify-between lg:px-6">
         <div className="min-w-0">
           <div className="text-base font-semibold text-slate-900">{title}</div>
+
           {subtitle ? (
-            <div className="mt-1 text-sm text-slate-600">{subtitle}</div>
+            <div className="mt-1 text-sm leading-relaxed text-slate-600">
+              {subtitle}
+            </div>
           ) : null}
         </div>
+
         {right ? <div className="shrink-0">{right}</div> : null}
       </div>
 
-      <div className="px-5 py-5">{children}</div>
+      <div className="px-5 py-5 lg:px-6">{children}</div>
     </div>
   );
 }
@@ -201,15 +220,16 @@ export function Tabs({
     <div className="inline-flex rounded-lg border border-slate-200 bg-white p-1 shadow-sm">
       {tabs.map((t) => {
         const active = t.key === value;
+
         return (
           <button
             key={t.key}
             type="button"
             onClick={() => onChange(t.key)}
             className={[
-              "rounded-md px-3 py-1.5 text-sm font-semibold",
+              "rounded-md px-3 py-1.5 text-sm font-semibold transition",
               active
-                ? "bg-slate-900 text-white"
+                ? "bg-slate-900 text-white shadow-sm"
                 : "text-slate-700 hover:bg-slate-100",
             ].join(" ")}
           >
