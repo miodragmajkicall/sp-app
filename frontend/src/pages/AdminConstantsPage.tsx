@@ -119,31 +119,31 @@ const SCENARIOS: Array<{
   {
     key: "rs_primary",
     label: "RS – Osnovna djelatnost",
-    hint: "V1: osnovna djelatnost (primary).",
+    hint: "Osnovna djelatnost.",
     jurisdiction: "RS",
   },
   {
     key: "rs_supplementary",
     label: "RS – Dopunska djelatnost (uz zaposlenje)",
-    hint: "V1: dopunska djelatnost (supplementary).",
+    hint: "Dopunska djelatnost uz postojeće zaposlenje.",
     jurisdiction: "RS",
   },
   {
     key: "fbih_obrt",
     label: "FBiH – Obrt i srodne djelatnosti",
-    hint: "V1: zanati/usluge (frizer, automehaničar, električar, servisi…).",
+    hint: "Obrt i srodne djelatnosti.",
     jurisdiction: "FBiH",
   },
   {
     key: "fbih_slobodna",
     label: "FBiH – Slobodna zanimanja",
-    hint: "V1: IT/dizajn/konsalting/freelance i sl.",
+    hint: "Slobodna zanimanja i samostalne profesionalne djelatnosti.",
     jurisdiction: "FBiH",
   },
   {
     key: "bd_samostalna",
     label: "BD – Samostalna djelatnost",
-    hint: "V1: jedinstvena šema za BD (zanati/usluge/IT/freelance).",
+    hint: "Jedinstvena šema za Brčko distrikt.",
     jurisdiction: "BD",
   },
 ];
@@ -342,9 +342,8 @@ function hydrateFormFromPayload(j: Jurisdiction, payload: any): ConstantsForm {
 function explainOverlap(detail: string): string {
   if ((detail ?? "").toLowerCase().includes("overlapping")) {
     return (
-      "Ne može snimiti jer postoji set sa preklapajućim datumima za isti scenario. " +
-      "Za rollover: novi set treba biti open-ended (Effective to prazno), " +
-      "i Effective from mora biti POSLIJE trenutnog active seta u istom scenario-u. " +
+      "Novi set nije moguće snimiti jer za isti scenario već postoji preklapanje datuma. " +
+      "Za rollover novi set treba imati prazan 'Effective to', a 'Effective from' mora biti poslije trenutno aktivnog seta u istom scenariju. " +
       `Detalj: ${detail}`
     );
   }
@@ -375,7 +374,7 @@ function ScenarioSelectLocal({
       <FieldLabel
         htmlFor={id}
         label="Scenario / šema"
-        hint={selected ? selected.hint : "Izaberi šemu za ovu jurisdikciju."}
+        hint={selected ? selected.hint : "Izaberite šemu za ovu jurisdikciju."}
       />
       <select
         id={id}
@@ -453,7 +452,7 @@ export default function AdminConstantsPage() {
       setErr(
         e?.response?.data?.detail ??
           e?.message ??
-          "Failed to load constants history.",
+          "Greška pri učitavanju istorije setova.",
       );
     } finally {
       setLoading(false);
@@ -513,11 +512,11 @@ export default function AdminConstantsPage() {
   }, [activeTab, activeScenario]);
 
   function validateSave(): string | null {
-    if (!effectiveFrom) return "Effective from je obavezan.";
+    if (!effectiveFrom) return "Datum 'Effective from' je obavezan.";
     if (!createdReason || createdReason.trim() === "") {
-      return "Reason je obavezan (audit).";
+      return "Razlog izmjene je obavezan.";
     }
-    if (!form.scenario_key) return "scenario_key je obavezan.";
+    if (!form.scenario_key) return "Scenario / šema je obavezna.";
 
     const percentFields: Array<{ name: string; value: string }> = [
       { name: "PDV stopa (%)", value: form.vat_standard_rate_percent },
@@ -601,7 +600,7 @@ export default function AdminConstantsPage() {
     if (advanced) {
       const parsed = safeJsonParse(payloadRaw);
       if (!parsed.ok) {
-        setErr(`Payload JSON error: ${parsed.error}`);
+        setErr(`Greška u JSON payload-u: ${parsed.error}`);
         return;
       }
       payloadObj = parsed.value ?? {};
@@ -623,7 +622,7 @@ export default function AdminConstantsPage() {
 
     if (payloadScenario !== null && payloadScenario !== form.scenario_key) {
       setErr(
-        `payload.scenario_key ('${payloadScenario}') mora odgovarati izabranom scenario_key ('${form.scenario_key}').`,
+        `payload.scenario_key ('${payloadScenario}') mora odgovarati izabranom scenariju ('${form.scenario_key}').`,
       );
       return;
     }
@@ -646,7 +645,7 @@ export default function AdminConstantsPage() {
       await adminConstantsCreate(body);
       await refreshAll(activeTab, form.scenario_key, asOf);
     } catch (e: any) {
-      const detail = e?.response?.data?.detail ?? e?.message ?? "Save failed.";
+      const detail = e?.response?.data?.detail ?? e?.message ?? "Snimanje nije uspjelo.";
       setErr(explainOverlap(detail));
     } finally {
       setLoading(false);
@@ -656,6 +655,10 @@ export default function AdminConstantsPage() {
   const titleScenario =
     SCENARIOS.find((s) => s.key === activeScenario)?.label ?? activeScenario;
 
+  const activeRowForAsOf = useMemo(() => {
+    return items.find((row) => isItemActiveForAsOf(row, asOf)) ?? null;
+  }, [items, asOf]);
+
   return (
     <div className="space-y-5">
       <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -663,17 +666,17 @@ export default function AdminConstantsPage() {
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <h2 className="text-xl font-semibold text-slate-900">
-                Admin Constants
+                Admin konstante
               </h2>
-              <Badge>admin-only</Badge>
+              <Badge>Administracija</Badge>
               <Badge>{activeTab}</Badge>
             </div>
 
             <p className="mt-2 max-w-4xl text-sm text-slate-600">
-              Interna administrativna konzola za effective-dated zakonske konstante
-              po entitetu i scenariju. Krajnji korisnik kasnije bira šemu u
-              postavkama, a sistem iz ovih setova povlači validne parametre za
-              obračun.
+              Centralni administrativni modul za effective-dated zakonske konstante
+              po entitetu i scenariju. Postavke kasnije biraju aktivni poreski
+              kontekst, a ostatak sistema iz ovih setova povlači validne parametre
+              za obračun, izvještaje i ostalu logiku.
             </p>
           </div>
 
@@ -702,6 +705,13 @@ export default function AdminConstantsPage() {
         </div>
       ) : null}
 
+      {!curLoading && !curItem ? (
+        <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+          Za izabrani datum i scenario trenutno nema aktivnog seta. Možeš pripremiti
+          i snimiti prvi set parametara.
+        </div>
+      ) : null}
+
       <div className="sticky top-3 z-10 rounded-2xl border border-slate-200 bg-white/95 p-4 shadow-sm backdrop-blur">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div className="min-w-0">
@@ -718,7 +728,7 @@ export default function AdminConstantsPage() {
               <Badge>
                 <span className="font-mono">effective_from: {effectiveFrom}</span>
               </Badge>
-              <Badge>{advanced ? "advanced JSON" : "forma"}</Badge>
+              <Badge>{advanced ? "Napredni JSON režim" : "Unos kroz formu"}</Badge>
             </div>
           </div>
 
@@ -728,36 +738,36 @@ export default function AdminConstantsPage() {
               onClick={onRefresh}
               disabled={loading || curLoading}
             >
-              Osvježi
+              Osvježi podatke
             </Button>
             <Button
               variant="secondary"
               onClick={onLoadActiveIntoForm}
               disabled={!curItem || loading || curLoading}
             >
-              Učitaj aktivni u formu
+              Učitaj aktivni set u formu
             </Button>
             <Button
               variant="secondary"
               onClick={onResetForm}
               disabled={loading || curLoading}
             >
-              Reset formu
+              Resetuj formu
             </Button>
             <Button
               variant="primary"
               onClick={onSaveRollover}
               disabled={loading || curLoading}
             >
-              Snimi (rollover)
+              Snimi novi set
             </Button>
           </div>
         </div>
       </div>
 
       <Card
-        title={`Aktivni set: ${activeTab} / ${titleScenario}`}
-        subtitle="Pregled trenutno važećeg seta i priprema novog open-ended seta. Backend pri snimanju automatski zatvara prethodni open-ended set u istom scenario-u."
+        title={`Aktivni set parametara: ${activeTab} / ${titleScenario}`}
+        subtitle="Pregled trenutno važećeg seta i priprema novog open-ended seta. Pri snimanju backend automatski zatvara prethodni open-ended set unutar istog scenarija."
       >
         <div className="grid grid-cols-1 items-start gap-6 xl:grid-cols-12">
           <div className="xl:col-span-5">
@@ -773,7 +783,7 @@ export default function AdminConstantsPage() {
                       <div className="text-xs text-slate-500">Aktivni set</div>
                       <div className="mt-1 flex flex-wrap items-center gap-2">
                         <span className="font-semibold text-slate-900">
-                          id={curItem.id}
+                          ID {curItem.id}
                         </span>
                         <Badge>
                           <span className="font-mono">
@@ -786,7 +796,13 @@ export default function AdminConstantsPage() {
                     <div>
                       <div className="text-xs text-slate-500">Scenario</div>
                       <div
-                        className="mt-1 truncate font-mono text-xs text-slate-800"
+                        className="mt-1 truncate text-sm font-medium text-slate-800"
+                        title={scenarioLabelFromKey(curItem.scenario_key)}
+                      >
+                        {scenarioLabelFromKey(curItem.scenario_key)}
+                      </div>
+                      <div
+                        className="mt-0.5 truncate font-mono text-[11px] text-slate-500"
                         title={curItem.scenario_key}
                       >
                         {curItem.scenario_key}
@@ -802,7 +818,7 @@ export default function AdminConstantsPage() {
                             curItem.created_reason ?? "-"
                           }`}
                         >
-                          created: {curItem.created_by ?? "-"} /{" "}
+                          unio: {curItem.created_by ?? "-"} /{" "}
                           {curItem.created_reason ?? "-"}
                         </div>
                         <div
@@ -811,7 +827,7 @@ export default function AdminConstantsPage() {
                             curItem.updated_reason ?? "-"
                           }`}
                         >
-                          updated: {curItem.updated_by ?? "-"} /{" "}
+                          izmijenio: {curItem.updated_by ?? "-"} /{" "}
                           {curItem.updated_reason ?? "-"}
                         </div>
                       </div>
@@ -819,26 +835,29 @@ export default function AdminConstantsPage() {
                   </div>
                 ) : (
                   <div className="text-sm text-slate-700">
-                    Nema aktivnog seta za izabrani datum u ovom scenario-u. Možeš
-                    snimiti prvi set.
+                    Nema aktivnog seta za izabrani datum i scenario. Možeš snimiti
+                    prvi set parametara.
                   </div>
                 )}
               </div>
 
               <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
-                Snimi kreira <b>open-ended</b> set. Ako postoji prethodni
-                open-ended set u istom scenario-u, backend ga zatvara na{" "}
+                Novi unos kreira <b>open-ended</b> set. Ako već postoji prethodni
+                open-ended set u istom scenariju, backend ga automatski zatvara na{" "}
                 <b>(Effective from - 1 dan)</b>.
               </div>
 
               <div className="rounded-lg border border-slate-200 bg-white px-4 py-4">
                 <SectionTitle
-                  title="Lookup aktivnog seta"
-                  subtitle="Provjera koji set važi za izabrani datum."
+                  title="Provjera aktivnog seta"
+                  subtitle="Provjeri koji set važi za izabrani datum."
                 />
                 <div className="grid grid-cols-1 gap-4">
                   <div>
-                    <FieldLabel label="as_of" hint="Datum za lookup aktivnog seta." />
+                    <FieldLabel
+                      label="Datum provjere (as_of)"
+                      hint="Datum za lookup trenutno važećeg seta."
+                    />
                     <Input type="date" value={asOf} onChange={setAsOf} />
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -847,7 +866,7 @@ export default function AdminConstantsPage() {
                       onClick={() => refreshCurrent(activeTab, activeScenario, asOf)}
                       disabled={loading || curLoading}
                     >
-                      Učitaj aktivni za as_of
+                      Učitaj aktivni set
                     </Button>
                     <Button
                       variant="ghost"
@@ -872,7 +891,7 @@ export default function AdminConstantsPage() {
                 >
                   <div>
                     <div className="text-sm font-semibold text-slate-900">
-                      Payload preview
+                      Pregled payload-a
                     </div>
                     <div className="mt-1 text-sm text-slate-600">
                       Read-only pregled payload-a koji će biti snimljen.
@@ -885,7 +904,7 @@ export default function AdminConstantsPage() {
 
                 {showPayloadPreview ? (
                   <div className="border-t border-slate-200 px-4 pb-4 pt-3">
-                    <pre className="max-h-[28rem] overflow-auto rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800 whitespace-pre">
+                    <pre className="max-h-[28rem] overflow-auto whitespace-pre rounded-lg border border-slate-200 bg-slate-50 p-3 text-xs text-slate-800">
                       {derivedPayload}
                     </pre>
                   </div>
@@ -898,12 +917,15 @@ export default function AdminConstantsPage() {
             <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
               <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
                 <div>
-                  <FieldLabel label="Effective from" hint="Od kog datuma važi novi set." />
+                  <FieldLabel
+                    label="Effective from"
+                    hint="Datum od kojeg novi set počinje da važi."
+                  />
                   <Input type="date" value={effectiveFrom} onChange={setEffectiveFrom} />
                 </div>
 
                 <div>
-                  <FieldLabel label="created_by" hint="Opciono (audit)." />
+                  <FieldLabel label="Unio" hint="Opcionalno, radi audita." />
                   <Input
                     value={createdBy}
                     onChange={setCreatedBy}
@@ -913,13 +935,13 @@ export default function AdminConstantsPage() {
 
                 <div>
                   <FieldLabel
-                    label="created_reason (obavezno)"
-                    hint="Kratak audit razlog izmjene."
+                    label="Razlog izmjene"
+                    hint="Kratak i jasan audit razlog."
                   />
                   <Input
                     value={createdReason}
                     onChange={setCreatedReason}
-                    placeholder="npr. promjena stopa 2026"
+                    placeholder="npr. usklađenje stopa za 2026"
                   />
                 </div>
               </div>
@@ -961,13 +983,27 @@ export default function AdminConstantsPage() {
 
       <Card
         title={`Istorija setova: ${activeTab} / ${titleScenario}`}
-        subtitle="Svi setovi za izabrani entitet i scenario. Aktivni red je označen prema as_of datumu."
+        subtitle="Svi setovi za izabrani entitet i scenario. Aktivni red je označen prema datumu iz polja as_of."
         right={
           <div className="text-sm text-slate-600">
-            {loading ? "Učitavanje..." : `${items.length} item(s)`}
+            {loading ? "Učitavanje..." : `${items.length} zapisa`}
           </div>
         }
       >
+        {activeRowForAsOf ? (
+          <div className="mb-4 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-900">
+            Trenutno aktivan za datum <b>{asOf}</b>:{" "}
+            <b>{scenarioLabelFromKey(activeRowForAsOf.scenario_key)}</b>{" "}
+            <span className="font-mono">
+              ({activeRowForAsOf.effective_from}..{activeRowForAsOf.effective_to ?? "∞"})
+            </span>
+          </div>
+        ) : (
+          <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+            Za datum <b>{asOf}</b> trenutno nema aktivnog seta u ovom scenariju.
+          </div>
+        )}
+
         <div className="overflow-hidden rounded-lg border border-slate-200">
           <div className="overflow-auto">
             <table className="min-w-full divide-y divide-slate-200">
@@ -977,7 +1013,7 @@ export default function AdminConstantsPage() {
                     ID
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-slate-700">
-                    Effective
+                    Effective period
                   </th>
                   <th className="px-4 py-3 text-left text-xs font-semibold text-slate-700">
                     Scenario
@@ -1039,13 +1075,13 @@ export default function AdminConstantsPage() {
                           className="truncate"
                           title={`${row.created_by ?? "-"} / ${row.created_reason ?? "-"}`}
                         >
-                          created: {row.created_by ?? "-"} / {row.created_reason ?? "-"}
+                          unio: {row.created_by ?? "-"} / {row.created_reason ?? "-"}
                         </div>
                         <div
                           className="truncate"
                           title={`${row.updated_by ?? "-"} / ${row.updated_reason ?? "-"}`}
                         >
-                          updated: {row.updated_by ?? "-"} / {row.updated_reason ?? "-"}
+                          izmijenio: {row.updated_by ?? "-"} / {row.updated_reason ?? "-"}
                         </div>
                       </td>
                     </tr>

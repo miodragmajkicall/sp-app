@@ -47,6 +47,11 @@ function formatPlanLabel(plan: SubscriptionPlan): string {
   return plan;
 }
 
+function formatDateLabel(value?: string | null): string {
+  if (!value) return "nije ograničeno";
+  return value;
+}
+
 function notifyProfileSettingsUpdated() {
   window.dispatchEvent(new CustomEvent("profile-settings-updated"));
 }
@@ -419,14 +424,19 @@ export default function SettingsPage() {
     const d = taxUiSchemaQuery.data;
     if (!d) return null;
 
-    const parts: string[] = [];
-    if (d.constants_set_id != null) parts.push(`Set #${d.constants_set_id}`);
-    if (d.constants_effective_from) parts.push(`od ${d.constants_effective_from}`);
-    if (d.constants_effective_to) parts.push(`do ${d.constants_effective_to}`);
-    if (d.constants_currency) parts.push(`valuta ${d.constants_currency}`);
+    if (d.constants_set_id == null) {
+      return "Nema aktivnog seta Admin konstanti za izabrani scenario.";
+    }
 
-    if (!parts.length) return null;
-    return parts.join(" • ");
+    return `Set #${d.constants_set_id} • važi od ${formatDateLabel(
+      d.constants_effective_from,
+    )} do ${formatDateLabel(d.constants_effective_to)} • valuta ${
+      d.constants_currency ?? "BAM"
+    }`;
+  }, [taxUiSchemaQuery.data]);
+
+  const hasActiveConstantsSet = useMemo(() => {
+    return taxUiSchemaQuery.data?.constants_set_id != null;
   }, [taxUiSchemaQuery.data]);
 
   const resolvedValueSections = useMemo(() => {
@@ -695,7 +705,13 @@ export default function SettingsPage() {
               </p>
 
               {taxUiSchemaBanner && (
-                <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-700">
+                <div
+                  className={
+                    hasActiveConstantsSet
+                      ? "mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800"
+                      : "mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800"
+                  }
+                >
                   <span className="font-medium">Admin konstante:</span>{" "}
                   {taxUiSchemaBanner}
                 </div>
@@ -798,26 +814,46 @@ export default function SettingsPage() {
                 </label>
               </div>
 
-              <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-                <div className="flex flex-col gap-1">
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Aktivni obračunski parametri
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Aktivni obračunski parametri
+                    </div>
+                    <p className="mt-1 text-[11px] text-slate-600">
+                      Vrijednosti ispod dolaze iz aktivnog seta Admin konstanti za
+                      trenutno sačuvani poreski scenario i koriste se kao izvor za
+                      obračune.
+                    </p>
                   </div>
-                  <p className="text-[11px] text-slate-600">
-                    Ove vrijednosti sistem automatski koristi u obračunima za
-                    trenutno odabrani scenario.
-                  </p>
+
+                  {taxUiSchemaQuery.data?.constants_set_id != null && (
+                    <div className="shrink-0 rounded-full border border-emerald-200 bg-white px-2.5 py-1 text-[11px] font-medium text-emerald-700">
+                      Set #{taxUiSchemaQuery.data.constants_set_id}
+                    </div>
+                  )}
                 </div>
 
-                {resolvedValueSections.length > 0 ? (
+                {taxUiSchemaQuery.isLoading && (
+                  <div className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600">
+                    Učitavam aktivne obračunske parametre...
+                  </div>
+                )}
+
+                {!taxUiSchemaQuery.isLoading && resolvedValueSections.length > 0 ? (
                   <div className="mt-4 space-y-4">
                     {resolvedValueSections.map((section) => (
                       <div
                         key={section.section}
-                        className="rounded-xl border border-slate-200 bg-white p-3"
+                        className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm"
                       >
-                        <div className="mb-3 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
-                          {section.title}
+                        <div className="mb-3 flex items-center justify-between gap-3">
+                          <div className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">
+                            {section.title}
+                          </div>
+                          <div className="text-[11px] text-slate-400">
+                            {section.items.length} param.
+                          </div>
                         </div>
 
                         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
@@ -826,10 +862,10 @@ export default function SettingsPage() {
                               key={item.key}
                               className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2"
                             >
-                              <div className="text-[11px] text-slate-500">
+                              <div className="text-[11px] leading-snug text-slate-500">
                                 {item.label}
                               </div>
-                              <div className="mt-1 text-sm font-semibold text-slate-900">
+                              <div className="mt-1 break-words text-sm font-semibold text-slate-900">
                                 {item.value}
                               </div>
                             </div>
@@ -839,22 +875,30 @@ export default function SettingsPage() {
                     ))}
 
                     <div className="rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] text-emerald-800">
-                      Ove vrijednosti dolaze iz aktivnog seta Admin konstanti i
-                      primjenjuju se automatski u obračunima.
+                      Sistem koristi ove vrijednosti automatski. Ručni unos stopa i
+                      osnovica ovdje više nije potreban dok postoji validan Admin
+                      Constants set.
                     </div>
                   </div>
-                ) : (
+                ) : null}
+
+                {!taxUiSchemaQuery.isLoading && resolvedValueSections.length === 0 && (
                   <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-800">
-                    Za trenutno odabrani scenario još nema resolved vrijednosti za
-                    prikaz. Sačuvaj poreski profil i provjeri da li postoji aktivan
-                    set Admin konstanti.
+                    Za trenutno odabrani scenario nema aktivnih obračunskih
+                    parametara za prikaz. Provjeri da li je poreski profil sačuvan i
+                    da li u Admin Constants postoji aktivan set za ovaj entitet i
+                    scenario.
                   </div>
                 )}
 
                 <div className="mt-4 rounded-md border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600">
-                  Trenutni legacy režim:{" "}
+                  Režim:{" "}
                   <span className="font-medium text-slate-800">
                     {formatRegimeLabel(taxForm.regime)}
+                  </span>
+                  <span className="ml-1 text-slate-400">
+                    — trenutno se čuva radi kompatibilnosti sa postojećim backend
+                    modelom.
                   </span>
                 </div>
               </div>
