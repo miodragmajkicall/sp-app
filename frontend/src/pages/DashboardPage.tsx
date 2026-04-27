@@ -648,9 +648,9 @@ export default function DashboardPage() {
   const entityLabel = getEntityLabel(taxProfileQuery.data?.entity);
   const scenarioLabel = getScenarioLabel(taxProfileQuery.data?.scenario_key);
 
-  const cashIncome = toNumber(data?.cash?.income_total);
-  const cashExpense = toNumber(data?.cash?.expense_total);
-  const cashNet = toNumber(data?.cash?.net_cashflow);
+    const rawCashIncome = toNumber(data?.cash?.income_total);
+  const rawCashExpense = toNumber(data?.cash?.expense_total);
+  const rawCashNet = toNumber(data?.cash?.net_cashflow);
 
   const invoicesCount = data?.invoices?.invoices_count ?? 0;
   const invoicesTotal = toNumber(data?.invoices?.total_amount);
@@ -660,6 +660,21 @@ export default function DashboardPage() {
     inputInvoicesListData?.items?.reduce((acc: number, inv: any) => {
       return acc + toNumber(inv?.total_amount);
     }, 0) ?? 0;
+
+  const hasInvoiceFallbackData = invoicesTotal > 0 || inputInvoicesTotal > 0;
+
+  const cashIncome =
+    rawCashIncome > 0 || !hasInvoiceFallbackData ? rawCashIncome : invoicesTotal;
+
+  const cashExpense =
+    rawCashExpense > 0 || !hasInvoiceFallbackData
+      ? rawCashExpense
+      : inputInvoicesTotal;
+
+  const cashNet =
+    rawCashIncome > 0 || rawCashExpense > 0 || !hasInvoiceFallbackData
+      ? rawCashNet
+      : invoicesTotal - inputInvoicesTotal;
 
   const taxDue = toNumber(data?.tax?.total_due);
   const samDue = toNumber(data?.sam?.total_due);
@@ -1474,61 +1489,165 @@ export default function DashboardPage() {
             </Card>
           </div>
 
-          <div className="grid gap-4 xl:grid-cols-2">
+                    <div className="grid gap-4 xl:grid-cols-2">
             <Card className="p-4">
-              <SectionTitle title="Top kupci" />
+              <SectionTitle
+                title="Top kupci"
+                subtitle="Rangirano po ukupnom iznosu izlaznih faktura"
+              />
 
               {topCustomers.length === 0 ? (
-                <p className="mt-4 text-xs text-slate-500">
-                  Nema dovoljno izlaznih faktura za prikaz top kupaca.
-                </p>
+                <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center">
+                  <FilePlus2 className="mx-auto h-8 w-8 text-slate-400" />
+                  <p className="mt-3 text-sm font-semibold text-slate-800">
+                    Još nema dovoljno podataka o kupcima.
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Kada kreiraš izlazne fakture, ovdje će se prikazati kupci sa
+                    najvećim prometom.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => navigate("/invoices/new")}
+                    className="mt-4 inline-flex items-center justify-center rounded-xl bg-slate-950 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+                  >
+                    Kreiraj fakturu
+                  </button>
+                </div>
               ) : (
-                <ul className="mt-4 space-y-2 text-sm text-slate-700">
-                  {topCustomers.map((c, idx) => (
-                    <li
-                      key={c.name}
-                      className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2"
-                    >
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="w-6 shrink-0 text-xs text-slate-500">
-                          #{idx + 1}
-                        </span>
-                        <span className="truncate">{c.name}</span>
-                      </div>
-                      <span className="shrink-0 font-semibold">
-                        {formatAmount(c.total)} KM
-                      </span>
-                    </li>
-                  ))}
+                <ul className="mt-4 space-y-3">
+                  {topCustomers.map((c, idx) => {
+                    const maxTotal = Math.max(
+                      ...topCustomers.map((item) => Math.abs(item.total)),
+                      1,
+                    );
+                    const widthPercent = Math.max(
+                      8,
+                      (Math.abs(c.total) / maxTotal) * 100,
+                    );
+
+                    return (
+                      <li
+                        key={c.name}
+                        className="rounded-2xl border border-slate-100 bg-slate-50 px-3 py-3"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span
+                              className={cx(
+                                "grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-semibold",
+                                idx === 0
+                                  ? "bg-slate-950 text-white"
+                                  : "bg-white text-slate-600 ring-1 ring-slate-200",
+                              )}
+                            >
+                              {idx + 1}
+                            </span>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-slate-900">
+                                {c.name}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                Kupac #{idx + 1}
+                              </p>
+                            </div>
+                          </div>
+
+                          <span className="shrink-0 text-sm font-semibold text-slate-950">
+                            {formatAmount(c.total)} KM
+                          </span>
+                        </div>
+
+                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-white ring-1 ring-slate-100">
+                          <div
+                            className="h-full rounded-full bg-slate-900"
+                            style={{ width: `${widthPercent}%` }}
+                          />
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </Card>
 
             <Card className="p-4">
-              <SectionTitle title="Top dobavljači" subtitle="Tekući mjesec" />
+              <SectionTitle
+                title="Top dobavljači"
+                subtitle="Tekući mjesec, rangirano po ulaznim računima"
+              />
 
               {topSuppliers.length === 0 ? (
-                <p className="mt-4 text-xs text-slate-500">
-                  Nema dovoljno ulaznih računa za prikaz top dobavljača.
-                </p>
+                <div className="mt-4 rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center">
+                  <Inbox className="mx-auto h-8 w-8 text-slate-400" />
+                  <p className="mt-3 text-sm font-semibold text-slate-800">
+                    Još nema dovoljno podataka o dobavljačima.
+                  </p>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Kada uneseš ulazne račune, ovdje će se prikazati dobavljači
+                    sa najvećim troškovima u mjesecu.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => navigate("/input-invoices/new")}
+                    className="mt-4 inline-flex items-center justify-center rounded-xl bg-slate-950 px-4 py-2 text-xs font-semibold text-white hover:bg-slate-800"
+                  >
+                    Dodaj ulazni račun
+                  </button>
+                </div>
               ) : (
-                <ul className="mt-4 space-y-2 text-sm text-slate-700">
-                  {topSuppliers.map((s, idx) => (
-                    <li
-                      key={s.name}
-                      className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2"
-                    >
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="w-6 shrink-0 text-xs text-slate-500">
-                          #{idx + 1}
-                        </span>
-                        <span className="truncate">{s.name}</span>
-                      </div>
-                      <span className="shrink-0 font-semibold">
-                        {formatAmount(s.total)} KM
-                      </span>
-                    </li>
-                  ))}
+                <ul className="mt-4 space-y-3">
+                  {topSuppliers.map((s, idx) => {
+                    const maxTotal = Math.max(
+                      ...topSuppliers.map((item) => Math.abs(item.total)),
+                      1,
+                    );
+                    const widthPercent = Math.max(
+                      8,
+                      (Math.abs(s.total) / maxTotal) * 100,
+                    );
+
+                    return (
+                      <li
+                        key={s.name}
+                        className="rounded-2xl border border-slate-100 bg-slate-50 px-3 py-3"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex min-w-0 items-center gap-3">
+                            <span
+                              className={cx(
+                                "grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-semibold",
+                                idx === 0
+                                  ? "bg-rose-600 text-white"
+                                  : "bg-white text-slate-600 ring-1 ring-slate-200",
+                              )}
+                            >
+                              {idx + 1}
+                            </span>
+                            <div className="min-w-0">
+                              <p className="truncate text-sm font-semibold text-slate-900">
+                                {s.name}
+                              </p>
+                              <p className="text-[11px] text-slate-500">
+                                Dobavljač #{idx + 1}
+                              </p>
+                            </div>
+                          </div>
+
+                          <span className="shrink-0 text-sm font-semibold text-slate-950">
+                            {formatAmount(s.total)} KM
+                          </span>
+                        </div>
+
+                        <div className="mt-3 h-2 overflow-hidden rounded-full bg-white ring-1 ring-slate-100">
+                          <div
+                            className="h-full rounded-full bg-rose-500"
+                            style={{ width: `${widthPercent}%` }}
+                          />
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
               )}
             </Card>
