@@ -708,16 +708,38 @@ export default function DashboardPage() {
       return diffDays > 30;
     }).length ?? 0;
 
-  const incomeSeries =
-    yearlyCashByMonth?.map((m, idx) => {
-      const month = idx + 1;
-      const income = m ? toNumber(m.cash?.income_total) : 0;
-      return {
-        month,
-        label: getShortMonthLabel(month),
-        value: income,
-      };
-    }) ?? [];
+    const invoiceIncomeByMonth = new Map<number, number>();
+  if (invoicesListData) {
+    for (const inv of invoicesListData.items) {
+      const issueDate = inv.issue_date ? new Date(inv.issue_date) : null;
+      if (!issueDate || Number.isNaN(issueDate.getTime())) continue;
+
+      const invoiceYear = issueDate.getFullYear();
+      const invoiceMonth = issueDate.getMonth() + 1;
+
+      if (data && invoiceYear !== data.year) continue;
+
+      const amount = toNumber(inv.total_amount);
+      invoiceIncomeByMonth.set(
+        invoiceMonth,
+        (invoiceIncomeByMonth.get(invoiceMonth) ?? 0) + amount,
+      );
+    }
+  }
+
+  const incomeSeries = Array.from({ length: 12 }, (_, idx) => {
+    const month = idx + 1;
+    const cashIncomeForMonth = yearlyCashByMonth?.[idx]
+      ? toNumber(yearlyCashByMonth[idx]?.cash?.income_total)
+      : 0;
+    const invoiceIncomeForMonth = invoiceIncomeByMonth.get(month) ?? 0;
+
+    return {
+      month,
+      label: getShortMonthLabel(month),
+      value: cashIncomeForMonth > 0 ? cashIncomeForMonth : invoiceIncomeForMonth,
+    };
+  });
 
   const maxIncomeValue = Math.max(
     ...incomeSeries.map((i) => Math.abs(i.value)),
