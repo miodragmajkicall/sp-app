@@ -6,6 +6,7 @@ import type {
   AppConstantsSetRead,
   Jurisdiction,
 } from "../types/constants";
+import type { ScenarioKey } from "../types/settings";
 import {
   adminConstantsCreate,
   adminConstantsList,
@@ -27,7 +28,7 @@ import {
 } from "./admin-constants/adminConstantsUi";
 
 type ConstantsForm = {
-  scenario_key: string;
+  scenario_key: ScenarioKey;
 
   currency: string;
 
@@ -110,8 +111,18 @@ function numToStr(x: any): string {
   return "";
 }
 
+function isScenarioKey(value: string): value is ScenarioKey {
+  return (
+    value === "rs_primary" ||
+    value === "rs_supplementary" ||
+    value === "fbih_obrt" ||
+    value === "fbih_slobodna" ||
+    value === "bd_samostalna"
+  );
+}
+
 const SCENARIOS: Array<{
-  key: string;
+  key: ScenarioKey;
   label: string;
   hint: string;
   jurisdiction: Jurisdiction;
@@ -148,13 +159,13 @@ const SCENARIOS: Array<{
   },
 ];
 
-function defaultScenarioForJurisdiction(j: Jurisdiction): string {
+function defaultScenarioForJurisdiction(j: Jurisdiction): ScenarioKey {
   if (j === "RS") return "rs_primary";
   if (j === "FBiH") return "fbih_obrt";
   return "bd_samostalna";
 }
 
-function defaultForm(j: Jurisdiction, scenario_key?: string): ConstantsForm {
+function defaultForm(j: Jurisdiction, scenario_key?: ScenarioKey): ConstantsForm {
   const sk = scenario_key ?? defaultScenarioForJurisdiction(j);
 
   const rsIsSupplementary = j === "RS" && sk === "rs_supplementary";
@@ -189,7 +200,7 @@ function defaultForm(j: Jurisdiction, scenario_key?: string): ConstantsForm {
   };
 }
 
-function rsContributionMode(scenarioKey: string): "PRIMARY" | "SUPPLEMENTARY" {
+function rsContributionMode(scenarioKey: ScenarioKey): "PRIMARY" | "SUPPLEMENTARY" {
   return scenarioKey === "rs_supplementary" ? "SUPPLEMENTARY" : "PRIMARY";
 }
 
@@ -272,8 +283,12 @@ function hydrateFormFromPayload(j: Jurisdiction, payload: any): ConstantsForm {
   const contrib = p.contributions ?? {};
   const meta = p.meta ?? {};
 
-  const scenario_key =
+  const rawScenarioKey =
     typeof p.scenario_key === "string" ? p.scenario_key : d.scenario_key;
+
+  const scenario_key = isScenarioKey(rawScenarioKey)
+    ? rawScenarioKey
+    : d.scenario_key;
 
   const currency =
     typeof base.currency === "string" ? base.currency : d.currency;
@@ -362,8 +377,8 @@ function ScenarioSelectLocal({
   id,
 }: {
   jurisdiction: Jurisdiction;
-  value: string;
-  onChange: (v: string) => void;
+  value: ScenarioKey;
+  onChange: (v: ScenarioKey) => void;
   id?: string;
 }) {
   const options = SCENARIOS.filter((s) => s.jurisdiction === jurisdiction);
@@ -379,7 +394,12 @@ function ScenarioSelectLocal({
       <select
         id={id}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => {
+          const next = e.target.value;
+          if (isScenarioKey(next)) {
+            onChange(next);
+          }
+        }}
         className={[
           "block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm",
           "focus:border-slate-500 focus:outline-none focus:ring-2 focus:ring-slate-200",
@@ -409,13 +429,15 @@ function isItemActiveForAsOf(item: AppConstantsSetRead, asOfYmd: string): boolea
 export default function AdminConstantsPage() {
   const [activeTab, setActiveTab] = useState<Jurisdiction>("RS");
 
-  const [scenarioByTab, setScenarioByTab] = useState<Record<Jurisdiction, string>>({
+  const [scenarioByTab, setScenarioByTab] = useState<
+    Record<Jurisdiction, ScenarioKey>
+  >({
     RS: defaultScenarioForJurisdiction("RS"),
     FBiH: defaultScenarioForJurisdiction("FBiH"),
     BD: defaultScenarioForJurisdiction("BD"),
   });
 
-  const activeScenario =
+  const activeScenario: ScenarioKey =
     scenarioByTab[activeTab] || defaultScenarioForJurisdiction(activeTab);
 
   const [items, setItems] = useState<AppConstantsSetRead[]>([]);
@@ -442,7 +464,7 @@ export default function AdminConstantsPage() {
     return JSON.stringify(payload, null, 2);
   }, [activeTab, form]);
 
-  async function refreshHistory(j: Jurisdiction, scenario_key: string) {
+  async function refreshHistory(j: Jurisdiction, scenario_key: ScenarioKey) {
     setLoading(true);
     setErr(null);
     try {
@@ -461,14 +483,14 @@ export default function AdminConstantsPage() {
 
   async function refreshCurrent(
     j: Jurisdiction,
-    scenario_key: string,
+    scenario_key: ScenarioKey,
     asOfYmd: string,
   ) {
     setCurLoading(true);
     try {
       const res = await constantsCurrent({
         jurisdiction: j,
-        scenario_key: scenario_key as any,
+        scenario_key,
         as_of: asOfYmd,
       });
       if (res?.found && res?.item) {
@@ -486,7 +508,11 @@ export default function AdminConstantsPage() {
     }
   }
 
-  async function refreshAll(j: Jurisdiction, scenario_key: string, asOfYmd: string) {
+  async function refreshAll(
+    j: Jurisdiction,
+    scenario_key: ScenarioKey,
+    asOfYmd: string,
+  ) {
     await Promise.all([
       refreshHistory(j, scenario_key),
       refreshCurrent(j, scenario_key, asOfYmd),
@@ -631,7 +657,7 @@ export default function AdminConstantsPage() {
 
     const body: AppConstantsSetCreate = {
       jurisdiction: activeTab,
-      scenario_key: form.scenario_key as any,
+      scenario_key: form.scenario_key,
       effective_from: effectiveFrom,
       effective_to: null,
       payload: payloadObj,

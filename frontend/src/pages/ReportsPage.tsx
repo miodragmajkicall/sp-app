@@ -92,7 +92,6 @@ export default function ReportsPage() {
   const navigate = useNavigate();
   const apiBaseUrl = getApiBaseUrl();
 
-  // 1) Uzmemo "current" mjesec sa servera, da inicijalno imamo period.
   const {
     data: currentMonthly,
     isLoading: isLoadingCurrent,
@@ -121,7 +120,6 @@ export default function ReportsPage() {
   const [year, setYear] = useState<number>(initialYear);
   const [month, setMonth] = useState<number>(initialMonth);
 
-  // 2) Mjesečni izvještaj: summary (cash + tax + sam) + liste faktura
   const {
     data: monthlySummary,
     isLoading: isLoadingMonthlySummary,
@@ -147,8 +145,6 @@ export default function ReportsPage() {
         fetchInvoicesList({
           year,
           month,
-          limit: 200,
-          offset: 0,
         }),
       staleTime: 60_000,
     });
@@ -166,7 +162,6 @@ export default function ReportsPage() {
     staleTime: 60_000,
   });
 
-  // 3) Godišnji izvještaj: cashflow po mjesecima + godišnji summary (cash+tax)
   const {
     data: yearlyCashflow,
     isLoading: isLoadingYearlyCashflow,
@@ -191,15 +186,12 @@ export default function ReportsPage() {
     staleTime: 60_000,
   });
 
-  // 4) “Premium” analitika – za sada reuse: top kupci/dobavljači, troškovi po dobavljaču, trend prihoda
   const { data: outgoingForYear } = useQuery({
     queryKey: ["reports", "analytics", "outgoing-year", year],
     enabled: !!year,
     queryFn: () =>
       fetchInvoicesList({
         year,
-        limit: 1000,
-        offset: 0,
       }),
     staleTime: 60_000,
   });
@@ -232,16 +224,17 @@ export default function ReportsPage() {
     monthlyProfit > 0
       ? "text-emerald-600"
       : monthlyProfit < 0
-      ? "text-rose-600"
-      : "text-slate-700";
+        ? "text-rose-600"
+        : "text-slate-700";
 
-  // Yearly chart series (from /reports/cashflow/{year})
   const incomeSeries = useMemo(() => {
     const items = yearlyCashflow?.items ?? [];
     const byMonth = new Map<number, number>();
+
     for (const it of items) {
       byMonth.set(it.month, toNumber(it.income));
     }
+
     return Array.from({ length: 12 }, (_, idx) => {
       const m = idx + 1;
       return {
@@ -264,14 +257,15 @@ export default function ReportsPage() {
     };
   }, [yearlySummary]);
 
-  // Analytics: top customers / suppliers
   const topCustomers = useMemo(() => {
     const map = new Map<string, number>();
+
     for (const inv of outgoingForYear?.items ?? []) {
       const name = inv.buyer_name || "Nepoznat kupac";
-      const amount = inv.total_amount ?? 0;
+      const amount = toNumber(inv.total_amount);
       map.set(name, (map.get(name) ?? 0) + amount);
     }
+
     return Array.from(map.entries())
       .map(([name, total]) => ({ name, total }))
       .sort((a, b) => b.total - a.total)
@@ -280,11 +274,13 @@ export default function ReportsPage() {
 
   const topSuppliers = useMemo(() => {
     const map = new Map<string, number>();
+
     for (const inv of inputForYear?.items ?? []) {
       const name = inv.supplier_name || "Nepoznat dobavljač";
-      const amount = inv.total_amount ?? 0;
+      const amount = toNumber(inv.total_amount);
       map.set(name, (map.get(name) ?? 0) + amount);
     }
+
     return Array.from(map.entries())
       .map(([name, total]) => ({ name, total }))
       .sort((a, b) => b.total - a.total)
@@ -293,11 +289,13 @@ export default function ReportsPage() {
 
   const expenseBySupplier = useMemo(() => {
     const map = new Map<string, number>();
+
     for (const inv of inputForYear?.items ?? []) {
       const name = inv.supplier_name || "Ostalo";
-      const amount = inv.total_amount ?? 0;
+      const amount = toNumber(inv.total_amount);
       map.set(name, (map.get(name) ?? 0) + amount);
     }
+
     return Array.from(map.entries())
       .map(([name, total]) => ({ name, total }))
       .sort((a, b) => b.total - a.total)
@@ -318,17 +316,20 @@ export default function ReportsPage() {
     isLoadingYearlySummary;
 
   const isErrorAny =
-    isErrorCurrent || isErrorMonthlySummary || isErrorYearlyCashflow || isErrorYearlySummary;
+    isErrorCurrent ||
+    isErrorMonthlySummary ||
+    isErrorYearlyCashflow ||
+    isErrorYearlySummary;
 
   const errorText =
-    (errorCurrent?.message ??
-      errorMonthlySummary?.message ??
-      errorYearlyCashflow?.message ??
-      errorYearlySummary?.message) || "";
+    errorCurrent?.message ||
+    errorMonthlySummary?.message ||
+    errorYearlyCashflow?.message ||
+    errorYearlySummary?.message ||
+    "Nepoznata greška pri učitavanju izvještaja.";
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="space-y-2">
         <h2 className="text-2xl font-semibold text-slate-900 tracking-tight">
           Izvještaji
@@ -352,7 +353,6 @@ export default function ReportsPage() {
         </div>
       </div>
 
-      {/* Period filter */}
       <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4">
         <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
           <div className="flex flex-wrap gap-3 items-end">
@@ -435,11 +435,8 @@ export default function ReportsPage() {
         </p>
       )}
 
-      {isErrorAny && (
-        <p className="text-sm text-red-600">Greška: {errorText}</p>
-      )}
+      {isErrorAny && <p className="text-sm text-red-600">Greška: {errorText}</p>}
 
-      {/* MONTHLY TAB */}
       {!isLoadingAny && !isErrorAny && activeTab === "monthly" && (
         <div className="space-y-4">
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4">
@@ -450,7 +447,8 @@ export default function ReportsPage() {
                 </p>
                 <p className="text-sm font-semibold text-slate-900">{monthTitle}</p>
                 <p className="text-xs text-slate-500">
-                  Prihodi, rashodi, profit i očekivani porez + lista faktura i ulaznih računa.
+                  Prihodi, rashodi, profit i očekivani porez + lista faktura i
+                  ulaznih računa.
                 </p>
               </div>
 
@@ -497,12 +495,13 @@ export default function ReportsPage() {
                 <p className="text-sm font-semibold text-slate-900">
                   {formatAmount(monthlyExpectedTax)} KM
                 </p>
-                <p className="text-[10px] text-slate-500">Prema TAX modulu (mjesečni obračun).</p>
+                <p className="text-[10px] text-slate-500">
+                  Prema TAX modulu (mjesečni obračun).
+                </p>
               </div>
             </div>
           </div>
 
-          {/* Lists: outgoing + input */}
           <div className="grid gap-4 md:grid-cols-2">
             <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-2">
               <div className="flex items-center justify-between">
@@ -519,9 +518,13 @@ export default function ReportsPage() {
               </div>
 
               {isLoadingOutgoingForMonth ? (
-                <p className="text-[11px] text-slate-500">Učitavam izlazne fakture...</p>
+                <p className="text-[11px] text-slate-500">
+                  Učitavam izlazne fakture...
+                </p>
               ) : monthlyInvoices.length === 0 ? (
-                <p className="text-[11px] text-slate-500">Nema izlaznih faktura u ovom mjesecu.</p>
+                <p className="text-[11px] text-slate-500">
+                  Nema izlaznih faktura u ovom mjesecu.
+                </p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="min-w-full text-left text-[11px] text-slate-700">
@@ -536,11 +539,19 @@ export default function ReportsPage() {
                     <tbody>
                       {monthlyInvoices.slice(0, 25).map((inv: any) => (
                         <tr key={inv.id} className="border-b border-slate-50 last:border-0">
-                          <td className="py-1 pr-3 text-slate-600">{inv.issue_date ?? "-"}</td>
-                          <td className="py-1 pr-3 font-mono text-slate-800">{inv.number ?? "-"}</td>
-                          <td className="py-1 pr-3 text-slate-700">{inv.buyer_name ?? "-"}</td>
+                          <td className="py-1 pr-3 text-slate-600">
+                            {inv.issue_date ?? "-"}
+                          </td>
+                          <td className="py-1 pr-3 font-mono text-slate-800">
+                            {inv.number ?? "-"}
+                          </td>
+                          <td className="py-1 pr-3 text-slate-700">
+                            {inv.buyer_name ?? "-"}
+                          </td>
                           <td className="py-1 text-right text-slate-800">
-                            {inv.total_amount != null ? `${formatAmount(inv.total_amount)} KM` : "-"}
+                            {inv.total_amount != null
+                              ? `${formatAmount(toNumber(inv.total_amount))} KM`
+                              : "-"}
                           </td>
                         </tr>
                       ))}
@@ -570,9 +581,13 @@ export default function ReportsPage() {
               </div>
 
               {isLoadingInputForMonth ? (
-                <p className="text-[11px] text-slate-500">Učitavam ulazne račune...</p>
+                <p className="text-[11px] text-slate-500">
+                  Učitavam ulazne račune...
+                </p>
               ) : monthlyInputInvoices.length === 0 ? (
-                <p className="text-[11px] text-slate-500">Nema ulaznih računa u ovom mjesecu.</p>
+                <p className="text-[11px] text-slate-500">
+                  Nema ulaznih računa u ovom mjesecu.
+                </p>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="min-w-full text-left text-[11px] text-slate-700">
@@ -587,11 +602,19 @@ export default function ReportsPage() {
                     <tbody>
                       {monthlyInputInvoices.slice(0, 25).map((inv: any) => (
                         <tr key={inv.id} className="border-b border-slate-50 last:border-0">
-                          <td className="py-1 pr-3 text-slate-600">{inv.issue_date ?? "-"}</td>
-                          <td className="py-1 pr-3 font-mono text-slate-800">{inv.number ?? "-"}</td>
-                          <td className="py-1 pr-3 text-slate-700">{inv.supplier_name ?? "-"}</td>
+                          <td className="py-1 pr-3 text-slate-600">
+                            {inv.issue_date ?? "-"}
+                          </td>
+                          <td className="py-1 pr-3 font-mono text-slate-800">
+                            {inv.number ?? "-"}
+                          </td>
+                          <td className="py-1 pr-3 text-slate-700">
+                            {inv.supplier_name ?? "-"}
+                          </td>
                           <td className="py-1 text-right text-slate-800">
-                            {inv.total_amount != null ? `${formatAmount(inv.total_amount)} KM` : "-"}
+                            {inv.total_amount != null
+                              ? `${formatAmount(toNumber(inv.total_amount))} KM`
+                              : "-"}
                           </td>
                         </tr>
                       ))}
@@ -609,7 +632,6 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {/* YEARLY TAB */}
       {!isLoadingAny && !isErrorAny && activeTab === "yearly" && (
         <div className="space-y-4">
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4">
@@ -663,8 +685,8 @@ export default function ReportsPage() {
                     (yearlyTotals.profit > 0
                       ? "text-emerald-600"
                       : yearlyTotals.profit < 0
-                      ? "text-rose-600"
-                      : "text-slate-700")
+                        ? "text-rose-600"
+                        : "text-slate-700")
                   }
                 >
                   {formatAmount(yearlyTotals.profit)} KM
@@ -675,12 +697,13 @@ export default function ReportsPage() {
                 <p className="text-sm font-semibold text-slate-900">
                   {formatAmount(yearlyTotals.totalDue)} KM
                 </p>
-                <p className="text-[10px] text-slate-500">Prema TAX modulu (godišnji preview).</p>
+                <p className="text-[10px] text-slate-500">
+                  Prema TAX modulu (godišnji preview).
+                </p>
               </div>
             </div>
           </div>
 
-          {/* Chart: income by month */}
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
             <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
               Grafikoni – prihodi po mjesecima
@@ -690,11 +713,15 @@ export default function ReportsPage() {
             </p>
 
             {isLoadingYearlyCashflow ? (
-              <p className="text-[11px] text-slate-500">Učitavam godišnji cashflow...</p>
+              <p className="text-[11px] text-slate-500">
+                Učitavam godišnji cashflow...
+              </p>
             ) : yearlyCashflow?.items?.length ? (
               <div className="mt-2 h-44 flex items-end gap-2 border border-slate-100 rounded-lg bg-slate-50 px-4 py-4 overflow-x-auto">
                 {maxIncomeValue === 0 ? (
-                  <p className="text-[11px] text-slate-500">Nema dovoljno podataka za graf.</p>
+                  <p className="text-[11px] text-slate-500">
+                    Nema dovoljno podataka za graf.
+                  </p>
                 ) : (
                   incomeSeries.map((item) => {
                     const heightPercent = (Math.abs(item.value) / maxIncomeValue) * 100;
@@ -708,7 +735,7 @@ export default function ReportsPage() {
                           <div
                             className="w-3 mx-auto rounded-t-md shadow-sm bg-emerald-500"
                             style={{ height: `${Math.max(6, heightPercent)}%` }}
-                          ></div>
+                          />
                         </div>
                         <span className="text-[10px] text-slate-600">{item.label}</span>
                       </div>
@@ -717,20 +744,14 @@ export default function ReportsPage() {
                 )}
               </div>
             ) : (
-              <p className="text-[11px] text-slate-500">Nema cashflow podataka za ovu godinu.</p>
+              <p className="text-[11px] text-slate-500">
+                Nema cashflow podataka za ovu godinu.
+              </p>
             )}
           </div>
-
-          {(isErrorYearlyCashflow || isErrorYearlySummary) && (
-            <p className="text-sm text-red-600">
-              Greška pri učitavanju godišnjeg izvještaja:{" "}
-              {errorYearlyCashflow?.message || errorYearlySummary?.message}
-            </p>
-          )}
         </div>
       )}
 
-      {/* ANALYTICS TAB */}
       {!isLoadingAny && !isErrorAny && activeTab === "analytics" && (
         <div className="space-y-4">
           <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4">
@@ -738,13 +759,15 @@ export default function ReportsPage() {
               Napredna analitika (Premium)
             </p>
             <p className="text-xs text-slate-500 mt-1">
-              Ovdje su “Premium” blokovi (top kupci, top dobavljači, troškovi po kategorijama, trend prihoda).
-              AI komentar i savjeti trenutno su “beta” koncept (kao na kontrolnoj tabli).
+              Ovdje su “Premium” blokovi (top kupci, top dobavljači, troškovi po
+              kategorijama, trend prihoda). AI komentar i savjeti trenutno su “beta”
+              koncept (kao na kontrolnoj tabli).
             </p>
 
             <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
-              Napomena: “Troškovi po kategorijama” trenutno koristimo dobavljača kao kategoriju.
-              Kasnije možemo uvesti prave kategorije (gorivo, zakup, režije...) na ulaznim računima.
+              Napomena: “Troškovi po kategorijama” trenutno koristimo dobavljača kao
+              kategoriju. Kasnije možemo uvesti prave kategorije (gorivo, zakup,
+              režije...) na ulaznim računima.
             </div>
           </div>
 
@@ -754,7 +777,9 @@ export default function ReportsPage() {
                 Top kupci ({year})
               </p>
               {topCustomers.length === 0 ? (
-                <p className="text-[11px] text-slate-500">Nema dovoljno izlaznih faktura za analitiku.</p>
+                <p className="text-[11px] text-slate-500">
+                  Nema dovoljno izlaznih faktura za analitiku.
+                </p>
               ) : (
                 <ul className="space-y-1 text-xs text-slate-700">
                   {topCustomers.map((c, idx) => (
@@ -775,7 +800,9 @@ export default function ReportsPage() {
                 Top dobavljači ({year})
               </p>
               {topSuppliers.length === 0 ? (
-                <p className="text-[11px] text-slate-500">Nema dovoljno ulaznih računa za analitiku.</p>
+                <p className="text-[11px] text-slate-500">
+                  Nema dovoljno ulaznih računa za analitiku.
+                </p>
               ) : (
                 <ul className="space-y-1 text-xs text-slate-700">
                   {topSuppliers.map((s, idx) => (
@@ -804,8 +831,7 @@ export default function ReportsPage() {
                 </p>
               ) : (
                 expenseBySupplier.map((cat) => {
-                  const heightPercent =
-                    (Math.abs(cat.total) / maxExpenseSupplier) * 100;
+                  const heightPercent = (Math.abs(cat.total) / maxExpenseSupplier) * 100;
                   return (
                     <div
                       key={cat.name}
@@ -816,7 +842,7 @@ export default function ReportsPage() {
                         <div
                           className="w-7 mx-auto rounded-t-md shadow-sm bg-rose-500"
                           style={{ height: `${Math.max(8, heightPercent)}%` }}
-                        ></div>
+                        />
                       </div>
                       <span className="text-[10px] text-center text-slate-600 line-clamp-2">
                         {cat.name}

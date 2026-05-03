@@ -119,7 +119,7 @@ export default function KprPage() {
 
   const {
     mutateAsync: createManualEntry,
-    isLoading: isSavingManual,
+   isPending: isSavingManual,
   } = useMutation({
     mutationFn: async (payload: CashEntryCreatePayload) =>
       createCashEntry(payload),
