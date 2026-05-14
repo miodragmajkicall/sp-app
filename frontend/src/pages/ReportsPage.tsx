@@ -57,6 +57,8 @@ interface DashboardMonthlyResponse {
   sam?: MonthlySamSummary;
 }
 
+type ReportsTab = "monthly" | "yearly" | "analytics";
+
 function toNumber(value: number | string | undefined | null): number {
   if (value === undefined || value === null) return 0;
   if (typeof value === "number") return Number.isFinite(value) ? value : 0;
@@ -88,6 +90,70 @@ function clampYear(y: number): number {
   return y;
 }
 
+function netClass(value: number): string {
+  if (value > 0) return "text-emerald-600";
+  if (value < 0) return "text-rose-600";
+  return "text-slate-700";
+}
+
+function HeroMetric({
+  label,
+  value,
+  hint,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  hint: string;
+  tone?: "neutral" | "income" | "expense";
+}) {
+  const valueClass =
+    tone === "income"
+      ? "text-emerald-300"
+      : tone === "expense"
+        ? "text-amber-300"
+        : "text-white";
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/10 p-4 backdrop-blur">
+      <p className="text-xs text-slate-300">{label}</p>
+      <p className={`mt-2 text-2xl font-semibold ${valueClass}`}>{value}</p>
+      <p className="mt-1 text-[11px] text-slate-400">{hint}</p>
+    </div>
+  );
+}
+
+function MiniMetric({
+  label,
+  value,
+  hint,
+  tone = "neutral",
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+  tone?: "neutral" | "income" | "expense" | "dark";
+}) {
+  const valueClass =
+    tone === "income"
+      ? "text-emerald-600"
+      : tone === "expense"
+        ? "text-rose-600"
+        : tone === "dark"
+          ? "text-slate-950"
+          : "text-slate-800";
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
+        {label}
+      </p>
+      <p className={`mt-2 text-xl font-semibold ${valueClass}`}>{value}</p>
+      {hint && <p className="mt-1 text-xs text-slate-500">{hint}</p>}
+    </div>
+  );
+}
+
 export default function ReportsPage() {
   const navigate = useNavigate();
   const apiBaseUrl = getApiBaseUrl();
@@ -108,15 +174,15 @@ export default function ReportsPage() {
     staleTime: 60_000,
   });
 
-  const initialYear = clampYear(currentMonthly?.year ?? new Date().getFullYear());
+  const initialYear = clampYear(
+    currentMonthly?.year ?? new Date().getFullYear(),
+  );
   const initialMonth = Math.min(
     12,
     Math.max(1, currentMonthly?.month ?? new Date().getMonth() + 1),
   );
 
-  const [activeTab, setActiveTab] = useState<"monthly" | "yearly" | "analytics">(
-    "monthly",
-  );
+  const [activeTab, setActiveTab] = useState<ReportsTab>("monthly");
   const [year, setYear] = useState<number>(initialYear);
   const [month, setMonth] = useState<number>(initialMonth);
 
@@ -220,13 +286,6 @@ export default function ReportsPage() {
   const monthlyInvoices = outgoingForMonth?.items ?? [];
   const monthlyInputInvoices = inputForMonth?.items ?? [];
 
-  const monthlyNetClass =
-    monthlyProfit > 0
-      ? "text-emerald-600"
-      : monthlyProfit < 0
-        ? "text-rose-600"
-        : "text-slate-700";
-
   const incomeSeries = useMemo(() => {
     const items = yearlyCashflow?.items ?? [];
     const byMonth = new Map<number, number>();
@@ -245,7 +304,10 @@ export default function ReportsPage() {
     });
   }, [yearlyCashflow]);
 
-  const maxIncomeValue = Math.max(...incomeSeries.map((i) => Math.abs(i.value)), 0);
+  const maxIncomeValue = Math.max(
+    ...incomeSeries.map((i) => Math.abs(i.value)),
+    0,
+  );
 
   const yearlyTotals = useMemo(() => {
     return {
@@ -328,56 +390,135 @@ export default function ReportsPage() {
     errorYearlySummary?.message ||
     "Nepoznata greška pri učitavanju izvještaja.";
 
+  const tenantCode = currentMonthly?.tenant_code ?? "t-demo";
+
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <h2 className="text-2xl font-semibold text-slate-900 tracking-tight">
-          Izvještaji
-        </h2>
+      <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+        <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 px-5 py-6 text-white sm:px-6">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+            <div className="max-w-3xl">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-300">
+                Evident · poslovna analitika
+              </p>
 
-        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500">
-          <span>
-            API: <span className="font-mono">{apiBaseUrl}</span>
-          </span>
+              <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
+                Izvještaji
+              </h1>
 
-          {currentMonthly && (
-            <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1">
-              <span className="text-[10px] uppercase tracking-wide text-slate-500">
-                Tenant
-              </span>
-              <span className="font-semibold text-slate-700">
-                <span className="font-mono">{currentMonthly.tenant_code}</span>
-              </span>
-            </span>
-          )}
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+                Mjesečni i godišnji pregled prihoda, rashoda, poreza, faktura i
+                napredne analitike za tenant{" "}
+                <span className="font-mono text-white">{tenantCode}</span>.
+              </p>
+
+              <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-300">
+                <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">
+                  Period:{" "}
+                  <span className="font-semibold text-white">{monthTitle}</span>
+                </span>
+
+                <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">
+                  Godina:{" "}
+                  <span className="font-semibold text-white">{year}</span>
+                </span>
+
+                <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">
+                  API: <span className="font-mono text-white">{apiBaseUrl}</span>
+                </span>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => navigate("/dashboard")}
+                className="rounded-2xl border border-white/10 bg-white/10 px-4 py-2 text-xs font-semibold text-white backdrop-blur transition hover:bg-white/15"
+              >
+                Kontrolna tabla
+              </button>
+
+              <button
+                type="button"
+                onClick={() => navigate("/invoices")}
+                className="rounded-2xl border border-white/10 bg-white/10 px-4 py-2 text-xs font-semibold text-white backdrop-blur transition hover:bg-white/15"
+              >
+                Izlazne fakture
+              </button>
+
+              <a
+                href={csvUrl}
+                className="rounded-2xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-400"
+              >
+                CSV cashflow
+              </a>
+            </div>
+          </div>
+
+          <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <HeroMetric
+              label="Godišnji prihodi"
+              value={`${formatAmount(yearlyTotals.income)} KM`}
+              hint="Ukupan prihod za izabranu godinu."
+              tone="income"
+            />
+
+            <HeroMetric
+              label="Godišnji rashodi"
+              value={`${formatAmount(yearlyTotals.expense)} KM`}
+              hint="Ukupni rashodi za izabranu godinu."
+              tone="expense"
+            />
+
+            <HeroMetric
+              label="Godišnji profit"
+              value={`${formatAmount(yearlyTotals.profit)} KM`}
+              hint="Razlika prihoda i rashoda."
+            />
+
+            <HeroMetric
+              label="Prema državi"
+              value={`${formatAmount(yearlyTotals.totalDue)} KM`}
+              hint="TAX/SAM godišnji preview."
+            />
+          </div>
         </div>
-      </div>
+      </section>
 
-      <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4">
-        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div className="flex flex-wrap gap-3 items-end">
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wide mb-1">
-                Godina
-              </label>
+      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Kontrole izvještaja
+            </p>
+            <h2 className="mt-1 text-lg font-semibold text-slate-900">
+              Period i vrsta pregleda
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Odaberi godinu, mjesec i tip izvještaja. Backend logika i endpointi
+              ostaju nepromijenjeni.
+            </p>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-[140px_180px_auto]">
+            <label className="space-y-1 text-xs font-medium text-slate-600">
+              Godina
               <input
                 type="number"
                 value={year}
                 min={2000}
                 max={2100}
                 onChange={(e) => setYear(clampYear(Number(e.target.value)))}
-                className="w-32 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800"
+                className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
               />
-            </div>
+            </label>
 
-            <div>
-              <label className="block text-[11px] font-semibold text-slate-600 uppercase tracking-wide mb-1">
-                Mjesec
-              </label>
+            <label className="space-y-1 text-xs font-medium text-slate-600">
+              Mjesec
               <select
                 value={month}
                 onChange={(e) => setMonth(Number(e.target.value))}
-                className="w-44 rounded-md border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800"
+                className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
               >
                 {Array.from({ length: 12 }, (_, idx) => idx + 1).map((m) => (
                   <option key={m} value={m}>
@@ -385,70 +526,68 @@ export default function ReportsPage() {
                   </option>
                 ))}
               </select>
+            </label>
+
+            <div className="space-y-1">
+              <p className="text-xs font-medium text-slate-600">Prikaz</p>
+              <div className="grid grid-cols-3 gap-1 rounded-2xl border border-slate-200 bg-slate-50 p-1">
+                {[
+                  ["monthly", "Mjesečni"],
+                  ["yearly", "Godišnji"],
+                  ["analytics", "Analitika"],
+                ].map(([key, label]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => setActiveTab(key as ReportsTab)}
+                    className={
+                      "rounded-xl px-3 py-2 text-xs font-semibold transition " +
+                      (activeTab === key
+                        ? "bg-white text-slate-950 shadow-sm"
+                        : "text-slate-500 hover:text-slate-800")
+                    }
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
-
-          <div className="flex flex-wrap gap-2">
-            <button
-              type="button"
-              onClick={() => setActiveTab("monthly")}
-              className={
-                "rounded-md px-3 py-2 text-sm font-medium border " +
-                (activeTab === "monthly"
-                  ? "bg-slate-900 text-white border-slate-900"
-                  : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50")
-              }
-            >
-              Mjesečni
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab("yearly")}
-              className={
-                "rounded-md px-3 py-2 text-sm font-medium border " +
-                (activeTab === "yearly"
-                  ? "bg-slate-900 text-white border-slate-900"
-                  : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50")
-              }
-            >
-              Godišnji
-            </button>
-            <button
-              type="button"
-              onClick={() => setActiveTab("analytics")}
-              className={
-                "rounded-md px-3 py-2 text-sm font-medium border " +
-                (activeTab === "analytics"
-                  ? "bg-slate-900 text-white border-slate-900"
-                  : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50")
-              }
-            >
-              Analitika (Premium)
-            </button>
-          </div>
         </div>
-      </div>
+      </section>
 
       {isLoadingAny && (
-        <p className="text-sm text-slate-600">
-          Učitavam izvještaje za izabrani period...
-        </p>
+        <section className="rounded-3xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+          <p className="text-sm font-medium text-slate-700">
+            Učitavam izvještaje za izabrani period...
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Prikupljam podatke iz dashboard, reports, invoices i input invoices
+            modula.
+          </p>
+        </section>
       )}
 
-      {isErrorAny && <p className="text-sm text-red-600">Greška: {errorText}</p>}
+      {isErrorAny && (
+        <section className="rounded-3xl border border-red-200 bg-red-50 p-5 text-sm text-red-700 shadow-sm">
+          Greška pri učitavanju izvještaja: {errorText}
+        </section>
+      )}
 
       {!isLoadingAny && !isErrorAny && activeTab === "monthly" && (
-        <div className="space-y-4">
-          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4">
-            <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="space-y-5">
+          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
                   Mjesečni izvještaj
                 </p>
-                <p className="text-sm font-semibold text-slate-900">{monthTitle}</p>
-                <p className="text-xs text-slate-500">
-                  Prihodi, rashodi, profit i očekivani porez + lista faktura i
-                  ulaznih računa.
+                <h2 className="mt-1 text-lg font-semibold text-slate-900">
+                  {monthTitle}
+                </h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Prihodi, rashodi, profit, očekivani porez i pregled mjesečnih
+                  faktura.
                 </p>
               </div>
 
@@ -456,99 +595,106 @@ export default function ReportsPage() {
                 <button
                   type="button"
                   onClick={() => navigate("/dashboard")}
-                  className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
                 >
-                  Otvori Kontrolnu tablu
+                  Kontrolna tabla
                 </button>
+
                 <button
                   type="button"
                   disabled
-                  className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-400 cursor-not-allowed"
+                  className="cursor-not-allowed rounded-2xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-400"
                   title="PDF export za mjesečni izvještaj još nije implementiran u backendu."
                 >
-                  PDF (uskoro)
+                  PDF uskoro
                 </button>
               </div>
             </div>
 
-            <div className="mt-4 grid gap-4 md:grid-cols-4 text-xs text-slate-700">
-              <div>
-                <p className="text-[11px] text-slate-500">Prihodi</p>
-                <p className="text-sm font-semibold text-emerald-600">
-                  {formatAmount(monthlyIncome)} KM
-                </p>
-              </div>
-              <div>
-                <p className="text-[11px] text-slate-500">Rashodi</p>
-                <p className="text-sm font-semibold text-rose-600">
-                  {formatAmount(monthlyExpense)} KM
-                </p>
-              </div>
-              <div>
-                <p className="text-[11px] text-slate-500">Profit</p>
-                <p className={`text-sm font-semibold ${monthlyNetClass}`}>
-                  {formatAmount(monthlyProfit)} KM
-                </p>
-              </div>
-              <div>
-                <p className="text-[11px] text-slate-500">Očekivani porez</p>
-                <p className="text-sm font-semibold text-slate-900">
-                  {formatAmount(monthlyExpectedTax)} KM
-                </p>
-                <p className="text-[10px] text-slate-500">
-                  Prema TAX modulu (mjesečni obračun).
-                </p>
-              </div>
-            </div>
-          </div>
+            <div className="mt-5 grid gap-4 md:grid-cols-4">
+              <MiniMetric
+                label="Prihodi"
+                value={`${formatAmount(monthlyIncome)} KM`}
+                hint="Cashflow prihod za mjesec."
+                tone="income"
+              />
 
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
-                  Lista izlaznih faktura (mjesec)
-                </p>
+              <MiniMetric
+                label="Rashodi"
+                value={`${formatAmount(monthlyExpense)} KM`}
+                hint="Cashflow rashod za mjesec."
+                tone="expense"
+              />
+
+              <MiniMetric
+                label="Profit"
+                value={`${formatAmount(monthlyProfit)} KM`}
+                hint="Mjesečni neto rezultat."
+                tone={monthlyProfit >= 0 ? "income" : "expense"}
+              />
+
+              <MiniMetric
+                label="Očekivani porez"
+                value={`${formatAmount(monthlyExpectedTax)} KM`}
+                hint="Prema TAX/SAM modulu."
+                tone="dark"
+              />
+            </div>
+          </section>
+
+          <section className="grid gap-5 lg:grid-cols-2">
+            <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+              <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-5 py-4">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Izlazne fakture
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">
+                    Fakturisani prihodi za mjesec
+                  </p>
+                </div>
+
                 <button
                   type="button"
                   onClick={() => navigate("/invoices")}
-                  className="rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+                  className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
                 >
-                  Sve izlazne fakture
+                  Otvori
                 </button>
               </div>
 
               {isLoadingOutgoingForMonth ? (
-                <p className="text-[11px] text-slate-500">
+                <p className="p-5 text-xs text-slate-500">
                   Učitavam izlazne fakture...
                 </p>
               ) : monthlyInvoices.length === 0 ? (
-                <p className="text-[11px] text-slate-500">
+                <p className="p-5 text-xs text-slate-500">
                   Nema izlaznih faktura u ovom mjesecu.
                 </p>
               ) : (
-                <div className="overflow-x-auto">
+                <div className="max-h-[420px] overflow-auto">
                   <table className="min-w-full text-left text-[11px] text-slate-700">
-                    <thead>
-                      <tr className="border-b border-slate-100 text-slate-500">
-                        <th className="py-1 pr-3">Datum</th>
-                        <th className="py-1 pr-3">Broj</th>
-                        <th className="py-1 pr-3">Kupac</th>
-                        <th className="py-1 text-right">Iznos</th>
+                    <thead className="sticky top-0 bg-white text-slate-500 shadow-sm">
+                      <tr>
+                        <th className="px-4 py-3 font-semibold">Datum</th>
+                        <th className="px-4 py-3 font-semibold">Broj</th>
+                        <th className="px-4 py-3 font-semibold">Kupac</th>
+                        <th className="px-4 py-3 text-right font-semibold">
+                          Iznos
+                        </th>
                       </tr>
                     </thead>
-                    <tbody>
+                    <tbody className="divide-y divide-slate-100">
                       {monthlyInvoices.slice(0, 25).map((inv: any) => (
-                        <tr key={inv.id} className="border-b border-slate-50 last:border-0">
-                          <td className="py-1 pr-3 text-slate-600">
+                        <tr key={inv.id} className="hover:bg-slate-50">
+                          <td className="whitespace-nowrap px-4 py-3">
                             {inv.issue_date ?? "-"}
                           </td>
-                          <td className="py-1 pr-3 font-mono text-slate-800">
+                          <td className="whitespace-nowrap px-4 py-3 font-mono text-slate-900">
                             {inv.number ?? "-"}
                           </td>
-                          <td className="py-1 pr-3 text-slate-700">
-                            {inv.buyer_name ?? "-"}
-                          </td>
-                          <td className="py-1 text-right text-slate-800">
+                          <td className="px-4 py-3">{inv.buyer_name ?? "-"}</td>
+                          <td className="whitespace-nowrap px-4 py-3 text-right font-semibold text-slate-900">
                             {inv.total_amount != null
                               ? `${formatAmount(toNumber(inv.total_amount))} KM`
                               : "-"}
@@ -557,8 +703,9 @@ export default function ReportsPage() {
                       ))}
                     </tbody>
                   </table>
+
                   {monthlyInvoices.length > 25 && (
-                    <p className="mt-2 text-[10px] text-slate-500">
+                    <p className="border-t border-slate-100 px-4 py-3 text-[10px] text-slate-500">
                       Prikazano prvih 25 od ukupno {monthlyInvoices.length}.
                     </p>
                   )}
@@ -566,52 +713,60 @@ export default function ReportsPage() {
               )}
             </div>
 
-            <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-2">
-              <div className="flex items-center justify-between">
-                <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
-                  Lista ulaznih računa (mjesec)
-                </p>
+            <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+              <div className="flex items-center justify-between gap-3 border-b border-slate-100 bg-slate-50 px-5 py-4">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Ulazni računi
+                  </p>
+                  <p className="mt-1 text-sm font-semibold text-slate-900">
+                    Rashodi i dobavljači za mjesec
+                  </p>
+                </div>
+
                 <button
                   type="button"
                   onClick={() => navigate("/input-invoices")}
-                  className="rounded-md border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-medium text-slate-700 hover:bg-slate-100"
+                  className="rounded-2xl border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-700 hover:bg-slate-100"
                 >
-                  Sve ulazne fakture
+                  Otvori
                 </button>
               </div>
 
               {isLoadingInputForMonth ? (
-                <p className="text-[11px] text-slate-500">
+                <p className="p-5 text-xs text-slate-500">
                   Učitavam ulazne račune...
                 </p>
               ) : monthlyInputInvoices.length === 0 ? (
-                <p className="text-[11px] text-slate-500">
+                <p className="p-5 text-xs text-slate-500">
                   Nema ulaznih računa u ovom mjesecu.
                 </p>
               ) : (
-                <div className="overflow-x-auto">
+                <div className="max-h-[420px] overflow-auto">
                   <table className="min-w-full text-left text-[11px] text-slate-700">
-                    <thead>
-                      <tr className="border-b border-slate-100 text-slate-500">
-                        <th className="py-1 pr-3">Datum</th>
-                        <th className="py-1 pr-3">Broj</th>
-                        <th className="py-1 pr-3">Dobavljač</th>
-                        <th className="py-1 text-right">Iznos</th>
+                    <thead className="sticky top-0 bg-white text-slate-500 shadow-sm">
+                      <tr>
+                        <th className="px-4 py-3 font-semibold">Datum</th>
+                        <th className="px-4 py-3 font-semibold">Broj</th>
+                        <th className="px-4 py-3 font-semibold">Dobavljač</th>
+                        <th className="px-4 py-3 text-right font-semibold">
+                          Iznos
+                        </th>
                       </tr>
                     </thead>
-                    <tbody>
+                    <tbody className="divide-y divide-slate-100">
                       {monthlyInputInvoices.slice(0, 25).map((inv: any) => (
-                        <tr key={inv.id} className="border-b border-slate-50 last:border-0">
-                          <td className="py-1 pr-3 text-slate-600">
+                        <tr key={inv.id} className="hover:bg-slate-50">
+                          <td className="whitespace-nowrap px-4 py-3">
                             {inv.issue_date ?? "-"}
                           </td>
-                          <td className="py-1 pr-3 font-mono text-slate-800">
+                          <td className="whitespace-nowrap px-4 py-3 font-mono text-slate-900">
                             {inv.number ?? "-"}
                           </td>
-                          <td className="py-1 pr-3 text-slate-700">
+                          <td className="px-4 py-3">
                             {inv.supplier_name ?? "-"}
                           </td>
-                          <td className="py-1 text-right text-slate-800">
+                          <td className="whitespace-nowrap px-4 py-3 text-right font-semibold text-slate-900">
                             {inv.total_amount != null
                               ? `${formatAmount(toNumber(inv.total_amount))} KM`
                               : "-"}
@@ -620,231 +775,268 @@ export default function ReportsPage() {
                       ))}
                     </tbody>
                   </table>
+
                   {monthlyInputInvoices.length > 25 && (
-                    <p className="mt-2 text-[10px] text-slate-500">
-                      Prikazano prvih 25 od ukupno {monthlyInputInvoices.length}.
+                    <p className="border-t border-slate-100 px-4 py-3 text-[10px] text-slate-500">
+                      Prikazano prvih 25 od ukupno{" "}
+                      {monthlyInputInvoices.length}.
                     </p>
                   )}
                 </div>
               )}
             </div>
-          </div>
+          </section>
         </div>
       )}
 
       {!isLoadingAny && !isErrorAny && activeTab === "yearly" && (
-        <div className="space-y-4">
-          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4">
-            <div className="flex items-center justify-between gap-3 flex-wrap">
+        <div className="space-y-5">
+          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
                   Godišnji izvještaj
                 </p>
-                <p className="text-sm font-semibold text-slate-900">{year}</p>
-                <p className="text-xs text-slate-500">
-                  Zbir po mjesecima + grafikon prihoda. CSV export cashflow-a je aktivan.
+                <h2 className="mt-1 text-lg font-semibold text-slate-900">
+                  {year}
+                </h2>
+                <p className="mt-1 text-xs text-slate-500">
+                  Zbirni godišnji pregled prihoda, rashoda, profita i obaveza
+                  prema državi.
                 </p>
               </div>
 
               <div className="flex flex-wrap gap-2">
                 <a
                   href={csvUrl}
-                  className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                  className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
                 >
-                  Preuzmi CSV (cashflow)
+                  Preuzmi CSV
                 </a>
+
                 <button
                   type="button"
                   disabled
-                  className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-400 cursor-not-allowed"
+                  className="cursor-not-allowed rounded-2xl border border-slate-200 bg-white px-4 py-2 text-xs font-semibold text-slate-400"
                   title="PDF export godišnjeg izvještaja još nije implementiran u backendu."
                 >
-                  PDF (uskoro)
+                  PDF uskoro
                 </button>
               </div>
             </div>
 
-            <div className="mt-4 grid gap-4 md:grid-cols-4 text-xs text-slate-700">
-              <div>
-                <p className="text-[11px] text-slate-500">Ukupni prihodi</p>
-                <p className="text-sm font-semibold text-emerald-600">
-                  {formatAmount(yearlyTotals.income)} KM
-                </p>
-              </div>
-              <div>
-                <p className="text-[11px] text-slate-500">Ukupni rashodi</p>
-                <p className="text-sm font-semibold text-rose-600">
-                  {formatAmount(yearlyTotals.expense)} KM
-                </p>
-              </div>
-              <div>
-                <p className="text-[11px] text-slate-500">Profit</p>
-                <p
-                  className={
-                    "text-sm font-semibold " +
-                    (yearlyTotals.profit > 0
-                      ? "text-emerald-600"
-                      : yearlyTotals.profit < 0
-                        ? "text-rose-600"
-                        : "text-slate-700")
-                  }
-                >
-                  {formatAmount(yearlyTotals.profit)} KM
-                </p>
-              </div>
-              <div>
-                <p className="text-[11px] text-slate-500">Ukupno prema državi</p>
-                <p className="text-sm font-semibold text-slate-900">
-                  {formatAmount(yearlyTotals.totalDue)} KM
-                </p>
-                <p className="text-[10px] text-slate-500">
-                  Prema TAX modulu (godišnji preview).
-                </p>
-              </div>
-            </div>
-          </div>
+            <div className="mt-5 grid gap-4 md:grid-cols-4">
+              <MiniMetric
+                label="Ukupni prihodi"
+                value={`${formatAmount(yearlyTotals.income)} KM`}
+                tone="income"
+              />
 
-          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
-            <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
-              Grafikoni – prihodi po mjesecima
-            </p>
-            <p className="text-xs text-slate-500">
-              Trend prihoda po mjesecima na osnovu `/reports/cashflow/{year}`.
-            </p>
+              <MiniMetric
+                label="Ukupni rashodi"
+                value={`${formatAmount(yearlyTotals.expense)} KM`}
+                tone="expense"
+              />
+
+              <MiniMetric
+                label="Profit"
+                value={`${formatAmount(yearlyTotals.profit)} KM`}
+                tone={yearlyTotals.profit >= 0 ? "income" : "expense"}
+              />
+
+              <MiniMetric
+                label="Ukupno prema državi"
+                value={`${formatAmount(yearlyTotals.totalDue)} KM`}
+                hint="Prema TAX/SAM modulu."
+                tone="dark"
+              />
+            </div>
+          </section>
+
+          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                Prihodi po mjesecima
+              </p>
+              <h2 className="text-lg font-semibold text-slate-900">
+                Cashflow trend
+              </h2>
+              <p className="text-xs text-slate-500">
+                Trend prihoda po mjesecima na osnovu godišnjeg cashflow
+                izvještaja.
+              </p>
+            </div>
 
             {isLoadingYearlyCashflow ? (
-              <p className="text-[11px] text-slate-500">
+              <p className="mt-5 text-xs text-slate-500">
                 Učitavam godišnji cashflow...
               </p>
             ) : yearlyCashflow?.items?.length ? (
-              <div className="mt-2 h-44 flex items-end gap-2 border border-slate-100 rounded-lg bg-slate-50 px-4 py-4 overflow-x-auto">
+              <div className="mt-5 flex h-56 items-end gap-3 overflow-x-auto rounded-2xl border border-slate-100 bg-slate-50 px-4 py-5">
                 {maxIncomeValue === 0 ? (
-                  <p className="text-[11px] text-slate-500">
+                  <p className="text-xs text-slate-500">
                     Nema dovoljno podataka za graf.
                   </p>
                 ) : (
                   incomeSeries.map((item) => {
-                    const heightPercent = (Math.abs(item.value) / maxIncomeValue) * 100;
+                    const heightPercent =
+                      (Math.abs(item.value) / maxIncomeValue) * 100;
+
                     return (
                       <div
                         key={item.month}
-                        className="flex flex-col items-center justify-end gap-1 h-full min-w-[18px]"
+                        className="flex h-full min-w-[34px] flex-col items-center justify-end gap-2"
                         title={`${item.label}: ${formatAmount(item.value)} KM`}
                       >
-                        <div className="flex flex-col justify-end w-full h-full">
+                        <div className="flex h-full w-full flex-col justify-end">
                           <div
-                            className="w-3 mx-auto rounded-t-md shadow-sm bg-emerald-500"
-                            style={{ height: `${Math.max(6, heightPercent)}%` }}
+                            className="mx-auto w-5 rounded-t-xl bg-emerald-500 shadow-sm"
+                            style={{
+                              height: `${Math.max(8, heightPercent)}%`,
+                            }}
                           />
                         </div>
-                        <span className="text-[10px] text-slate-600">{item.label}</span>
+                        <span className="text-[10px] text-slate-600">
+                          {item.label}
+                        </span>
                       </div>
                     );
                   })
                 )}
               </div>
             ) : (
-              <p className="text-[11px] text-slate-500">
+              <p className="mt-5 text-xs text-slate-500">
                 Nema cashflow podataka za ovu godinu.
               </p>
             )}
-          </div>
+          </section>
         </div>
       )}
 
       {!isLoadingAny && !isErrorAny && activeTab === "analytics" && (
-        <div className="space-y-4">
-          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4">
-            <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
-              Napredna analitika (Premium)
+        <div className="space-y-5">
+          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Napredna analitika
             </p>
-            <p className="text-xs text-slate-500 mt-1">
-              Ovdje su “Premium” blokovi (top kupci, top dobavljači, troškovi po
-              kategorijama, trend prihoda). AI komentar i savjeti trenutno su “beta”
-              koncept (kao na kontrolnoj tabli).
+            <h2 className="mt-1 text-lg font-semibold text-slate-900">
+              Premium pregled poslovanja
+            </h2>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
+              Top kupci, top dobavljači i troškovi po dobavljačima za izabranu
+              godinu. Kategorije troškova trenutno se aproksimiraju preko
+              dobavljača, dok kasnije možemo dodati prave kategorije na ulaznim
+              računima.
             </p>
+          </section>
 
-            <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] text-slate-600">
-              Napomena: “Troškovi po kategorijama” trenutno koristimo dobavljača kao
-              kategoriju. Kasnije možemo uvesti prave kategorije (gorivo, zakup,
-              režije...) na ulaznim računima.
-            </div>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
-              <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+          <section className="grid gap-5 lg:grid-cols-2">
+            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
                 Top kupci ({year})
               </p>
+
               {topCustomers.length === 0 ? (
-                <p className="text-[11px] text-slate-500">
+                <p className="mt-4 text-xs text-slate-500">
                   Nema dovoljno izlaznih faktura za analitiku.
                 </p>
               ) : (
-                <ul className="space-y-1 text-xs text-slate-700">
+                <ul className="mt-4 space-y-2 text-xs text-slate-700">
                   {topCustomers.map((c, idx) => (
-                    <li key={c.name} className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="w-6 text-[11px] text-slate-500">#{idx + 1}</span>
-                        <span>{c.name}</span>
+                    <li
+                      key={c.name}
+                      className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2"
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="w-7 shrink-0 text-[11px] font-semibold text-slate-400">
+                          #{idx + 1}
+                        </span>
+                        <span className="truncate font-medium text-slate-800">
+                          {c.name}
+                        </span>
                       </div>
-                      <span className="font-semibold">{formatAmount(c.total)} KM</span>
+
+                      <span className="shrink-0 font-semibold text-slate-950">
+                        {formatAmount(c.total)} KM
+                      </span>
                     </li>
                   ))}
                 </ul>
               )}
             </div>
 
-            <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
-              <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
+            <div className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
                 Top dobavljači ({year})
               </p>
+
               {topSuppliers.length === 0 ? (
-                <p className="text-[11px] text-slate-500">
+                <p className="mt-4 text-xs text-slate-500">
                   Nema dovoljno ulaznih računa za analitiku.
                 </p>
               ) : (
-                <ul className="space-y-1 text-xs text-slate-700">
+                <ul className="mt-4 space-y-2 text-xs text-slate-700">
                   {topSuppliers.map((s, idx) => (
-                    <li key={s.name} className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <span className="w-6 text-[11px] text-slate-500">#{idx + 1}</span>
-                        <span>{s.name}</span>
+                    <li
+                      key={s.name}
+                      className="flex items-center justify-between gap-3 rounded-2xl border border-slate-100 bg-slate-50 px-3 py-2"
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="w-7 shrink-0 text-[11px] font-semibold text-slate-400">
+                          #{idx + 1}
+                        </span>
+                        <span className="truncate font-medium text-slate-800">
+                          {s.name}
+                        </span>
                       </div>
-                      <span className="font-semibold">{formatAmount(s.total)} KM</span>
+
+                      <span className="shrink-0 font-semibold text-slate-950">
+                        {formatAmount(s.total)} KM
+                      </span>
                     </li>
                   ))}
                 </ul>
               )}
             </div>
-          </div>
+          </section>
 
-          <div className="rounded-xl bg-white shadow-sm border border-slate-200 p-4 space-y-3">
-            <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">
-              Troškovi po kategorijama (dobavljači) – {year}
-            </p>
+          <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+            <div className="flex flex-col gap-1">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                Troškovi po dobavljačima
+              </p>
+              <h2 className="text-lg font-semibold text-slate-900">
+                Struktura rashoda za {year}
+              </h2>
+              <p className="text-xs text-slate-500">
+                Vizuelni pregled najvećih rashodovnih dobavljača.
+              </p>
+            </div>
 
-            <div className="mt-2 h-44 flex items-end gap-4 border border-slate-100 rounded-lg bg-slate-50 px-4 py-4 overflow-x-auto">
+            <div className="mt-5 flex h-56 items-end gap-4 overflow-x-auto rounded-2xl border border-slate-100 bg-slate-50 px-4 py-5">
               {expenseBySupplier.length === 0 || maxExpenseSupplier === 0 ? (
-                <p className="text-[11px] text-slate-500">
+                <p className="text-xs text-slate-500">
                   Nema dovoljno podataka za prikaz troškova po dobavljačima.
                 </p>
               ) : (
                 expenseBySupplier.map((cat) => {
-                  const heightPercent = (Math.abs(cat.total) / maxExpenseSupplier) * 100;
+                  const heightPercent =
+                    (Math.abs(cat.total) / maxExpenseSupplier) * 100;
+
                   return (
                     <div
                       key={cat.name}
-                      className="flex flex-col items-center justify-end gap-1 h-full min-w-[52px]"
+                      className="flex h-full min-w-[72px] flex-col items-center justify-end gap-2"
                       title={`${cat.name}: ${formatAmount(cat.total)} KM`}
                     >
-                      <div className="flex flex-col justify-end w-full h-full">
+                      <div className="flex h-full w-full flex-col justify-end">
                         <div
-                          className="w-7 mx-auto rounded-t-md shadow-sm bg-rose-500"
+                          className="mx-auto w-8 rounded-t-xl bg-rose-500 shadow-sm"
                           style={{ height: `${Math.max(8, heightPercent)}%` }}
                         />
                       </div>
-                      <span className="text-[10px] text-center text-slate-600 line-clamp-2">
+
+                      <span className="line-clamp-2 text-center text-[10px] text-slate-600">
                         {cat.name}
                       </span>
                     </div>
@@ -853,23 +1045,24 @@ export default function ReportsPage() {
               )}
             </div>
 
-            <div className="flex flex-wrap gap-2">
+            <div className="mt-5 flex flex-wrap gap-2">
               <button
                 type="button"
                 onClick={() => navigate("/input-invoices")}
-                className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
               >
                 Otvori Ulazne fakture
               </button>
+
               <button
                 type="button"
                 onClick={() => navigate("/invoices")}
-                className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
               >
                 Otvori Izlazne fakture
               </button>
             </div>
-          </div>
+          </section>
         </div>
       )}
     </div>
