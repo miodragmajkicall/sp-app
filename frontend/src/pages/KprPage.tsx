@@ -50,18 +50,12 @@ function formatCategory(category: string): string {
   }
 }
 
-/**
- * Konto (prihod / rashod / ostalo) – logička klasifikacija za KPR.
- */
 function formatAccount(row: KprRowItem): string {
   if (row.kind === "income") return "Prihod";
   if (row.kind === "expense") return "Rashod";
   return "Ostalo";
 }
 
-/**
- * Referenca – izvor stavke: faktura / ulazni račun / ručni unos (cash).
- */
 function formatReference(row: KprRowItem): string {
   const category = row.category || row.source || "";
 
@@ -86,7 +80,6 @@ export default function KprPage() {
   const [month, setMonth] = useState<number | undefined>(CURRENT_MONTH);
   const [kindFilter, setKindFilter] = useState<KindFilter>("ALL");
 
-  // stanje za ručni KPR unos (modal)
   const [isManualModalOpen, setIsManualModalOpen] = useState(false);
   const [manualDate, setManualDate] = useState<string>(todayIso());
   const [manualKind, setManualKind] = useState<"income" | "expense">(
@@ -119,12 +112,11 @@ export default function KprPage() {
 
   const {
     mutateAsync: createManualEntry,
-   isPending: isSavingManual,
+    isPending: isSavingManual,
   } = useMutation({
     mutationFn: async (payload: CashEntryCreatePayload) =>
       createCashEntry(payload),
     onSuccess: () => {
-      // osvježavamo i cash i KPR i dashboard, jer unos utiče na sve
       queryClient.invalidateQueries({ queryKey: ["cash"] });
       queryClient.invalidateQueries({ queryKey: ["kpr"] });
       queryClient.invalidateQueries({
@@ -140,7 +132,6 @@ export default function KprPage() {
     if (kindFilter === "INCOME") {
       return allItems.filter((r) => r.kind === "income");
     }
-    // EXPENSE
     return allItems.filter((r) => r.kind === "expense");
   }, [allItems, kindFilter]);
 
@@ -149,6 +140,7 @@ export default function KprPage() {
   const totals = useMemo(() => {
     let income = 0;
     let expense = 0;
+
     for (const row of allItems) {
       if (row.kind === "income") {
         income += row.amount ?? 0;
@@ -156,6 +148,7 @@ export default function KprPage() {
         expense += row.amount ?? 0;
       }
     }
+
     return {
       income,
       expense,
@@ -170,6 +163,7 @@ export default function KprPage() {
       );
       return;
     }
+
     try {
       await exportKprPdf(year, month);
     } catch (err) {
@@ -190,6 +184,7 @@ export default function KprPage() {
       );
       return;
     }
+
     try {
       await exportKprExcel(year, month);
     } catch (err) {
@@ -223,7 +218,6 @@ export default function KprPage() {
 
     try {
       await createManualEntry(payload);
-      // reset forme, ali ostavljamo datum + račun da se lakše unosi više stavki
       setManualAmount("");
       setManualDescription("");
       await refetch();
@@ -238,91 +232,97 @@ export default function KprPage() {
   }
 
   return (
-    <div className="space-y-6 relative">
-      {/* MODAL ZA RUČNI KPR UNOS */}
+    <div className="relative space-y-6">
       {isManualModalOpen && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/30">
-          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white p-4 shadow-lg space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="text-sm font-semibold text-slate-800">
-                Novi KPR unos (ručni)
-              </h3>
-              <button
-                type="button"
-                onClick={() => setIsManualModalOpen(false)}
-                className="text-xs text-slate-500 hover:text-slate-700"
-              >
-                Zatvori
-              </button>
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/40 px-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
+            <div className="border-b border-slate-100 bg-slate-50 px-5 py-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                    Ručni unos
+                  </p>
+                  <h3 className="mt-1 text-base font-semibold text-slate-900">
+                    Novi KPR unos
+                  </h3>
+                  <p className="mt-1 text-xs text-slate-500">
+                    Za provizije, naknade i druge prihode/rashode koji se ručno
+                    evidentiraju kroz cash modul.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIsManualModalOpen(false)}
+                  className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
+                >
+                  Zatvori
+                </button>
+              </div>
             </div>
 
-            <p className="text-[11px] text-slate-500">
-              Koristi se za stavke poput bankarskih provizija, naknada i
-              drugih manualnih prihoda/rashoda koji ulaze u KPR.
-            </p>
-
-            <form onSubmit={handleManualSubmit} className="space-y-3">
+            <form onSubmit={handleManualSubmit} className="space-y-4 p-5">
               <div className="grid gap-3 sm:grid-cols-2">
-                <label className="text-xs text-slate-600 space-y-1">
+                <label className="space-y-1 text-xs font-medium text-slate-600">
                   Datum
                   <input
                     type="date"
-                    className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
                     value={manualDate}
                     onChange={(e) => setManualDate(e.target.value)}
                     required
                   />
                 </label>
 
-                <label className="text-xs text-slate-600 space-y-1">
+                <label className="space-y-1 text-xs font-medium text-slate-600">
                   Tip
                   <select
-                    className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
                     value={manualKind}
                     onChange={(e) =>
-                      setManualKind(
-                        e.target.value as "income" | "expense",
-                      )
+                      setManualKind(e.target.value as "income" | "expense")
                     }
                   >
-                    <option value="income">PRIHOD</option>
-                    <option value="expense">RASHOD</option>
+                    <option value="income">Prihod</option>
+                    <option value="expense">Rashod</option>
                   </select>
                 </label>
               </div>
 
-              <label className="text-xs text-slate-600 space-y-1">
-                Račun
-                <select
-                  className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-                  value={manualAccount}
-                  onChange={(e) =>
-                    setManualAccount(e.target.value as "cash" | "bank")
-                  }
-                >
-                  <option value="cash">KASA</option>
-                  <option value="bank">TEKUĆI RAČUN</option>
-                </select>
-              </label>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <label className="space-y-1 text-xs font-medium text-slate-600">
+                  Račun
+                  <select
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                    value={manualAccount}
+                    onChange={(e) =>
+                      setManualAccount(e.target.value as "cash" | "bank")
+                    }
+                  >
+                    <option value="cash">Kasa</option>
+                    <option value="bank">Tekući račun</option>
+                  </select>
+                </label>
 
-              <label className="text-xs text-slate-600 space-y-1">
-                Iznos (KM)
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-                  value={manualAmount}
-                  onChange={(e) => setManualAmount(e.target.value)}
-                  required
-                />
-              </label>
+                <label className="space-y-1 text-xs font-medium text-slate-600">
+                  Iznos KM
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                    value={manualAmount}
+                    onChange={(e) => setManualAmount(e.target.value)}
+                    required
+                  />
+                </label>
+              </div>
 
-              <label className="text-xs text-slate-600 space-y-1">
-                Opis (npr. bankarska provizija, članarina...)
+              <label className="space-y-1 text-xs font-medium text-slate-600">
+                Opis
                 <input
                   type="text"
-                  className="w-full rounded-md border border-slate-300 px-2 py-1.5 text-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
                   value={manualDescription}
                   onChange={(e) => setManualDescription(e.target.value)}
                   placeholder="npr. Bankarska provizija za kartično plaćanje"
@@ -330,21 +330,24 @@ export default function KprPage() {
               </label>
 
               {manualError && (
-                <p className="text-xs text-red-600">{manualError}</p>
+                <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                  {manualError}
+                </div>
               )}
 
-              <div className="flex items-center justify-end gap-2 pt-1">
+              <div className="flex items-center justify-end gap-2 border-t border-slate-100 pt-4">
                 <button
                   type="button"
                   onClick={() => setIsManualModalOpen(false)}
-                  className="rounded-md border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
                 >
                   Otkaži
                 </button>
+
                 <button
                   type="submit"
                   disabled={isSavingManual}
-                  className="inline-flex items-center rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-slate-800 disabled:opacity-60"
+                  className="rounded-xl bg-slate-950 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
                 >
                   {isSavingManual ? "Spašavam..." : "Snimi unos"}
                 </button>
@@ -354,295 +357,355 @@ export default function KprPage() {
         </div>
       )}
 
-      {/* HEADER */}
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-xl font-semibold text-slate-800">
-            Knjiga prihoda i rashoda (KPR)
-          </h2>
-          <p className="mt-1 text-xs text-slate-500">
-            Pregled svih prihoda i rashoda za tenant{" "}
-            <span className="font-mono">t-demo</span> prema izlaznim
-            fakturama, ulaznim fakturama i cash unosima.
-          </p>
-          <p className="mt-0.5 text-[11px] text-slate-400">
-            Ukupno stavki (prema filterima):{" "}
-            <span className="font-semibold text-slate-600">
-              {total}
-            </span>
-          </p>
-        </div>
+      <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+        <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 px-5 py-6 text-white sm:px-6">
+          <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+            <div className="max-w-3xl">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-300">
+                Evident · Finansijska evidencija
+              </p>
 
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setIsManualModalOpen(true)}
-            className="inline-flex items-center rounded-md bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-500"
-          >
-            + Novi KPR unos
-          </button>
+              <h1 className="mt-2 text-2xl font-semibold tracking-tight sm:text-3xl">
+                Knjiga prihoda i rashoda
+              </h1>
 
-          <button
-            type="button"
-            onClick={() => refetch()}
-            className="inline-flex items-center rounded-md border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm hover:bg-slate-50 disabled:opacity-60"
-            disabled={isLoading || isRefetching}
-          >
-            {isLoading || isRefetching ? "Osvježavam..." : "Osvježi podatke"}
-          </button>
+              <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
+                Centralni pregled svih prihodovnih i rashodovnih stavki iz
+                izlaznih faktura, ulaznih faktura i ručnih cash unosa za tenant{" "}
+                <span className="font-mono text-white">t-demo</span>.
+              </p>
 
-          <button
-            type="button"
-            onClick={handleExportPdf}
-            className="inline-flex items-center rounded-md bg-slate-900 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-slate-800"
-          >
-            📄 Export KPR (PDF)
-          </button>
+              <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-300">
+                <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">
+                  Ukupno stavki:{" "}
+                  <span className="font-semibold text-white">{total}</span>
+                </span>
 
-          <button
-            type="button"
-            onClick={handleExportExcel}
-            className="inline-flex items-center rounded-md bg-emerald-700 px-3 py-1.5 text-xs font-medium text-white shadow-sm hover:bg-emerald-600"
-          >
-            📊 Export KPR (Excel)
-          </button>
-        </div>
-      </div>
+                <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">
+                  Godina:{" "}
+                  <span className="font-semibold text-white">
+                    {year ?? "Sve"}
+                  </span>
+                </span>
 
-      {/* FILTER BAR */}
-      <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-        <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-          <div className="flex flex-wrap items-end gap-3">
-            {/* YEAR */}
-            <div>
-              <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                Godina
-              </label>
-              <select
-                value={year ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setYear(v === "" ? undefined : Number(v));
-                }}
-                className="mt-1 w-24 rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              >
-                <option value="">Sve</option>
-                <option value={CURRENT_YEAR}>{CURRENT_YEAR}</option>
-                <option value={CURRENT_YEAR - 1}>{CURRENT_YEAR - 1}</option>
-                <option value={CURRENT_YEAR - 2}>{CURRENT_YEAR - 2}</option>
-              </select>
-            </div>
-
-            {/* MONTH */}
-            <div>
-              <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                Mjesec
-              </label>
-              <select
-                value={month ?? ""}
-                onChange={(e) => {
-                  const v = e.target.value;
-                  setMonth(v === "" ? undefined : Number(v));
-                }}
-                className="mt-1 w-28 rounded-md border border-slate-300 px-2 py-1 text-xs text-slate-700 focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              >
-                <option value="">Svi</option>
-                <option value={1}>Januar</option>
-                <option value={2}>Februar</option>
-                <option value={3}>Mart</option>
-                <option value={4}>April</option>
-                <option value={5}>Maj</option>
-                <option value={6}>Jun</option>
-                <option value={7}>Jul</option>
-                <option value={8}>Avgust</option>
-                <option value={9}>Septembar</option>
-                <option value={10}>Oktobar</option>
-                <option value={11}>Novembar</option>
-                <option value={12}>Decembar</option>
-              </select>
-            </div>
-
-            {/* KIND FILTER */}
-            <div>
-              <label className="block text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-                Vrsta
-              </label>
-              <div className="mt-1 flex flex-wrap gap-1">
-                <button
-                  type="button"
-                  onClick={() => setKindFilter("ALL")}
-                  className={[
-                    "rounded-full px-3 py-1 text-[11px] border",
-                    kindFilter === "ALL"
-                      ? "bg-slate-900 text-white border-slate-900"
-                      : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50",
-                  ].join(" ")}
-                >
-                  Sve
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setKindFilter("INCOME")}
-                  className={[
-                    "rounded-full px-3 py-1 text-[11px] border",
-                    kindFilter === "INCOME"
-                      ? "bg-emerald-600 text-white border-emerald-600"
-                      : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50",
-                  ].join(" ")}
-                >
-                  Prihodi
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setKindFilter("EXPENSE")}
-                  className={[
-                    "rounded-full px-3 py-1 text-[11px] border",
-                    kindFilter === "EXPENSE"
-                      ? "bg-amber-500 text-white border-amber-500"
-                      : "bg-white text-slate-700 border-slate-300 hover:bg-slate-50",
-                  ].join(" ")}
-                >
-                  Rashodi
-                </button>
+                <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1">
+                  Mjesec:{" "}
+                  <span className="font-semibold text-white">
+                    {month ?? "Svi"}
+                  </span>
+                </span>
               </div>
             </div>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setIsManualModalOpen(true)}
+                className="rounded-2xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-400"
+              >
+                + Novi KPR unos
+              </button>
+
+              <button
+                type="button"
+                onClick={() => refetch()}
+                disabled={isLoading || isRefetching}
+                className="rounded-2xl border border-white/10 bg-white/10 px-4 py-2 text-xs font-semibold text-white backdrop-blur transition hover:bg-white/15 disabled:opacity-60"
+              >
+                {isLoading || isRefetching
+                  ? "Osvježavam..."
+                  : "Osvježi podatke"}
+              </button>
+
+              <button
+                type="button"
+                onClick={handleExportPdf}
+                className="rounded-2xl border border-white/10 bg-white/10 px-4 py-2 text-xs font-semibold text-white backdrop-blur transition hover:bg-white/15"
+              >
+                PDF
+              </button>
+
+              <button
+                type="button"
+                onClick={handleExportExcel}
+                className="rounded-2xl border border-white/10 bg-white/10 px-4 py-2 text-xs font-semibold text-white backdrop-blur transition hover:bg-white/15"
+              >
+                Excel
+              </button>
+            </div>
           </div>
 
-          <div className="flex gap-2">
-            <button
-              type="button"
-              onClick={() => {
-                setYear(CURRENT_YEAR);
-                setMonth(CURRENT_MONTH);
-                setKindFilter("ALL");
+          <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-2xl border border-white/10 bg-white/10 p-4 backdrop-blur">
+              <p className="text-xs text-slate-300">Ukupni prihodi</p>
+              <p className="mt-2 text-2xl font-semibold text-emerald-300">
+                {formatAmount(totals.income)}
+              </p>
+              <p className="mt-1 text-[11px] text-slate-400">
+                Prihodi iz faktura i ručnih unosa.
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-white/10 p-4 backdrop-blur">
+              <p className="text-xs text-slate-300">Ukupni rashodi</p>
+              <p className="mt-2 text-2xl font-semibold text-amber-300">
+                {formatAmount(totals.expense)}
+              </p>
+              <p className="mt-1 text-[11px] text-slate-400">
+                Rashodi iz ulaznih faktura i ručnih unosa.
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-white/10 p-4 backdrop-blur">
+              <p className="text-xs text-slate-300">Neto rezultat</p>
+              <p className="mt-2 text-2xl font-semibold text-white">
+                {formatAmount(totals.net)}
+              </p>
+              <p className="mt-1 text-[11px] text-slate-400">
+                Prihodi minus rashodi.
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-white/10 p-4 backdrop-blur">
+              <p className="text-xs text-slate-300">Prikazane stavke</p>
+              <p className="mt-2 text-2xl font-semibold text-white">
+                {filteredItems.length}
+              </p>
+              <p className="mt-1 text-[11px] text-slate-400">
+                Trenutno filtrirane stavke.
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-3xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              Filteri pregleda
+            </p>
+            <h2 className="mt-1 text-lg font-semibold text-slate-900">
+              Period i vrsta stavke
+            </h2>
+            <p className="mt-1 text-xs text-slate-500">
+              Filteri kontrolišu period učitavanja i lokalni prikaz
+              prihodovnih/rashodovnih stavki.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setYear(CURRENT_YEAR);
+              setMonth(CURRENT_MONTH);
+              setKindFilter("ALL");
+            }}
+            className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 sm:w-auto"
+          >
+            Reset filtera
+          </button>
+        </div>
+
+        <div className="mt-5 grid gap-3 md:grid-cols-3">
+          <label className="space-y-1 text-xs font-medium text-slate-600">
+            Godina
+            <select
+              value={year ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                setYear(v === "" ? undefined : Number(v));
               }}
-              className="rounded-md border border-slate-200 px-3 py-1.5 text-xs text-slate-600 hover:bg-slate-50"
+              className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
             >
-              Reset filtera
-            </button>
-          </div>
-        </div>
-      </div>
+              <option value="">Sve godine</option>
+              <option value={CURRENT_YEAR}>{CURRENT_YEAR}</option>
+              <option value={CURRENT_YEAR - 1}>{CURRENT_YEAR - 1}</option>
+              <option value={CURRENT_YEAR - 2}>{CURRENT_YEAR - 2}</option>
+            </select>
+          </label>
 
-      {/* SUMARNA TRAKA */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-          <div className="font-semibold text-[11px] uppercase tracking-wide">
-            Ukupni prihodi
-          </div>
-          <div className="mt-1 text-sm font-semibold">
-            {formatAmount(totals.income)}
-          </div>
-        </div>
-        <div className="rounded-xl border border-amber-100 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-          <div className="font-semibold text-[11px] uppercase tracking-wide">
-            Ukupni rashodi
-          </div>
-          <div className="mt-1 text-sm font-semibold">
-            {formatAmount(totals.expense)}
-          </div>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-800">
-          <div className="font-semibold text-[11px] uppercase tracking-wide">
-            Osnova za 2% (prihodi - rashodi)
-          </div>
-          <div className="mt-1 text-sm font-semibold">
-            {formatAmount(totals.net)}
-          </div>
-        </div>
-      </div>
+          <label className="space-y-1 text-xs font-medium text-slate-600">
+            Mjesec
+            <select
+              value={month ?? ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                setMonth(v === "" ? undefined : Number(v));
+              }}
+              className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+            >
+              <option value="">Svi mjeseci</option>
+              <option value={1}>Januar</option>
+              <option value={2}>Februar</option>
+              <option value={3}>Mart</option>
+              <option value={4}>April</option>
+              <option value={5}>Maj</option>
+              <option value={6}>Jun</option>
+              <option value={7}>Jul</option>
+              <option value={8}>Avgust</option>
+              <option value={9}>Septembar</option>
+              <option value={10}>Oktobar</option>
+              <option value={11}>Novembar</option>
+              <option value={12}>Decembar</option>
+            </select>
+          </label>
 
-      {/* TABELA KPR */}
-      <div className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
-        <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 text-[11px] text-slate-500">
-          <span>
-            Ukupno stavki:{" "}
-            <span className="font-mono font-semibold text-slate-700">
-              {total}
-            </span>{" "}
-            • Prikazano:{" "}
-            <span className="font-mono font-semibold text-slate-700">
+          <div className="space-y-1">
+            <p className="text-xs font-medium text-slate-600">Vrsta</p>
+            <div className="grid grid-cols-3 gap-1 rounded-2xl border border-slate-200 bg-slate-50 p-1">
+              <button
+                type="button"
+                onClick={() => setKindFilter("ALL")}
+                className={[
+                  "rounded-xl px-2 py-2 text-xs font-semibold transition",
+                  kindFilter === "ALL"
+                    ? "bg-white text-slate-950 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800",
+                ].join(" ")}
+              >
+                Sve
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setKindFilter("INCOME")}
+                className={[
+                  "rounded-xl px-2 py-2 text-xs font-semibold transition",
+                  kindFilter === "INCOME"
+                    ? "bg-white text-emerald-700 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800",
+                ].join(" ")}
+              >
+                Prihodi
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setKindFilter("EXPENSE")}
+                className={[
+                  "rounded-xl px-2 py-2 text-xs font-semibold transition",
+                  kindFilter === "EXPENSE"
+                    ? "bg-white text-amber-700 shadow-sm"
+                    : "text-slate-500 hover:text-slate-800",
+                ].join(" ")}
+              >
+                Rashodi
+              </button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-3 border-b border-slate-100 bg-slate-50 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+          <div>
+            <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+              KPR stavke
+            </p>
+            <h2 className="mt-1 text-base font-semibold text-slate-900">
+              Detaljna evidencija
+            </h2>
+          </div>
+
+          <p className="text-xs text-slate-500">
+            Ukupno:{" "}
+            <span className="font-semibold text-slate-800">{total}</span> ·
+            Prikazano:{" "}
+            <span className="font-semibold text-slate-800">
               {filteredItems.length}
             </span>
-          </span>
-          <span className="hidden sm:inline">
-            Lista se puni iz izlaznih/ulaznih faktura i cash unosa po principu
-            blagajne.
-          </span>
+          </p>
         </div>
 
         {isLoading && (
-          <p className="px-3 py-3 text-sm text-slate-600">
-            Učitavam KPR stavke...
-          </p>
+          <div className="p-8 text-center">
+            <p className="text-sm font-medium text-slate-700">
+              Učitavam KPR stavke...
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Podaci se učitavaju iz evidencije faktura i cash unosa.
+            </p>
+          </div>
         )}
 
         {isError && (
-          <p className="px-3 py-3 text-sm text-red-600">
+          <div className="m-5 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
             Greška pri učitavanju KPR podataka:{" "}
             {error?.message ?? "Nepoznata greška"}
-          </p>
+          </div>
         )}
 
         {!isLoading && !isError && total === 0 && (
-          <p className="px-3 py-3 text-sm text-slate-500">
-            Trenutno nema stavki za zadane filtere.
-          </p>
+          <div className="p-10 text-center">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-100 text-xl">
+              📘
+            </div>
+            <h3 className="mt-4 text-base font-semibold text-slate-900">
+              Nema KPR stavki za odabrani period
+            </h3>
+            <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">
+              Kada se kreiraju izlazne fakture, ulazne fakture ili ručni cash
+              unosi, ovdje će se pojaviti evidencija prihoda i rashoda.
+            </p>
+          </div>
         )}
 
         {!isLoading && !isError && total > 0 && filteredItems.length === 0 && (
-          <p className="px-3 py-3 text-sm text-slate-500">
-            Nema stavki za odabrani filter vrste (prihod/rashod).
-          </p>
+          <div className="p-8 text-center">
+            <h3 className="text-base font-semibold text-slate-900">
+              Nema stavki za odabrani filter
+            </h3>
+            <p className="mt-2 text-sm text-slate-500">
+              Promijeni filter vrste ili resetuj filtere da vidiš sve stavke.
+            </p>
+          </div>
         )}
 
         {!isLoading && !isError && filteredItems.length > 0 && (
-          <div className="overflow-x-auto max-h-[520px] overflow-y-auto">
+          <div className="max-h-[560px] overflow-auto">
             <table className="min-w-full text-xs">
-              <thead className="bg-slate-50 text-slate-500 sticky top-0 z-10">
-                <tr>
-                  <th className="px-3 py-2 text-left font-medium whitespace-nowrap">
+              <thead className="sticky top-0 z-10 bg-white text-slate-500 shadow-sm">
+                <tr className="border-b border-slate-100">
+                  <th className="whitespace-nowrap px-4 py-3 text-left font-semibold">
                     Datum
                   </th>
-                  <th className="px-3 py-2 text-left font-medium">
-                    Vrsta
-                  </th>
-                  <th className="px-3 py-2 text-left font-medium">
-                    Konto
-                  </th>
-                  <th className="px-3 py-2 text-left font-medium">
+                  <th className="px-4 py-3 text-left font-semibold">Vrsta</th>
+                  <th className="px-4 py-3 text-left font-semibold">Konto</th>
+                  <th className="px-4 py-3 text-left font-semibold">
                     Kategorija
                   </th>
-                  <th className="px-3 py-2 text-left font-medium">
+                  <th className="px-4 py-3 text-left font-semibold">
                     Referenca
                   </th>
-                  <th className="px-3 py-2 text-left font-medium">
-                    Kupac / Dobavljač
+                  <th className="px-4 py-3 text-left font-semibold">
+                    Kupac / dobavljač
                   </th>
-                  <th className="px-3 py-2 text-left font-medium">
+                  <th className="px-4 py-3 text-left font-semibold">
                     Dok. broj
                   </th>
-                  <th className="px-3 py-2 text-left font-medium">
-                    Opis
-                  </th>
-                  <th className="px-3 py-2 text-right font-medium">
-                    Iznos
-                  </th>
-                  <th className="px-3 py-2 text-center font-medium whitespace-nowrap">
+                  <th className="px-4 py-3 text-left font-semibold">Opis</th>
+                  <th className="px-4 py-3 text-right font-semibold">Iznos</th>
+                  <th className="whitespace-nowrap px-4 py-3 text-center font-semibold">
                     Poreski priznat
                   </th>
                 </tr>
               </thead>
+
               <tbody className="divide-y divide-slate-100 text-slate-700">
                 {filteredItems.map((row) => (
-                  <tr key={`${row.source}-${row.source_id}-${row.date}`}>
-                    <td className="px-3 py-1.5 whitespace-nowrap">
+                  <tr
+                    key={`${row.source}-${row.source_id}-${row.date}`}
+                    className="transition hover:bg-slate-50"
+                  >
+                    <td className="whitespace-nowrap px-4 py-3 font-medium text-slate-900">
                       {formatDate(row.date)}
                     </td>
-                    <td className="px-3 py-1.5 whitespace-nowrap">
+
+                    <td className="whitespace-nowrap px-4 py-3">
                       <span
                         className={[
-                          "inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                          "inline-flex rounded-full px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide",
                           row.kind === "income"
                             ? "bg-emerald-50 text-emerald-700"
                             : "bg-amber-50 text-amber-700",
@@ -651,40 +714,48 @@ export default function KprPage() {
                         {formatKind(row.kind)}
                       </span>
                     </td>
-                    <td className="px-3 py-1.5 whitespace-nowrap text-[11px]">
+
+                    <td className="whitespace-nowrap px-4 py-3 text-[11px]">
                       {formatAccount(row)}
                     </td>
-                    <td className="px-3 py-1.5 whitespace-nowrap text-[11px]">
+
+                    <td className="whitespace-nowrap px-4 py-3 text-[11px]">
                       {formatCategory(row.category)}
                     </td>
-                    <td className="px-3 py-1.5 whitespace-nowrap text-[11px]">
+
+                    <td className="whitespace-nowrap px-4 py-3 text-[11px]">
                       {formatReference(row)}
                     </td>
-                    <td className="px-3 py-1.5 text-[11px]">
+
+                    <td className="px-4 py-3 text-[11px]">
                       {row.counterparty ?? (
                         <span className="text-slate-400">-</span>
                       )}
                     </td>
-                    <td className="px-3 py-1.5 text-[11px] font-mono">
+
+                    <td className="px-4 py-3 font-mono text-[11px]">
                       {row.document_number ?? (
                         <span className="text-slate-400">-</span>
                       )}
                     </td>
-                    <td className="px-3 py-1.5 text-[11px] max-w-[260px]">
+
+                    <td className="max-w-[280px] px-4 py-3 text-[11px]">
                       {row.description ?? (
                         <span className="text-slate-400">-</span>
                       )}
                     </td>
-                    <td className="px-3 py-1.5 text-right font-medium">
+
+                    <td className="whitespace-nowrap px-4 py-3 text-right font-semibold text-slate-900">
                       {formatAmount(row.amount)}
                     </td>
-                    <td className="px-3 py-1.5 text-center">
+
+                    <td className="px-4 py-3 text-center">
                       {row.tax_deductible ? (
-                        <span className="inline-flex rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
+                        <span className="inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-700">
                           DA
                         </span>
                       ) : (
-                        <span className="inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-500">
+                        <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-500">
                           NE
                         </span>
                       )}
@@ -695,7 +766,7 @@ export default function KprPage() {
             </table>
           </div>
         )}
-      </div>
+      </section>
     </div>
   );
 }
