@@ -76,6 +76,12 @@ export interface ProfileSettingsRead {
   business_name: string;
   address: string | null;
   tax_id: string | null;
+  phone: string | null;
+  email: string | null;
+  bank_name: string | null;
+  bank_account: string | null;
+  iban: string | null;
+  swift_bic: string | null;
 
   // Back-compat (staro)
   logo_attachment_id: number | null;
@@ -88,10 +94,15 @@ export interface ProfileSettingsUpsert {
   business_name: string;
   address?: string | null;
   tax_id?: string | null;
+  phone?: string | null;
+  email?: string | null;
+  bank_name?: string | null;
+  bank_account?: string | null;
+  iban?: string | null;
+  swift_bic?: string | null;
 
   // Zadržano radi kompatibilnosti sa backendom:
-  // VAŽNO: backend u PUT /settings/profile trenutno uvijek setuje row.logo_asset_id = payload.logo_asset_id,
-  // pa moramo slati trenutnu vrijednost da se logo ne "obriše" nenamjerno.
+  // Logo polja se mijenjaju samo kada su eksplicitno uključena u PUT payload.
   logo_attachment_id?: number | null;
   logo_asset_id?: number | null;
 }

@@ -29,6 +29,12 @@ export async function putProfileSettings(
     business_name: payload.business_name,
     address: payload.address ?? null,
     tax_id: payload.tax_id ?? null,
+    phone: payload.phone ?? null,
+    email: payload.email ?? null,
+    bank_name: payload.bank_name ?? null,
+    bank_account: payload.bank_account ?? null,
+    iban: payload.iban ?? null,
+    swift_bic: payload.swift_bic ?? null,
   };
 
   // Opciona polja (legacy/new) uključujemo samo ako su eksplicitno poslata
@@ -77,6 +83,12 @@ function normalizeProfile(r: any): ProfileSettingsRead {
     business_name: String(r.business_name ?? ""),
     address: r.address ?? null,
     tax_id: r.tax_id ?? null,
+    phone: r.phone ?? null,
+    email: r.email ?? null,
+    bank_name: r.bank_name ?? null,
+    bank_account: r.bank_account ?? null,
+    iban: r.iban ?? null,
+    swift_bic: r.swift_bic ?? null,
     logo_attachment_id:
       r.logo_attachment_id == null ? null : Number(r.logo_attachment_id),
     logo_asset_id: r.logo_asset_id == null ? null : Number(r.logo_asset_id),

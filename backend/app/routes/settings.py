@@ -575,6 +575,29 @@ def upsert_profile_settings(
 
     fields_set = payload.model_fields_set  # pydantic v2: koja su polja eksplicitno poslata
 
+    if "logo_asset_id" in fields_set and payload.logo_asset_id is not None:
+        logo_asset = db.execute(
+            select(TenantAsset).where(
+                TenantAsset.id == payload.logo_asset_id,
+                TenantAsset.tenant_code == tenant,
+            )
+        ).scalar_one_or_none()
+        if logo_asset is None:
+            raise HTTPException(status_code=400, detail="Invalid logo asset")
+
+    optional_profile_fields = (
+        "address",
+        "tax_id",
+        "phone",
+        "email",
+        "bank_name",
+        "bank_account",
+        "iban",
+        "swift_bic",
+        "logo_attachment_id",
+        "logo_asset_id",
+    )
+
     if row is None:
         row = TenantProfileSettings(
             tenant_code=tenant,
@@ -583,14 +606,9 @@ def upsert_profile_settings(
         db.add(row)
 
         # Opcionalna polja postavljamo samo ako su poslata u payload-u
-        if "address" in fields_set:
-            row.address = payload.address
-        if "tax_id" in fields_set:
-            row.tax_id = payload.tax_id
-        if "logo_attachment_id" in fields_set:
-            row.logo_attachment_id = payload.logo_attachment_id
-        if "logo_asset_id" in fields_set:
-            row.logo_asset_id = payload.logo_asset_id
+        for field_name in optional_profile_fields:
+            if field_name in fields_set:
+                setattr(row, field_name, getattr(payload, field_name))
 
         db.commit()
         db.refresh(row)
@@ -600,18 +618,9 @@ def upsert_profile_settings(
     row.business_name = payload.business_name
 
     # Opcionalna polja: mijenjamo samo ako su eksplicitno poslata
-    if "address" in fields_set:
-        row.address = payload.address
-    if "tax_id" in fields_set:
-        row.tax_id = payload.tax_id
-
-    # Back-compat (staro):
-    if "logo_attachment_id" in fields_set:
-        row.logo_attachment_id = payload.logo_attachment_id
-
-    # Novo:
-    if "logo_asset_id" in fields_set:
-        row.logo_asset_id = payload.logo_asset_id
+    for field_name in optional_profile_fields:
+        if field_name in fields_set:
+            setattr(row, field_name, getattr(payload, field_name))
 
     db.commit()
     db.refresh(row)

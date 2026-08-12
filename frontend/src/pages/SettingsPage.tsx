@@ -1,6 +1,7 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/SettingsPage.tsx
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import axios from "axios";
 
 import type {
   ProfileSettingsRead,
@@ -32,6 +33,47 @@ function toNumberOrNull(value: string): number | null {
   const n = Number(trimmed);
   if (!Number.isFinite(n)) return null;
   return n;
+}
+
+function isValidOptionalEmail(value: string): boolean {
+  const email = value.trim();
+  if (!email) return true;
+  if (/\s/.test(email)) return false;
+  if ((email.match(/@/g) ?? []).length !== 1) return false;
+
+  const [local, domain] = email.split("@");
+  return Boolean(
+    local &&
+      domain &&
+      domain.includes(".") &&
+      !domain.startsWith(".") &&
+      !domain.endsWith("."),
+  );
+}
+
+function getProfileSaveErrorMessage(error: unknown): string {
+  if (
+    error instanceof Error &&
+    (error.message === "Naziv poslovanja je obavezan." ||
+      error.message === "Unesite ispravnu email adresu.")
+  ) {
+    return error.message;
+  }
+
+  if (axios.isAxiosError(error) && error.response?.status === 422) {
+    const detail = error.response.data?.detail;
+    if (
+      Array.isArray(detail) &&
+      detail.some(
+        (item) =>
+          Array.isArray(item?.loc) && item.loc[item.loc.length - 1] === "email",
+      )
+    ) {
+      return "Unesite ispravnu email adresu.";
+    }
+  }
+
+  return "Profil nije moguće sačuvati. Pokušajte ponovo.";
 }
 
 function formatTenantLabel(tenantCode?: string | null): string {
@@ -145,6 +187,12 @@ export default function SettingsPage() {
     business_name: "",
     address: "",
     tax_id: "",
+    phone: "",
+    email: "",
+    bank_name: "",
+    bank_account: "",
+    iban: "",
+    swift_bic: "",
   });
 
   const [taxForm, setTaxForm] = useState<{
@@ -176,6 +224,12 @@ export default function SettingsPage() {
       business_name: p.business_name ?? "",
       address: p.address ?? "",
       tax_id: p.tax_id ?? "",
+      phone: p.phone ?? "",
+      email: p.email ?? "",
+      bank_name: p.bank_name ?? "",
+      bank_account: p.bank_account ?? "",
+      iban: p.iban ?? "",
+      swift_bic: p.swift_bic ?? "",
     });
   }, [profileQuery.data]);
 
@@ -353,10 +407,19 @@ export default function SettingsPage() {
       if (!profileForm.business_name.trim()) {
         throw new Error("Naziv poslovanja je obavezan.");
       }
+      if (!isValidOptionalEmail(profileForm.email)) {
+        throw new Error("Unesite ispravnu email adresu.");
+      }
       return putProfileSettings({
         business_name: profileForm.business_name.trim(),
         address: profileForm.address.trim() ? profileForm.address.trim() : null,
         tax_id: profileForm.tax_id.trim() ? profileForm.tax_id.trim() : null,
+        phone: profileForm.phone,
+        email: profileForm.email,
+        bank_name: profileForm.bank_name,
+        bank_account: profileForm.bank_account,
+        iban: profileForm.iban,
+        swift_bic: profileForm.swift_bic,
       });
     },
     onSuccess: async () => {
@@ -637,6 +700,83 @@ export default function SettingsPage() {
                 />
               </label>
 
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="space-y-1 text-xs font-medium text-slate-600">
+                  Telefon
+                  <input
+                    value={profileForm.phone}
+                    onChange={(e) =>
+                      setProfileForm((p) => ({ ...p, phone: e.target.value }))
+                    }
+                    maxLength={64}
+                    className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                    placeholder="+387..."
+                  />
+                </label>
+                <label className="space-y-1 text-xs font-medium text-slate-600">
+                  Email
+                  <input
+                    type="email"
+                    value={profileForm.email}
+                    onChange={(e) =>
+                      setProfileForm((p) => ({ ...p, email: e.target.value }))
+                    }
+                    maxLength={254}
+                    className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                    placeholder="firma@example.com"
+                  />
+                </label>
+              </div>
+
+              <label className="space-y-1 text-xs font-medium text-slate-600">
+                Naziv banke
+                <input
+                  value={profileForm.bank_name}
+                  onChange={(e) =>
+                    setProfileForm((p) => ({ ...p, bank_name: e.target.value }))
+                  }
+                  maxLength={128}
+                  className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                />
+              </label>
+
+              <label className="space-y-1 text-xs font-medium text-slate-600">
+                Broj bankovnog računa
+                <input
+                  value={profileForm.bank_account}
+                  onChange={(e) =>
+                    setProfileForm((p) => ({ ...p, bank_account: e.target.value }))
+                  }
+                  maxLength={128}
+                  className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                />
+              </label>
+
+              <div className="grid gap-4 sm:grid-cols-2">
+                <label className="space-y-1 text-xs font-medium text-slate-600">
+                  IBAN
+                  <input
+                    value={profileForm.iban}
+                    onChange={(e) =>
+                      setProfileForm((p) => ({ ...p, iban: e.target.value }))
+                    }
+                    maxLength={64}
+                    className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                  />
+                </label>
+                <label className="space-y-1 text-xs font-medium text-slate-600">
+                  SWIFT/BIC
+                  <input
+                    value={profileForm.swift_bic}
+                    onChange={(e) =>
+                      setProfileForm((p) => ({ ...p, swift_bic: e.target.value }))
+                    }
+                    maxLength={32}
+                    className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+                  />
+                </label>
+              </div>
+
               <div className="rounded-3xl border border-slate-200 bg-slate-50 p-4">
                 <div className="flex items-start justify-between gap-3">
                   <div>
@@ -657,12 +797,12 @@ export default function SettingsPage() {
                 </div>
 
                 <div className="mt-4 grid gap-4">
-                  <div className="grid h-36 place-items-center overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+                  <div className="mx-auto grid aspect-square w-full max-w-48 place-items-center overflow-hidden rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
                     {logoObjectUrl ? (
                       <img
                         src={logoObjectUrl}
                         alt="Logo preview"
-                        className="max-h-full max-w-full object-contain"
+                        className="h-full w-full object-contain object-center"
                         onError={() => {
                           setLogoObjectUrl((prev) => {
                             if (prev) URL.revokeObjectURL(prev);
@@ -723,11 +863,15 @@ export default function SettingsPage() {
                 </div>
               </div>
 
+              {profileMutation.isSuccess && (
+                <p className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-medium text-emerald-800">
+                  Profil je uspješno sačuvan.
+                </p>
+              )}
+
               {profileMutation.error && (
-                <p className="text-xs text-red-600">
-                  {profileMutation.error instanceof Error
-                    ? profileMutation.error.message
-                    : "Greška pri snimanju."}
+                <p className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-medium text-red-700">
+                  {getProfileSaveErrorMessage(profileMutation.error)}
                 </p>
               )}
 

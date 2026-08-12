@@ -718,6 +718,12 @@ class TenantProfileSettings(Base):
     business_name = Column(String(256), nullable=False)
     address = Column(String(256), nullable=True)
     tax_id = Column(String(64), nullable=True)
+    phone = Column(String(64), nullable=True)
+    email = Column(String(254), nullable=True)
+    bank_name = Column(String(128), nullable=True)
+    bank_account = Column(String(128), nullable=True)
+    iban = Column(String(64), nullable=True)
+    swift_bic = Column(String(32), nullable=True)
 
     # Back-compat (staro rješenje):
     logo_attachment_id = Column(
