@@ -143,6 +143,8 @@ class Invoice(Base):
 
     buyer_name = Column(String(128), nullable=False)
     buyer_address = Column(String(256), nullable=True)
+    buyer_type = Column(String(16), nullable=False, default="UNSPECIFIED")
+    buyer_tax_id = Column(String(64), nullable=True)
 
     note = Column(Text, nullable=True)
 
@@ -161,6 +163,14 @@ class Invoice(Base):
             "tenant_code",
             "invoice_number",
             name="uq_invoice_number_per_tenant",
+        ),
+        CheckConstraint(
+            "buyer_type in ('BUSINESS','INDIVIDUAL','UNSPECIFIED')",
+            name="ck_invoices_buyer_type",
+        ),
+        CheckConstraint(
+            "buyer_type != 'INDIVIDUAL' OR buyer_tax_id IS NULL",
+            name="ck_invoices_individual_without_tax_id",
         ),
     )
 

@@ -445,14 +445,22 @@ export default function InvoiceDetailPage() {
                 <InfoLine label="Broj fakture" value={invoice.invoice_number} mono />
                 <InfoLine label="ID fakture" value={invoice.id} mono />
                 <InfoLine
-                  label="Kupac"
+                  label={invoice.buyer_type === "INDIVIDUAL" ? "Ime i prezime" : "Kupac"}
                   value={invoice.buyer_name || "Nepoznat kupac"}
                 />
                 <InfoLine
-                  label="JIB / PIB"
-                  value={invoice.buyer_tax_id || "Nije uneseno"}
-                  mono
+                  label="Tip kupca"
+                  value={
+                    invoice.buyer_type === "BUSINESS"
+                      ? "Pravno lice / preduzetnik"
+                      : invoice.buyer_type === "INDIVIDUAL"
+                        ? "Fizičko lice"
+                        : "Nije određeno"
+                  }
                 />
+                {invoice.buyer_type === "BUSINESS" && invoice.buyer_tax_id && (
+                  <InfoLine label="JIB / PIB" value={invoice.buyer_tax_id} mono />
+                )}
                 <InfoLine label="Datum izdavanja" value={formatDate(invoice.issue_date)} />
                 <InfoLine label="Rok plaćanja" value={formatDate(invoice.due_date)} />
               </div>

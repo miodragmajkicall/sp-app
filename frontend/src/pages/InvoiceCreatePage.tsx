@@ -7,6 +7,7 @@ import { createInvoice, fetchInvoicesList } from "../services/invoicesApi";
 import type {
   InvoiceListResponse,
   InvoiceCreatePayload,
+  NewInvoiceBuyerType,
 } from "../types/invoice";
 
 type InvoiceItem = {
@@ -89,6 +90,7 @@ export default function InvoiceCreatePage() {
   );
   const [number, setNumber] = useState("");
 
+  const [buyerType, setBuyerType] = useState<NewInvoiceBuyerType | "">("");
   const [buyerName, setBuyerName] = useState("");
   const [buyerAddress, setBuyerAddress] = useState("");
   const [buyerIdNumber, setBuyerIdNumber] = useState("");
@@ -301,6 +303,12 @@ export default function InvoiceCreatePage() {
       return;
     }
 
+    if (!buyerType) {
+      setSaving(false);
+      setErrorMsg("Odaberi tip kupca.");
+      return;
+    }
+
     if (!buyerName.trim()) {
       setSaving(false);
       setErrorMsg("Unesi naziv kupca (obavezno polje).");
@@ -310,9 +318,10 @@ export default function InvoiceCreatePage() {
     try {
       const payload: InvoiceCreatePayload = {
         number,
+        buyer_type: buyerType,
         buyer_name: buyerName.trim(),
         buyer_address: buyerAddress || null,
-        buyer_tax_id: buyerIdNumber || null,
+        buyer_tax_id: buyerType === "BUSINESS" ? buyerIdNumber || null : null,
         issue_date: issueDate,
         due_date: dueDate || null,
         note: note.trim() || null,
@@ -478,7 +487,29 @@ export default function InvoiceCreatePage() {
               <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
                 <div>
                   <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    Naziv kupca *
+                    Tip kupca *
+                  </label>
+                  <select
+                    required
+                    value={buyerType}
+                    onChange={(e) => {
+                      const nextType = e.target.value as NewInvoiceBuyerType | "";
+                      setBuyerType(nextType);
+                      if (nextType === "INDIVIDUAL") {
+                        setBuyerIdNumber("");
+                      }
+                    }}
+                    className="input bg-white"
+                  >
+                    <option value="">— Odaberi tip kupca —</option>
+                    <option value="BUSINESS">Pravno lice / preduzetnik</option>
+                    <option value="INDIVIDUAL">Fizičko lice</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    {buyerType === "INDIVIDUAL" ? "Ime i prezime *" : "Naziv kupca *"}
                   </label>
                   <input
                     type="text"
@@ -503,21 +534,20 @@ export default function InvoiceCreatePage() {
                   />
                 </div>
 
-                <div>
-                  <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                    JIB / PIB kupca
-                  </label>
-                  <input
-                    type="text"
-                    value={buyerIdNumber}
-                    onChange={(e) => setBuyerIdNumber(e.target.value)}
-                    className="input bg-white"
-                    placeholder="npr. 4401234560001"
-                  />
-                  <p className="mt-1.5 text-xs text-slate-400">
-                    Čuva se u backendu i koristi za prikaz/PDF fakturu.
-                  </p>
-                </div>
+                {buyerType === "BUSINESS" && (
+                  <div>
+                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      JIB / PIB kupca
+                    </label>
+                    <input
+                      type="text"
+                      value={buyerIdNumber}
+                      onChange={(e) => setBuyerIdNumber(e.target.value)}
+                      className="input bg-white"
+                      placeholder="npr. 4401234560001"
+                    />
+                  </div>
+                )}
               </div>
             </div>
           </section>

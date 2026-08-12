@@ -1,5 +1,8 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/types/invoice.ts
 
+export type BuyerType = "BUSINESS" | "INDIVIDUAL" | "UNSPECIFIED";
+export type NewInvoiceBuyerType = Exclude<BuyerType, "UNSPECIFIED">;
+
 // Red za tabelu "Izlazne fakture"
 export interface InvoiceRowItem {
   id: number;
@@ -29,6 +32,7 @@ export interface InvoiceCreateItemPayload {
 // Payload za kreiranje fakture sa više stavki
 export interface InvoiceCreatePayload {
   number: string;
+  buyer_type: NewInvoiceBuyerType;
   buyer_name: string;
   buyer_address?: string | null;
   buyer_tax_id?: string | null;
@@ -60,6 +64,7 @@ export interface InvoiceDetail {
   due_date: string | null;
   buyer_name: string;
   buyer_address: string | null;
+  buyer_type: BuyerType;
   buyer_tax_id: string | null;
   total_base: number;
   total_vat: number;

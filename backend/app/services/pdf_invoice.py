@@ -96,6 +96,11 @@ def render_invoice_pdf(invoice: "Invoice") -> bytes:
     lines.append(f"  {invoice.buyer_name or ''}")
     if invoice.buyer_address:
         lines.append(f"  Adresa: {invoice.buyer_address}")
+    if (
+        getattr(invoice, "buyer_type", "UNSPECIFIED") == "BUSINESS"
+        and getattr(invoice, "buyer_tax_id", None)
+    ):
+        lines.append(f"  JIB/PIB: {invoice.buyer_tax_id}")
     lines.append("")
 
     # ---------------------------------

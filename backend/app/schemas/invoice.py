@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import List, Optional
+from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
 BaseConfig = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -115,10 +115,24 @@ class InvoiceBase(BaseModel):
         None,
         description="Adresa kupca (opcionalno).",
     )
+    buyer_type: Literal["BUSINESS", "INDIVIDUAL", "UNSPECIFIED"] = Field(
+        "UNSPECIFIED",
+        description="Tip kupca.",
+    )
+    buyer_tax_id: Optional[str] = Field(
+        None,
+        description="JIB/PIB poslovnog kupca (opcionalno).",
+    )
     note: Optional[str] = Field(
         None,
         description="Napomena koja će se prikazati na fakturi (opcionalno).",
     )
+
+    @model_validator(mode="after")
+    def validate_buyer_tax_id(self):
+        if self.buyer_type == "INDIVIDUAL" and self.buyer_tax_id is not None:
+            raise ValueError("buyer_tax_id is not allowed for INDIVIDUAL buyer")
+        return self
 
 
 class InvoiceCreate(InvoiceBase):
@@ -134,6 +148,8 @@ class InvoiceCreate(InvoiceBase):
                 "due_date": "2025-12-21",
                 "buyer_name": "Frizer Salon Milica",
                 "buyer_address": "Kralja Petra I 12, Banja Luka",
+                "buyer_type": "BUSINESS",
+                "buyer_tax_id": "4401234560001",
                 "note": "Napomena na fakturi (opciono).",
                 "items": [
                     {

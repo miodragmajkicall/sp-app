@@ -72,6 +72,7 @@ function mapInvoiceDetail(raw: any): InvoiceDetail {
     due_date: raw.due_date ?? null,
     buyer_name: raw.buyer_name,
     buyer_address: raw.buyer_address ?? null,
+    buyer_type: raw.buyer_type ?? "UNSPECIFIED",
     buyer_tax_id: raw.buyer_tax_id ?? null,
     total_base: toNumberOrZero(raw.total_base),
     total_vat: toNumberOrZero(raw.total_vat),
@@ -140,6 +141,7 @@ export async function createInvoice(
 ): Promise<InvoiceDetail> {
   const backendPayload = {
     invoice_number: payload.number,
+    buyer_type: payload.buyer_type,
     buyer_name: payload.buyer_name,
     buyer_address: payload.buyer_address ?? null,
     buyer_tax_id: payload.buyer_tax_id ?? null,

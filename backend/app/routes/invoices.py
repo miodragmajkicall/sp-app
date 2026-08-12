@@ -241,6 +241,8 @@ def create_invoice(
         due_date=data.get("due_date"),
         buyer_name=data["buyer_name"],
         buyer_address=data.get("buyer_address"),
+        buyer_type=data["buyer_type"],
+        buyer_tax_id=data.get("buyer_tax_id"),
         total_base=_round_money(total_base),
         total_vat=_round_money(total_vat),
         total_amount=_round_money(total_amount),
