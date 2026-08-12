@@ -23,7 +23,7 @@ export interface InvoiceCreateItemPayload {
   quantity: number;
   unit_price: number;      // cijena bez PDV-a
   vat_rate: number;        // npr. 0.17
-  discount_percent?: number; // popust u %, npr. 0–100
+  discount_percent: number; // popust u %, 0 <= popust < 100
 }
 
 // Payload za kreiranje fakture sa više stavki

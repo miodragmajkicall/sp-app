@@ -102,7 +102,7 @@ def render_invoice_pdf(invoice: "Invoice") -> bytes:
     # 4) Tabela stavki
     # ---------------------------------
     lines.append("------------------------------------------------------------")
-    lines.append("Naziv stavke              Kolicina   Cijena (bez PDV)   Ukupno")
+    lines.append("Naziv stavke        Kol.    Cijena     Popust    Ukupno")
     lines.append("------------------------------------------------------------")
 
     if invoice.items:
@@ -110,11 +110,17 @@ def render_invoice_pdf(invoice: "Invoice") -> bytes:
             desc = (item.description or "").strip()
             qty = _as_float(getattr(item, "quantity", 0))
             unit_price = _as_float(getattr(item, "unit_price", 0))
+            discount_percent = _as_float(
+                getattr(item, "discount_percent", 0)
+            )
             total = _as_float(getattr(item, "total_amount", 0))
 
             # ograničimo opis na 25 znakova da ne rastegne red
-            short_desc = desc[:25]
-            line = f"{short_desc:25} {qty:8.2f} {unit_price:16.2f} {total:10.2f}"
+            short_desc = desc[:18]
+            line = (
+                f"{short_desc:18} {qty:6.2f} {unit_price:9.2f} "
+                f"{discount_percent:7.2f}% {total:9.2f}"
+            )
             lines.append(line)
     else:
         lines.append("(Nema evidentiranih stavki)")

@@ -34,6 +34,13 @@ class InvoiceItemBase(BaseModel):
         ge=0,
         description="Jedinična cijena (>= 0).",
     )
+    discount_percent: Decimal = Field(
+        Decimal("0.00"),
+        ge=0,
+        lt=100,
+        decimal_places=2,
+        description="Discount percentage per item (0 <= discount < 100).",
+    )
     vat_rate: Decimal = Field(
         ...,
         ge=0,
@@ -57,6 +64,7 @@ class InvoiceItemCreate(InvoiceItemBase):
                 "description": "Muško šišanje",
                 "quantity": "1",
                 "unit_price": "10.00",
+                "discount_percent": "0.00",
                 "vat_rate": "0.17",
             }
         },

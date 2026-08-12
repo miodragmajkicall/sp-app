@@ -38,6 +38,23 @@ function formatMoney(value: number): string {
   return `${value > 0 ? value.toFixed(2) : "0.00"} BAM`;
 }
 
+function roundMoney(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function calculateLineAmounts(
+  quantity: number,
+  unitPrice: number,
+  discountPercent: number,
+) {
+  const discountFactor = 1 - discountPercent / 100;
+  const baseAmount = roundMoney(quantity * unitPrice * discountFactor);
+  const vatAmount = roundMoney(baseAmount * VAT_RATE);
+  const totalAmount = roundMoney(baseAmount + vatAmount);
+
+  return { baseAmount, vatAmount, totalAmount };
+}
+
 const INVOICE_TEMPLATES = [
   {
     id: "standard-service",
@@ -184,35 +201,51 @@ export default function InvoiceCreatePage() {
     setNote(tpl.note);
   }
 
-  const netTotal = items.reduce((sum, item) => {
-    const qty = parseFloat(item.quantity || "0");
-    const priceNet = parseFloat(item.unitPrice || "0");
-    const discountPercent = parseFloat(item.discountPercent || "0");
+  const previewTotals = items.reduce(
+    (totals, item) => {
+      const qty = parseFloat(item.quantity || "0");
+      const priceNet = parseFloat(item.unitPrice || "0");
+      const discountPercent = parseFloat(item.discountPercent || "0");
 
-    if (!Number.isFinite(qty) || !Number.isFinite(priceNet)) return sum;
-    if (qty <= 0 || priceNet < 0) return sum;
+      if (
+        !Number.isFinite(qty) ||
+        !Number.isFinite(priceNet) ||
+        !Number.isFinite(discountPercent) ||
+        qty <= 0 ||
+        priceNet < 0 ||
+        discountPercent < 0 ||
+        discountPercent >= 100
+      ) {
+        return totals;
+      }
 
-    const base = qty * priceNet;
-    const discountFactor =
-      Number.isFinite(discountPercent) && discountPercent > 0
-        ? Math.max(0, 1 - discountPercent / 100)
-        : 1;
+      const line = calculateLineAmounts(qty, priceNet, discountPercent);
+      return {
+        baseAmount: roundMoney(totals.baseAmount + line.baseAmount),
+        vatAmount: roundMoney(totals.vatAmount + line.vatAmount),
+        totalAmount: roundMoney(totals.totalAmount + line.totalAmount),
+      };
+    },
+    { baseAmount: 0, vatAmount: 0, totalAmount: 0 },
+  );
 
-    return sum + base * discountFactor;
-  }, 0);
-
-  const vatAmount = netTotal * VAT_RATE;
-  const grossTotal = netTotal + vatAmount;
+  const netTotal = previewTotals.baseAmount;
+  const vatAmount = previewTotals.vatAmount;
+  const grossTotal = previewTotals.totalAmount;
 
   const validItemsCount = items.filter((item) => {
     const qty = parseFloat(item.quantity || "0");
     const priceNet = parseFloat(item.unitPrice || "0");
+    const discountPercent = parseFloat(item.discountPercent || "0");
     return (
       item.description.trim().length > 0 &&
       Number.isFinite(qty) &&
       Number.isFinite(priceNet) &&
+      Number.isFinite(discountPercent) &&
       qty > 0 &&
-      priceNet >= 0
+      priceNet >= 0 &&
+      discountPercent >= 0 &&
+      discountPercent < 100
     );
   }).length;
 
@@ -231,8 +264,11 @@ export default function InvoiceCreatePage() {
           item.description.trim().length === 0 ||
           !Number.isFinite(qty) ||
           !Number.isFinite(priceNet) ||
+          !Number.isFinite(discountPercent) ||
           qty <= 0 ||
-          priceNet < 0
+          priceNet < 0 ||
+          discountPercent < 0 ||
+          discountPercent >= 100
         ) {
           return null;
         }
@@ -242,10 +278,7 @@ export default function InvoiceCreatePage() {
           quantity: qty,
           unit_price: priceNet,
           vat_rate: VAT_RATE,
-          discount_percent:
-            Number.isFinite(discountPercent) && discountPercent > 0
-              ? discountPercent
-              : 0,
+          discount_percent: discountPercent,
         };
       })
       .filter(
@@ -514,19 +547,19 @@ export default function InvoiceCreatePage() {
                 const unitPriceNet = parseFloat(item.unitPrice || "0");
                 const discountPercent = parseFloat(item.discountPercent || "0");
 
-                const base =
-                  Number.isFinite(qty) && Number.isFinite(unitPriceNet)
-                    ? qty * unitPriceNet
-                    : 0;
-
-                const discountFactor =
-                  Number.isFinite(discountPercent) && discountPercent > 0
-                    ? Math.max(0, 1 - discountPercent / 100)
-                    : 1;
-
-                const lineNet = base * discountFactor;
-                const lineVat = lineNet * VAT_RATE;
-                const lineGross = lineNet + lineVat;
+                const lineAmounts =
+                  Number.isFinite(qty) &&
+                  Number.isFinite(unitPriceNet) &&
+                  Number.isFinite(discountPercent) &&
+                  qty > 0 &&
+                  unitPriceNet >= 0 &&
+                  discountPercent >= 0 &&
+                  discountPercent < 100
+                    ? calculateLineAmounts(qty, unitPriceNet, discountPercent)
+                    : { baseAmount: 0, vatAmount: 0, totalAmount: 0 };
+                const lineNet = lineAmounts.baseAmount;
+                const lineVat = lineAmounts.vatAmount;
+                const lineGross = lineAmounts.totalAmount;
 
                 return (
                   <div
@@ -608,7 +641,7 @@ export default function InvoiceCreatePage() {
                         <input
                           type="number"
                           min={0}
-                          max={100}
+                          max={99.99}
                           step="0.01"
                           value={item.discountPercent}
                           onChange={(e) =>

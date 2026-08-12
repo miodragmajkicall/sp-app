@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import io
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional
 
 from fastapi import (
@@ -35,6 +35,26 @@ from app.services.pdf_invoice import render_invoice_pdf
 router = APIRouter(
     tags=["invoices"],
 )
+
+MONEY_QUANTUM = Decimal("0.01")
+PERCENT_BASE = Decimal("100")
+
+
+def _round_money(value: Decimal) -> Decimal:
+    return value.quantize(MONEY_QUANTUM, rounding=ROUND_HALF_UP)
+
+
+def _calculate_invoice_item_amounts(
+    quantity: Decimal,
+    unit_price: Decimal,
+    discount_percent: Decimal,
+    vat_rate: Decimal,
+) -> tuple[Decimal, Decimal, Decimal]:
+    discount_factor = Decimal("1") - (discount_percent / PERCENT_BASE)
+    base_amount = _round_money(quantity * unit_price * discount_factor)
+    vat_amount = _round_money(base_amount * vat_rate)
+    total_amount = _round_money(base_amount + vat_amount)
+    return base_amount, vat_amount, total_amount
 
 
 # ======================================================
@@ -187,11 +207,15 @@ def create_invoice(
     for item in items_data:
         qty = Decimal(str(item["quantity"]))
         unit_price = Decimal(str(item["unit_price"]))
+        discount_percent = Decimal(str(item["discount_percent"]))
         vat_rate = Decimal(str(item["vat_rate"]))
 
-        base_amount = qty * unit_price
-        vat_amount = base_amount * vat_rate
-        line_total = base_amount + vat_amount
+        base_amount, vat_amount, line_total = _calculate_invoice_item_amounts(
+            quantity=qty,
+            unit_price=unit_price,
+            discount_percent=discount_percent,
+            vat_rate=vat_rate,
+        )
 
         total_base += base_amount
         total_vat += vat_amount
@@ -202,6 +226,7 @@ def create_invoice(
                 description=item["description"],
                 quantity=qty,
                 unit_price=unit_price,
+                discount_percent=discount_percent,
                 vat_rate=vat_rate,
                 base_amount=base_amount,
                 vat_amount=vat_amount,
@@ -216,9 +241,9 @@ def create_invoice(
         due_date=data.get("due_date"),
         buyer_name=data["buyer_name"],
         buyer_address=data.get("buyer_address"),
-        total_base=total_base,
-        total_vat=total_vat,
-        total_amount=total_amount,
+        total_base=_round_money(total_base),
+        total_vat=_round_money(total_vat),
+        total_amount=_round_money(total_amount),
         # is_paid ostaje default False (kolona postoji u bazi)
         items=item_models,
     )

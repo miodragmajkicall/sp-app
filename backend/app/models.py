@@ -191,6 +191,7 @@ class InvoiceItem(Base):
 
     quantity = Column(Numeric(12, 2), nullable=False, default=1)
     unit_price = Column(Numeric(14, 2), nullable=False, default=0)
+    discount_percent = Column(Numeric(5, 2), nullable=False, default=0)
 
     vat_rate = Column(Numeric(5, 4), nullable=False, default=0)
 
@@ -203,6 +204,10 @@ class InvoiceItem(Base):
     __table_args__ = (
         CheckConstraint("quantity > 0", name="ck_item_quantity_positive"),
         CheckConstraint("unit_price >= 0", name="ck_item_unit_price_nonneg"),
+        CheckConstraint(
+            "discount_percent >= 0 AND discount_percent < 100",
+            name="ck_item_discount_percent_range",
+        ),
         CheckConstraint("vat_rate >= 0", name="ck_item_vat_rate_nonneg"),
     )
 
