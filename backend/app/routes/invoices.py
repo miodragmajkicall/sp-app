@@ -22,7 +22,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import Invoice, InvoiceItem, TenantProfileSettings
+from app.models import Invoice, InvoiceItem, TenantAsset, TenantProfileSettings
+from app.routes.settings import MAX_LOGO_BYTES, TENANT_ASSETS_ROOT
 from app.schemas.invoice import (
     InvoiceCreate,
     InvoiceRead,
@@ -84,6 +85,40 @@ def _get_invoice_issuer_snapshot(db: Session, tenant: str) -> dict[str, Optional
         raise HTTPException(status_code=409, detail=INCOMPLETE_COMPANY_PROFILE_MESSAGE)
 
     return snapshot
+
+
+def _load_current_tenant_logo(db: Session, tenant: str) -> bytes | None:
+    profile = db.execute(
+        select(TenantProfileSettings).where(
+            TenantProfileSettings.tenant_code == tenant
+        )
+    ).scalar_one_or_none()
+    if profile is None or profile.logo_asset_id is None:
+        return None
+
+    asset = db.execute(
+        select(TenantAsset).where(
+            TenantAsset.id == profile.logo_asset_id,
+            TenantAsset.tenant_code == tenant,
+            TenantAsset.kind == "logo",
+        )
+    ).scalar_one_or_none()
+    if asset is None or not asset.storage_path:
+        return None
+
+    try:
+        root = TENANT_ASSETS_ROOT.resolve()
+        candidate = (root / asset.storage_path).resolve()
+        if not candidate.is_relative_to(root) or not candidate.is_file():
+            return None
+        with candidate.open("rb") as stream:
+            logo_bytes = stream.read(MAX_LOGO_BYTES + 1)
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+    if not logo_bytes or len(logo_bytes) > MAX_LOGO_BYTES:
+        return None
+    return logo_bytes
 
 
 def _round_money(value: Decimal) -> Decimal:
@@ -873,7 +908,8 @@ def get_invoice_pdf(
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    pdf_bytes = render_invoice_pdf(invoice)
+    logo_bytes = _load_current_tenant_logo(db, tenant)
+    pdf_bytes = render_invoice_pdf(invoice, logo_bytes=logo_bytes)
     buffer = io.BytesIO(pdf_bytes)
 
     filename = f"invoice-{invoice.invoice_number or invoice.id}.pdf"
