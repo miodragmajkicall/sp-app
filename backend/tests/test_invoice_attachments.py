@@ -5,6 +5,7 @@ import time
 from fastapi.testclient import TestClient
 
 from app.main import app
+from tests.invoice_profile_helpers import save_complete_profile
 
 client = TestClient(app)
 
@@ -190,6 +191,7 @@ def test_invoice_attachment_link_to_invoice_and_filter_by_invoice() -> None:
     """
     tenant_code = f"att-tenant-link-{int(time.time())}"
     headers = {"X-Tenant-Code": tenant_code}
+    save_complete_profile(client, headers)
 
     # 1) Kreiramo fakturu za ovog tenanta
     invoice_payload = {

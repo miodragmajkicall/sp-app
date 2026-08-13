@@ -477,6 +477,62 @@ export default function InvoiceDetailPage() {
               )}
             </Card>
 
+            {[
+              invoice.issuer_business_name,
+              invoice.issuer_address,
+              invoice.issuer_tax_id,
+              invoice.issuer_phone,
+              invoice.issuer_email,
+              invoice.issuer_bank_name,
+              invoice.issuer_bank_account,
+              invoice.issuer_iban,
+              invoice.issuer_swift_bic,
+            ].some(Boolean) && (
+              <Card className="p-4">
+                <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  <Landmark className="h-3.5 w-3.5" />
+                  Podaci izdavaoca
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Istorijski podaci sacuvani prilikom izdavanja fakture.
+                </p>
+
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  {invoice.issuer_business_name && (
+                    <InfoLine label="Poslovni naziv" value={invoice.issuer_business_name} />
+                  )}
+                  {invoice.issuer_tax_id && (
+                    <InfoLine label="JIB / PIB" value={invoice.issuer_tax_id} mono />
+                  )}
+                  {invoice.issuer_address && (
+                    <InfoLine label="Adresa" value={invoice.issuer_address} />
+                  )}
+                  {invoice.issuer_phone && (
+                    <InfoLine label="Telefon" value={invoice.issuer_phone} />
+                  )}
+                  {invoice.issuer_email && (
+                    <InfoLine label="Email" value={invoice.issuer_email} />
+                  )}
+                  {invoice.issuer_bank_name && (
+                    <InfoLine label="Banka" value={invoice.issuer_bank_name} />
+                  )}
+                  {invoice.issuer_bank_account && (
+                    <InfoLine
+                      label="Broj racuna"
+                      value={invoice.issuer_bank_account}
+                      mono
+                    />
+                  )}
+                  {invoice.issuer_iban && (
+                    <InfoLine label="IBAN" value={invoice.issuer_iban} mono />
+                  )}
+                  {invoice.issuer_swift_bic && (
+                    <InfoLine label="SWIFT / BIC" value={invoice.issuer_swift_bic} mono />
+                  )}
+                </div>
+              </Card>
+            )}
+
             <Card className="p-4">
               <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
                 <Wallet className="h-3.5 w-3.5" />

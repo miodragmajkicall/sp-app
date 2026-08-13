@@ -184,6 +184,16 @@ class InvoiceRead(InvoiceBase):
     id: int = Field(..., description="ID fakture (BIGINT).")
     tenant_code: str = Field(..., description="Tenant kod kojem faktura pripada.")
 
+    issuer_business_name: Optional[str] = None
+    issuer_address: Optional[str] = None
+    issuer_tax_id: Optional[str] = None
+    issuer_phone: Optional[str] = None
+    issuer_email: Optional[str] = None
+    issuer_bank_name: Optional[str] = None
+    issuer_bank_account: Optional[str] = None
+    issuer_iban: Optional[str] = None
+    issuer_swift_bic: Optional[str] = None
+
     total_base: Decimal = Field(..., description="Ukupna osnovica.")
     total_vat: Decimal = Field(..., description="Ukupan PDV.")
     total_amount: Decimal = Field(..., description="Ukupan iznos sa PDV-om.")

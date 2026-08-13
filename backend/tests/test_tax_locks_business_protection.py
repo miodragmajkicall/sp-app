@@ -5,6 +5,8 @@ pytestmark = pytest.mark.live_api
 
 import httpx
 
+from tests.invoice_profile_helpers import save_complete_profile_http
+
 BASE_URL = "http://localhost:8000"
 
 
@@ -37,6 +39,7 @@ def test_cannot_delete_invoice_in_finalized_month():
     """
     tenant_code = f"lock-inv-{int(time.time())}"
     headers = _headers_for_tenant(tenant_code)
+    save_complete_profile_http(BASE_URL, headers)
 
     payload = {
         "invoice_number": "LOCK-001",

@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.routes.invoices import _calculate_invoice_item_amounts
+from tests.invoice_profile_helpers import save_complete_profile
 
 
 client = TestClient(app)
@@ -24,7 +25,9 @@ def _payload(invoice_number: str, items: list[dict]) -> dict:
 
 
 def _headers() -> dict[str, str]:
-    return {"X-Tenant-Code": f"invoice-discount-{uuid4().hex[:12]}"}
+    headers = {"X-Tenant-Code": f"invoice-discount-{uuid4().hex[:12]}"}
+    save_complete_profile(client, headers)
+    return headers
 
 
 def test_discount_calculation_uses_round_half_up_per_line() -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 from app.main import app
+from tests.invoice_profile_helpers import save_complete_profile
 
 client = TestClient(app)
 
@@ -27,6 +28,7 @@ def _ensure_sample_data() -> None:
     global _data_created
     if _data_created:
         return
+    save_complete_profile(client, HEADERS)
 
     # 1) Izlazna faktura (prihod)
     invoice_payload = {

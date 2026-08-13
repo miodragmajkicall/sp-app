@@ -66,6 +66,15 @@ export interface InvoiceDetail {
   buyer_address: string | null;
   buyer_type: BuyerType;
   buyer_tax_id: string | null;
+  issuer_business_name: string | null;
+  issuer_address: string | null;
+  issuer_tax_id: string | null;
+  issuer_phone: string | null;
+  issuer_email: string | null;
+  issuer_bank_name: string | null;
+  issuer_bank_account: string | null;
+  issuer_iban: string | null;
+  issuer_swift_bic: string | null;
   total_base: number;
   total_vat: number;
   total_amount: number;

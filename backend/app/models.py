@@ -148,6 +148,16 @@ class Invoice(Base):
 
     note = Column(Text, nullable=True)
 
+    issuer_business_name = Column(String(256), nullable=True)
+    issuer_address = Column(String(256), nullable=True)
+    issuer_tax_id = Column(String(64), nullable=True)
+    issuer_phone = Column(String(64), nullable=True)
+    issuer_email = Column(String(254), nullable=True)
+    issuer_bank_name = Column(String(128), nullable=True)
+    issuer_bank_account = Column(String(128), nullable=True)
+    issuer_iban = Column(String(64), nullable=True)
+    issuer_swift_bic = Column(String(32), nullable=True)
+
     total_base = Column(Numeric(14, 2), nullable=False, default=0)
     total_vat = Column(Numeric(14, 2), nullable=False, default=0)
     total_amount = Column(Numeric(14, 2), nullable=False, default=0)

@@ -18,6 +18,11 @@ type InvoiceItem = {
 };
 
 const VAT_RATE = 0.17;
+const INCOMPLETE_COMPANY_PROFILE_MESSAGE =
+  "Company profile must be completed before issuing an invoice";
+const INCOMPLETE_COMPANY_PROFILE_USER_MESSAGE =
+  "Prije izdavanja fakture dovr\u0161i poslovni naziv, adresu i " +
+  "JIB/PIB u Settings \u2192 Profil firme.";
 
 function getTodayAsDateString(): string {
   return new Date().toISOString().slice(0, 10);
@@ -328,7 +333,15 @@ export default function InvoiceCreatePage() {
         items: preparedItems,
       };
 
-      await createInvoice(payload);
+      await createInvoice(payload).catch((error: any) => {
+        if (
+          error?.response?.data?.detail ===
+          INCOMPLETE_COMPANY_PROFILE_MESSAGE
+        ) {
+          throw new Error(INCOMPLETE_COMPANY_PROFILE_USER_MESSAGE);
+        }
+        throw error;
+      });
       navigate("/invoices");
     } catch (err: any) {
       setErrorMsg(err?.message ?? "Greška pri snimanju fakture");

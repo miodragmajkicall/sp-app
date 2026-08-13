@@ -22,7 +22,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import Invoice, InvoiceItem
+from app.models import Invoice, InvoiceItem, TenantProfileSettings
 from app.schemas.invoice import (
     InvoiceCreate,
     InvoiceRead,
@@ -38,6 +38,52 @@ router = APIRouter(
 
 MONEY_QUANTUM = Decimal("0.01")
 PERCENT_BASE = Decimal("100")
+INCOMPLETE_COMPANY_PROFILE_MESSAGE = (
+    "Company profile must be completed before issuing an invoice"
+)
+
+
+def _normalize_snapshot_text(value: object) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    return normalized or None
+
+
+def _get_invoice_issuer_snapshot(db: Session, tenant: str) -> dict[str, Optional[str]]:
+    profile = db.execute(
+        select(TenantProfileSettings).where(
+            TenantProfileSettings.tenant_code == tenant
+        )
+    ).scalar_one_or_none()
+
+    snapshot = {
+        "issuer_business_name": _normalize_snapshot_text(
+            getattr(profile, "business_name", None)
+        ),
+        "issuer_address": _normalize_snapshot_text(getattr(profile, "address", None)),
+        "issuer_tax_id": _normalize_snapshot_text(getattr(profile, "tax_id", None)),
+        "issuer_phone": _normalize_snapshot_text(getattr(profile, "phone", None)),
+        "issuer_email": _normalize_snapshot_text(getattr(profile, "email", None)),
+        "issuer_bank_name": _normalize_snapshot_text(getattr(profile, "bank_name", None)),
+        "issuer_bank_account": _normalize_snapshot_text(
+            getattr(profile, "bank_account", None)
+        ),
+        "issuer_iban": _normalize_snapshot_text(getattr(profile, "iban", None)),
+        "issuer_swift_bic": _normalize_snapshot_text(
+            getattr(profile, "swift_bic", None)
+        ),
+    }
+
+    required_fields = (
+        "issuer_business_name",
+        "issuer_address",
+        "issuer_tax_id",
+    )
+    if not all(snapshot[field] for field in required_fields):
+        raise HTTPException(status_code=409, detail=INCOMPLETE_COMPANY_PROFILE_MESSAGE)
+
+    return snapshot
 
 
 def _round_money(value: Decimal) -> Decimal:
@@ -187,6 +233,7 @@ def create_invoice(
     tenant = _require_tenant(x_tenant_code)
 
     _ensure_tenant_exists(db, tenant)
+    issuer_snapshot = _get_invoice_issuer_snapshot(db, tenant)
     _ensure_is_paid_column(db)
 
     data = payload.model_dump()
@@ -243,6 +290,8 @@ def create_invoice(
         buyer_address=data.get("buyer_address"),
         buyer_type=data["buyer_type"],
         buyer_tax_id=data.get("buyer_tax_id"),
+        note=data.get("note"),
+        **issuer_snapshot,
         total_base=_round_money(total_base),
         total_vat=_round_money(total_vat),
         total_amount=_round_money(total_amount),

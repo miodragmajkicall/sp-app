@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from app.main import app
 from app.db import get_session as _get_session_dep
 from app.models import Invoice
+from tests.invoice_profile_helpers import save_complete_profile
 
 client = TestClient(app)
 
@@ -76,6 +77,7 @@ def test_invoice_pdf_generation_happy_path() -> None:
         * PDF sadržaj počinje sa '%PDF-1.4' i sadrži osnovni tekst fakture.
     """
     tenant_code = "pdf-tenant-a"
+    save_complete_profile(client, {"X-Tenant-Code": tenant_code})
     invoice_number = "PDF-INV-001"
 
     # 0) Očistimo potencijalne stare fakture sa istim brojem za ovog tenanta
@@ -135,6 +137,7 @@ def test_invoice_pdf_not_accessible_for_other_tenant() -> None:
     """
     tenant_owner = "pdf-tenant-b"
     other_tenant = "pdf-tenant-c"
+    save_complete_profile(client, {"X-Tenant-Code": tenant_owner})
     invoice_number = "PDF-INV-002"
 
     # 0) Očistimo potencijalne stare fakture sa istim brojem za tenant_owner

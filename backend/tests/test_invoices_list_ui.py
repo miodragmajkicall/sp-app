@@ -5,6 +5,8 @@ pytestmark = pytest.mark.live_api
 
 import httpx
 
+from tests.invoice_profile_helpers import save_complete_profile_http
+
 BASE_URL = "http://localhost:8000"
 
 
@@ -18,6 +20,7 @@ def _create_invoice(tenant_code: str, suffix: str, issue_date: str) -> dict:
     Vraća kompletan JSON response (created invoice).
     """
     headers = _headers_for_tenant(tenant_code)
+    save_complete_profile_http(BASE_URL, headers)
     payload = {
         "invoice_number": f"UI-{suffix}",
         "issue_date": issue_date,

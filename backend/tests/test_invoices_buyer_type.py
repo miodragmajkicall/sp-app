@@ -5,13 +5,16 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 
 from app.main import app
+from tests.invoice_profile_helpers import save_complete_profile
 
 
 client = TestClient(app)
 
 
 def _headers() -> dict[str, str]:
-    return {"X-Tenant-Code": f"invoice-buyer-{uuid4().hex[:12]}"}
+    headers = {"X-Tenant-Code": f"invoice-buyer-{uuid4().hex[:12]}"}
+    save_complete_profile(client, headers)
+    return headers
 
 
 def _payload(invoice_number: str, **buyer_fields) -> dict:

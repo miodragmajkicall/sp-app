@@ -6,6 +6,8 @@ pytestmark = pytest.mark.live_api
 
 import httpx
 
+from tests.invoice_profile_helpers import save_complete_profile_http
+
 BASE_URL = "http://localhost:8000"
 
 
@@ -24,6 +26,7 @@ def test_invoices_crud_flow():
     """
     tenant_code = f"inv-crud-{int(time.time())}"
     headers = _headers_for_tenant(tenant_code)
+    save_complete_profile_http(BASE_URL, headers)
 
     payload = {
         "invoice_number": "2025-0001",
@@ -103,6 +106,7 @@ def test_invoices_list_filters_and_pagination():
     """
     tenant_code = f"inv-list-{int(time.time())}"
     headers = _headers_for_tenant(tenant_code)
+    save_complete_profile_http(BASE_URL, headers)
 
     # kreiramo 3 fakture sa različitim datumima i kupcima
     invoices_payloads = [
@@ -221,6 +225,8 @@ def test_invoice_number_unique_per_tenant():
 
     headers1 = _headers_for_tenant(tenant1)
     headers2 = _headers_for_tenant(tenant2)
+    save_complete_profile_http(BASE_URL, headers1)
+    save_complete_profile_http(BASE_URL, headers2)
 
     payload = {
         "invoice_number": "UNIQ-001",
