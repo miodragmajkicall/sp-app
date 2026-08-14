@@ -32,7 +32,10 @@ from app.schemas.invoice import (
     InvoiceListResponse,
 )
 from app.tenant_security import require_tenant_code, ensure_tenant_exists
-from app.services.pdf_invoice import render_invoice_pdf
+from app.services.pdf_invoice import (
+    UnsupportedPdfGlyphError,
+    render_invoice_pdf,
+)
 
 router = APIRouter(
     tags=["invoices"],
@@ -46,6 +49,9 @@ INCOMPLETE_COMPANY_PROFILE_MESSAGE = (
 INVOICE_NUMBER_UNIQUE_CONSTRAINT = "uq_invoice_number_per_tenant"
 UNEXPECTED_INTEGRITY_ERROR_MESSAGE = (
     "Unable to create invoice due to a data integrity error"
+)
+UNSUPPORTED_PDF_GLYPH_MESSAGE = (
+    "Invoice PDF cannot be generated because the document contains characters unsupported by the PDF font"
 )
 
 
@@ -925,7 +931,13 @@ def get_invoice_pdf(
         raise HTTPException(status_code=404, detail="Invoice not found")
 
     logo_bytes = _load_current_tenant_logo(db, tenant)
-    pdf_bytes = render_invoice_pdf(invoice, logo_bytes=logo_bytes)
+    try:
+        pdf_bytes = render_invoice_pdf(invoice, logo_bytes=logo_bytes)
+    except UnsupportedPdfGlyphError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=UNSUPPORTED_PDF_GLYPH_MESSAGE,
+        ) from exc
     buffer = io.BytesIO(pdf_bytes)
 
     filename_component = _safe_invoice_filename_component(

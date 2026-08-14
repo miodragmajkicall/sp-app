@@ -12,13 +12,18 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
+from pypdf import PdfReader
 
 from app.main import app
 from app.db import get_session as _get_session_dep
 from app.models import Invoice, TenantAsset, TenantProfileSettings
 from app.routes import invoices as invoice_routes
 from app.routes import settings as settings_routes
-from app.services.pdf_invoice import LEGACY_ISSUER_MESSAGE, render_invoice_pdf
+from app.services.pdf_invoice import (
+    LEGACY_ISSUER_MESSAGE,
+    UnsupportedPdfGlyphError,
+    render_invoice_pdf,
+)
 from tests.invoice_profile_helpers import save_complete_profile
 
 client = TestClient(app)
@@ -127,14 +132,14 @@ def test_invoice_pdf_generation_happy_path() -> None:
     assert f"invoice-{invoice_number}" in cd
 
     # Sadržaj PDF-a
-    content = pdf_resp.content
-    assert content.startswith(b"%PDF-1.4")
+    assert pdf_resp.content.startswith(b"%PDF-1.4")
+    content = _pdf_text(pdf_resp.content)
     # Provjerimo da se unutar PDF-a nalaze osnovni podaci iz fakture
-    assert b"Faktura br:" in content
-    assert invoice_number.encode("ascii") in content
-    assert f"Tenant: {tenant_code}".encode("ascii") not in content
-    assert b"Osnovica:" in content
-    assert b"Ukupno:" in content
+    assert "Faktura br:" in content
+    assert invoice_number in content
+    assert f"Tenant: {tenant_code}" not in content
+    assert "Osnovica:" in content
+    assert "Ukupno:" in content
 
 
 def test_invoice_pdf_not_accessible_for_other_tenant() -> None:
@@ -235,18 +240,28 @@ def _image_bytes(
     return output.getvalue()
 
 
-def _pdf_text(pdf: bytes) -> bytes:
-    return pdf
+def _pdf_reader(pdf: bytes) -> PdfReader:
+    return PdfReader(BytesIO(pdf))
+
+
+def _pdf_text(pdf: bytes) -> str:
+    return "\n".join(page.extract_text() or "" for page in _pdf_reader(pdf).pages)
 
 
 def _image_stream(pdf: bytes) -> bytes:
-    match = re.search(
-        rb"/Filter /DCTDecode /Length \d+ >>\nstream\n(.*?)\nendstream",
-        pdf,
-        re.DOTALL,
+    images = [
+        image.data
+        for page in _pdf_reader(pdf).pages
+        for image in page.images
+    ]
+    assert len(images) == 1
+    return images[0]
+
+
+def _page_commands(pdf: bytes) -> bytes:
+    return b"\n".join(
+        page.get_contents().get_data() for page in _pdf_reader(pdf).pages
     )
-    assert match is not None
-    return match.group(1)
 
 
 @pytest.fixture
@@ -273,24 +288,24 @@ def _create_invoice(headers: dict[str, str], **payload_overrides) -> dict:
 def test_pdf_uses_complete_historical_issuer_and_no_demo_values() -> None:
     content = _pdf_text(render_invoice_pdf(_invoice()))
     for value in (
-        b"Historical Issuer SP",
-        b"Historical address 10",
-        b"JIB / PIB: 4402222222222",
-        b"Telefon: +387 51 111 222",
-        b"Email: office@historical.example",
-        b"Banka: Historical Bank",
-        b"Racun: 555-111-222",
-        b"IBAN: BA391290079401028494",
-        b"SWIFT/BIC: HISTBA22",
+        "Historical Issuer SP",
+        "Historical address 10",
+        "JIB / PIB: 4402222222222",
+        "Telefon: +387 51 111 222",
+        "Email: office@historical.example",
+        "Banka: Historical Bank",
+        "Racun: 555-111-222",
+        "IBAN: BA391290079401028494",
+        "SWIFT/BIC: HISTBA22",
     ):
         assert value in content
     for forbidden in (
-        b"SP APP - DEMO LOGO",
-        b"SP Primjer - demo korisnik",
-        b"0000000000000",
-        b"Demo Banka",
-        b"DEMOBA22",
-        b"Tenant:",
+        "SP APP - DEMO LOGO",
+        "SP Primjer - demo korisnik",
+        "0000000000000",
+        "Demo Banka",
+        "DEMOBA22",
+        "Tenant:",
     ):
         assert forbidden not in content
 
@@ -305,11 +320,11 @@ def test_pdf_required_only_issuer_omits_optional_rows() -> None:
         issuer_swift_bic=None,
     )
     content = _pdf_text(render_invoice_pdf(invoice))
-    assert b"Historical Issuer SP" in content
-    assert b"JIB / PIB: 4402222222222" in content
-    assert b"Telefon:" not in content
-    assert b"Email:" not in content
-    assert b"Instrukcije za uplatu" not in content
+    assert "Historical Issuer SP" in content
+    assert "JIB / PIB: 4402222222222" in content
+    assert "Telefon:" not in content
+    assert "Email:" not in content
+    assert "Instrukcije za uplatu" not in content
 
 
 def test_legacy_invoice_has_exact_neutral_message_and_no_profile_fallback() -> None:
@@ -330,37 +345,86 @@ def test_legacy_invoice_has_exact_neutral_message_and_no_profile_fallback() -> N
         }
     )
     content = _pdf_text(render_invoice_pdf(invoice))
-    rendered_text = b" ".join(re.findall(rb"\((.*?)\) Tj", content))
-    assert (
-        b"Istorijski podaci izdavaoca nisu sacuvani za ovu fakturu."
-        in rendered_text
-    )
-    assert b"Test Issuer SP" not in content
+    normalized_content = " ".join(content.split())
+    assert LEGACY_ISSUER_MESSAGE in normalized_content
+    assert "Test Issuer SP" not in normalized_content
 
 
 def test_pdf_preserves_buyer_discount_vat_and_authoritative_totals() -> None:
     content = _pdf_text(render_invoice_pdf(_invoice()))
-    for header in (b"#", b"Opis", b"Kol.", b"Cijena", b"Popust", b"PDV", b"Ukupno"):
-        assert b"(" + header + b") Tj" in content
-    assert b"(JM) Tj" not in content
-    assert b"(kom) Tj" not in content
-    assert b"Business Buyer" in content
-    assert b"JIB/PIB: 4401111111111" in content
-    assert b"Test service" in content
-    assert b"2.00" in content
-    assert b"10.00" in content
-    assert b"5.00%" in content
-    assert b"17.00%" in content
-    assert b"22.23" in content
-    assert b"Osnovica: 19.00 KM" in content
-    assert b"Ukupan PDV: 3.23 KM" in content
-    assert b"Ukupno: 22.23 KM" in content
+    for header in ("#", "Opis", "Kol.", "Cijena", "Popust", "PDV", "Ukupno"):
+        assert header in content
+    assert "JM" not in content
+    assert "kom" not in content
+    assert "Business Buyer" in content
+    assert "JIB/PIB: 4401111111111" in content
+    assert "Test service" in content
+    assert "2.00" in content
+    assert "10.00" in content
+    assert "5.00%" in content
+    assert "17.00%" in content
+    assert "22.23" in content
+    assert "Osnovica: 19.00 KM" in content
+    assert "Ukupan PDV: 3.23 KM" in content
+    assert "Ukupno: 22.23 KM" in content
 
     individual = render_invoice_pdf(
         _invoice(buyer_type="INDIVIDUAL", buyer_tax_id=None)
     )
-    assert b"Business Buyer" in individual
-    assert b"JIB/PIB: 4401111111111" not in individual
+    individual_text = _pdf_text(individual)
+    assert "Business Buyer" in individual_text
+    assert "JIB/PIB: 4401111111111" not in individual_text
+
+
+def test_pdf_preserves_unicode_and_embeds_searchable_noto_fonts() -> None:
+    pdf = render_invoice_pdf(
+        _invoice(
+            buyer_name="Kupac / Купац / čćšđž ČĆŠĐŽ",
+            buyer_address="Бања Лука",
+            issuer_business_name="Историјски издавалац čćšđž",
+            issuer_address="Адреса издаваоца",
+            items=[_item("Услуга / Stavka čćšđž")],
+        )
+    )
+    text = _pdf_text(pdf)
+    for value in (
+        "Kupac / Купац / čćšđž ČĆŠĐŽ",
+        "Бања Лука",
+        "Историјски издавалац čćšđž",
+        "Адреса издаваоца",
+        "Услуга / Stavka čćšđž",
+    ):
+        assert value in text
+    assert "?" not in text
+
+    fonts = _pdf_reader(pdf).pages[0]["/Resources"]["/Font"]
+    noto_fonts = [
+        reference.get_object()
+        for reference in fonts.values()
+        if "NotoSans" in str(reference.get_object().get("/BaseFont", ""))
+    ]
+    assert len(noto_fonts) == 2
+    assert all("/ToUnicode" in font for font in noto_fonts)
+    assert all(
+        "/FontFile2" in font["/FontDescriptor"].get_object()
+        for font in noto_fonts
+    )
+
+
+def test_unsupported_emoji_is_controlled_for_service_and_endpoint() -> None:
+    with pytest.raises(UnsupportedPdfGlyphError):
+        render_invoice_pdf(_invoice(buyer_name="Kupac 😀"))
+
+    headers = _headers("pdf-unsupported-glyph")
+    created = _create_invoice(headers, buyer_name="Kupac 😀")
+    response = client.get(f"/invoices/{created['id']}/pdf", headers=headers)
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": (
+            "Invoice PDF cannot be generated because the document contains "
+            "characters unsupported by the PDF font"
+        )
+    }
 
 
 @pytest.mark.parametrize(
@@ -388,7 +452,6 @@ def test_pdf_embeds_supported_current_tenant_logo(
     pdf = client.get(f"/invoices/{created['id']}/pdf", headers=headers)
     assert pdf.status_code == 200
     assert b"/Subtype /Image" in pdf.content
-    assert b"/Im1 Do" in pdf.content
 
 
 def test_transparent_png_is_flattened_on_white() -> None:
@@ -408,7 +471,7 @@ def test_logo_absence_corruption_and_oversized_dimensions_are_non_fatal() -> Non
     for pdf in (plain, corrupt, oversized):
         assert pdf.startswith(b"%PDF-1.4")
         assert b"/Subtype /Image" not in pdf
-        assert b"Faktura br:" in pdf
+        assert "Faktura br:" in _pdf_text(pdf)
 
 
 def test_logo_aspect_ratio_and_small_logo_are_not_stretched_or_upscaled() -> None:
@@ -421,9 +484,13 @@ def test_logo_aspect_ratio_and_small_logo_are_not_stretched_or_upscaled() -> Non
     small = render_invoice_pdf(
         _invoice(), logo_bytes=_image_bytes("PNG", size=(20, 10))
     )
-    assert re.search(rb"q 150\.00 0 0 15\.00 .* /Im1 Do Q", wide)
-    assert re.search(rb"q 7\.00 0 0 70\.00 .* /Im1 Do Q", tall)
-    assert re.search(rb"q 20\.00 0 0 10\.00 .* /Im1 Do Q", small)
+    assert re.search(
+        rb"150(?:\.0+)? 0 0 15(?:\.0+)? .*? cm\s*/\S+ Do",
+        _page_commands(wide),
+        re.DOTALL,
+    )
+    assert re.search(rb"7(?:\.0+)? 0 0 70(?:\.0+)? .*? cm\s*/\S+ Do", _page_commands(tall), re.DOTALL)
+    assert re.search(rb"20(?:\.0+)? 0 0 10(?:\.0+)? .*? cm\s*/\S+ Do", _page_commands(small), re.DOTALL)
 
 
 def test_missing_and_corrupt_logo_files_do_not_break_endpoint(
@@ -541,17 +608,14 @@ def test_long_values_wrap_and_many_items_paginate_with_repeated_headers() -> Non
             items=items,
         )
     )
-    count_match = re.search(rb"/Type /Pages /Kids \[.*?\] /Count (\d+)", pdf)
-    assert count_match is not None
-    page_count = int(count_match.group(1))
+    reader = _pdf_reader(pdf)
+    page_count = len(reader.pages)
+    text = _pdf_text(pdf)
     assert page_count >= 2
-    assert pdf.count(b"(Opis) Tj") >= 2
-    assert b"Strana 1 / " + str(page_count).encode() in pdf
-    assert (
-        f"Strana {page_count} / {page_count}".encode("ascii")
-        in pdf
-    )
-    assert b"Ukupno: 22.23 KM" in pdf
+    assert text.count("Opis") >= 2
+    assert f"Strana 1 / {page_count}" in text
+    assert f"Strana {page_count} / {page_count}" in text
+    assert "Ukupno: 22.23 KM" in text
 
 
 @pytest.mark.parametrize(
@@ -625,7 +689,7 @@ def test_invoice_pdf_filename_sanitization_does_not_change_pdf_number() -> None:
     )
 
     assert response.status_code == 200
-    assert invoice_number.encode("ascii") in _pdf_text(response.content)
+    assert invoice_number in _pdf_text(response.content)
     assert (
         f'inline; filename="invoice-{invoice_number.replace("/", "_")}.pdf"'
         == response.headers["content-disposition"]

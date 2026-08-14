@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 from io import BytesIO
+from pathlib import Path
 import warnings
 from typing import TYPE_CHECKING
 
 from PIL import Image, UnidentifiedImageError
+from reportlab.lib.utils import ImageReader
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen.canvas import Canvas
 
 if TYPE_CHECKING:
     from app.models import Invoice
@@ -34,6 +39,26 @@ TABLE_COLUMNS = (
 TABLE_HEADER_HEIGHT = 20.0
 TABLE_TEXT_SIZE = 7.5
 TABLE_LINE_HEIGHT = 10.0
+FONT_DIRECTORY = Path(__file__).resolve().parents[1] / "assets" / "fonts"
+REGULAR_FONT_NAME = "NotoSans"
+BOLD_FONT_NAME = "NotoSans-Bold"
+REGULAR_FONT_PATH = FONT_DIRECTORY / "NotoSans-Regular.ttf"
+BOLD_FONT_PATH = FONT_DIRECTORY / "NotoSans-Bold.ttf"
+
+
+class UnsupportedPdfGlyphError(ValueError):
+    """Raised when invoice text contains a glyph unavailable in the PDF font."""
+
+
+def _register_fonts() -> None:
+    registered = set(pdfmetrics.getRegisteredFontNames())
+    if REGULAR_FONT_NAME not in registered:
+        pdfmetrics.registerFont(TTFont(REGULAR_FONT_NAME, str(REGULAR_FONT_PATH)))
+    if BOLD_FONT_NAME not in registered:
+        pdfmetrics.registerFont(TTFont(BOLD_FONT_NAME, str(BOLD_FONT_PATH)))
+
+
+_register_fonts()
 
 
 def _as_float(value) -> float:
@@ -47,35 +72,55 @@ def _text(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
-def _escape_pdf_text(text: str) -> str:
-    text = text.translate(
-        str.maketrans(
-            {
-                "\u010d": "c",
-                "\u0107": "c",
-                "\u0161": "s",
-                "\u0111": "d",
-                "\u017e": "z",
-                "\u010c": "C",
-                "\u0106": "C",
-                "\u0160": "S",
-                "\u0110": "D",
-                "\u017d": "Z",
-            }
-        )
+def _invoice_text_values(invoice: "Invoice") -> list[str]:
+    fields = (
+        "invoice_number",
+        "buyer_name",
+        "buyer_address",
+        "buyer_tax_id",
+        "issuer_business_name",
+        "issuer_address",
+        "issuer_tax_id",
+        "issuer_phone",
+        "issuer_email",
+        "issuer_bank_name",
+        "issuer_bank_account",
+        "issuer_iban",
+        "issuer_swift_bic",
     )
-    return text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    values = [
+        value
+        for field in fields
+        if isinstance((value := getattr(invoice, field, None)), str)
+    ]
+    values.extend(
+        description
+        for item in list(getattr(invoice, "items", None) or [])
+        if isinstance((description := getattr(item, "description", None)), str)
+    )
+    return values
 
-def _text_width(text: str, size: float) -> float:
-    return sum(0.28 if char in " ilI.,:;'" else 0.56 for char in text) * size
+
+def _validate_pdf_glyphs(invoice: "Invoice") -> None:
+    glyphs = pdfmetrics.getFont(REGULAR_FONT_NAME).face.charToGlyph
+    for value in _invoice_text_values(invoice):
+        if any(not char.isspace() and ord(char) not in glyphs for char in value):
+            raise UnsupportedPdfGlyphError
 
 
-def _split_token(token: str, width: float, size: float) -> list[str]:
+def _text_width(text: str, size: float, *, bold: bool = False) -> float:
+    font_name = BOLD_FONT_NAME if bold else REGULAR_FONT_NAME
+    return pdfmetrics.stringWidth(text, font_name, size)
+
+
+def _split_token(
+    token: str, width: float, size: float, *, bold: bool = False
+) -> list[str]:
     parts: list[str] = []
     current = ""
     for char in token:
         candidate = current + char
-        if current and _text_width(candidate, size) > width:
+        if current and _text_width(candidate, size, bold=bold) > width:
             parts.append(current)
             current = char
         else:
@@ -85,7 +130,9 @@ def _split_token(token: str, width: float, size: float) -> list[str]:
     return parts or [""]
 
 
-def _wrap(value: object, width: float, size: float) -> list[str]:
+def _wrap(
+    value: object, width: float, size: float, *, bold: bool = False
+) -> list[str]:
     source = _text(value)
     if not source:
         return []
@@ -93,13 +140,13 @@ def _wrap(value: object, width: float, size: float) -> list[str]:
     current = ""
     for raw_token in source.split():
         tokens = (
-            _split_token(raw_token, width, size)
-            if _text_width(raw_token, size) > width
+            _split_token(raw_token, width, size, bold=bold)
+            if _text_width(raw_token, size, bold=bold) > width
             else [raw_token]
         )
         for token in tokens:
             candidate = token if not current else f"{current} {token}"
-            if current and _text_width(candidate, size) > width:
+            if current and _text_width(candidate, size, bold=bold) > width:
                 lines.append(current)
                 current = token
             else:
@@ -156,7 +203,7 @@ def _normalize_logo(logo_bytes: bytes | None) -> tuple[bytes, int, int] | None:
 
 class _Page:
     def __init__(self) -> None:
-        self.commands: list[str] = []
+        self.commands: list[tuple] = []
 
     def text(
         self,
@@ -172,31 +219,21 @@ class _Page:
         if not value:
             return
         if align == "right":
-            x -= _text_width(value, size)
-        font = "F2" if bold else "F1"
-        escaped = _escape_pdf_text(value)
-        self.commands.append(
-            f"BT /{font} {size:.2f} Tf 1 0 0 1 {x:.2f} {y:.2f} Tm ({escaped}) Tj ET"
-        )
+            x -= _text_width(value, size, bold=bold)
+        self.commands.append(("text", x, y, value, size, bold))
 
     def line(
         self, x1: float, y1: float, x2: float, y2: float, width: float = 0.5
     ) -> None:
-        self.commands.append(
-            f"{width:.2f} w {x1:.2f} {y1:.2f} m {x2:.2f} {y2:.2f} l S"
-        )
+        self.commands.append(("line", x1, y1, x2, y2, width))
 
     def fill_rect(
         self, x: float, y: float, width: float, height: float, gray: float
     ) -> None:
-        self.commands.append(
-            f"{gray:.2f} g {x:.2f} {y:.2f} {width:.2f} {height:.2f} re f 0 g"
-        )
+        self.commands.append(("fill_rect", x, y, width, height, gray))
 
     def image(self, x: float, y: float, width: float, height: float) -> None:
-        self.commands.append(
-            f"q {width:.2f} 0 0 {height:.2f} {x:.2f} {y:.2f} cm /Im1 Do Q"
-        )
+        self.commands.append(("image", x, y, width, height))
 
 
 def _draw_wrapped(
@@ -210,7 +247,7 @@ def _draw_wrapped(
     bold: bool = False,
     line_height: float = 11,
 ) -> float:
-    for line in _wrap(value, width, size):
+    for line in _wrap(value, width, size, bold=bold):
         page.text(x, y, line, size=size, bold=bold)
         y -= line_height
     return y
@@ -286,53 +323,8 @@ def _table_row(page: _Page, y: float, values: list[str]) -> float:
     return y - height
 
 
-class _PdfBuilder:
-    def __init__(self) -> None:
-        self.objects: list[bytes | None] = []
-
-    def reserve(self) -> int:
-        self.objects.append(None)
-        return len(self.objects)
-
-    def set(self, number: int, body: bytes | str) -> None:
-        self.objects[number - 1] = (
-            body.encode("latin-1") if isinstance(body, str) else body
-        )
-
-    def add(self, body: bytes | str) -> int:
-        number = self.reserve()
-        self.set(number, body)
-        return number
-
-    def build(self, root: int) -> bytes:
-        buffer = BytesIO()
-        buffer.write("%PDF-1.4\n%\xE2\xE3\xCF\xD3\n".encode("latin-1"))
-        offsets = [0]
-        for index, body in enumerate(self.objects, start=1):
-            if body is None:
-                raise ValueError(f"PDF object {index} is not initialized")
-            offsets.append(buffer.tell())
-            buffer.write(f"{index} 0 obj\n".encode("ascii"))
-            buffer.write(body)
-            buffer.write(b"\nendobj\n")
-        xref = buffer.tell()
-        buffer.write(f"xref\n0 {len(self.objects) + 1}\n".encode("ascii"))
-        buffer.write(b"0000000000 65535 f \n")
-        for offset in offsets[1:]:
-            buffer.write(f"{offset:010d} 00000 n \n".encode("ascii"))
-        buffer.write(
-            (
-                "trailer\n"
-                f"<< /Size {len(self.objects) + 1} /Root {root} 0 R >>\n"
-                "startxref\n"
-                f"{xref}\n"
-                "%%EOF\n"
-            ).encode("ascii")
-        )
-        return buffer.getvalue()
-
-
 def render_invoice_pdf(invoice: "Invoice", logo_bytes: bytes | None = None) -> bytes:
+    _validate_pdf_glyphs(invoice)
     logo = _normalize_logo(logo_bytes)
     pages = [_Page()]
     page = pages[0]
@@ -484,58 +476,47 @@ def render_invoice_pdf(invoice: "Invoice", logo_bytes: bytes | None = None) -> b
             align="right",
         )
 
-    builder = _PdfBuilder()
-    catalog = builder.reserve()
-    pages_object = builder.reserve()
-    regular_font = builder.add(
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica "
-        "/Encoding /WinAnsiEncoding >>"
+    output = BytesIO()
+    document = Canvas(
+        output,
+        pagesize=(PAGE_WIDTH, PAGE_HEIGHT),
+        pageCompression=0,
+        pdfVersion=(1, 4),
     )
-    bold_font = builder.add(
-        "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold "
-        "/Encoding /WinAnsiEncoding >>"
-    )
-    image_object = None
-    if logo is not None:
-        jpeg_bytes, image_width, image_height = logo
-        image_object = builder.add(
-            (
-                f"<< /Type /XObject /Subtype /Image /Width {image_width} "
-                f"/Height {image_height} /ColorSpace /DeviceRGB "
-                f"/BitsPerComponent 8 /Filter /DCTDecode "
-                f"/Length {len(jpeg_bytes)} >>\nstream\n"
-            ).encode("ascii")
-            + jpeg_bytes
-            + b"\nendstream"
-        )
+    image = ImageReader(BytesIO(logo[0])) if logo is not None else None
 
-    page_objects = []
     for current_page in pages:
-        stream = ("\n".join(current_page.commands) + "\n").encode("latin-1")
-        content_object = builder.add(
-            f"<< /Length {len(stream)} >>\nstream\n".encode("ascii")
-            + stream
-            + b"endstream"
-        )
-        resources = (
-            f"/Font << /F1 {regular_font} 0 R /F2 {bold_font} 0 R >>"
-        )
-        if image_object is not None:
-            resources += f" /XObject << /Im1 {image_object} 0 R >>"
-        page_objects.append(
-            builder.add(
-                "<< /Type /Page "
-                f"/Parent {pages_object} 0 R "
-                f"/MediaBox [0 0 {PAGE_WIDTH:.0f} {PAGE_HEIGHT:.0f}] "
-                f"/Contents {content_object} 0 R "
-                f"/Resources << {resources} >> >>"
-            )
-        )
+        for command in current_page.commands:
+            kind, *arguments = command
+            if kind == "text":
+                x, y, value, size, bold = arguments
+                font_name = BOLD_FONT_NAME if bold else REGULAR_FONT_NAME
+                document.setFont(font_name, size)
+                document.drawString(x, y, value)
+            elif kind == "line":
+                x1, y1, x2, y2, width = arguments
+                document.setLineWidth(width)
+                document.line(x1, y1, x2, y2)
+            elif kind == "fill_rect":
+                x, y, width, height, gray = arguments
+                document.saveState()
+                document.setFillGray(gray)
+                document.rect(x, y, width, height, stroke=0, fill=1)
+                document.restoreState()
+            elif kind == "image" and image is not None:
+                x, y, width, height = arguments
+                document.drawImage(
+                    image,
+                    x,
+                    y,
+                    width=width,
+                    height=height,
+                    preserveAspectRatio=True,
+                    mask="auto",
+                )
+            else:
+                raise ValueError(f"Unknown PDF drawing command: {kind}")
+        document.showPage()
 
-    kids = " ".join(f"{number} 0 R" for number in page_objects)
-    builder.set(
-        pages_object,
-        f"<< /Type /Pages /Kids [{kids}] /Count {len(page_objects)} >>",
-    )
-    builder.set(catalog, f"<< /Type /Catalog /Pages {pages_object} 0 R >>")
-    return builder.build(catalog)
+    document.save()
+    return output.getvalue()
