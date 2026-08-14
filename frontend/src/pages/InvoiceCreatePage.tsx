@@ -41,6 +41,13 @@ const TOO_LONG_MESSAGES: Record<string, string> = {
   buyer_tax_id: "JIB/PIB kupca je predugačak (najviše 64 znaka).",
 };
 
+const DECIMAL_PLACES_MESSAGES: Record<string, string> = {
+  quantity: "Količina može imati najviše 2 decimale.",
+  unit_price: "Cijena može imati najviše 2 decimale.",
+  discount_percent: "Popust može imati najviše 2 decimale.",
+  vat_rate: "PDV stopa može imati najviše 4 decimale.",
+};
+
 function getInvoiceCreateErrorMessage(error: unknown): string {
   if (!axios.isAxiosError(error)) {
     return "Fakturu nije moguće sačuvati. Pokušajte ponovo.";
@@ -87,6 +94,21 @@ function getInvoiceCreateErrorMessage(error: unknown): string {
     for (const item of validationErrors) {
       const location = Array.isArray(item.loc) ? item.loc : [];
       const field = location[location.length - 1];
+      if (
+        item.type === "decimal_max_places" &&
+        typeof field === "string" &&
+        DECIMAL_PLACES_MESSAGES[field]
+      ) {
+        return DECIMAL_PLACES_MESSAGES[field];
+      }
+
+      if (
+        item.type === "decimal_max_digits" ||
+        item.type === "decimal_whole_digits"
+      ) {
+        return "Unesena brojčana vrijednost je prevelika.";
+      }
+
       const isTooLong =
         item.type === "string_too_long" ||
         String(item.msg ?? "").includes("at most");
@@ -722,7 +744,7 @@ export default function InvoiceCreatePage() {
                         <input
                           type="number"
                           min={0}
-                          step="1"
+                          step="0.01"
                           value={item.quantity}
                           onChange={(e) =>
                             updateItem(index, "quantity", e.target.value)

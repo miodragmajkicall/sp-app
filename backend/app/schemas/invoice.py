@@ -27,23 +27,30 @@ class InvoiceItemBase(BaseModel):
     quantity: Decimal = Field(
         ...,
         gt=0,
+        max_digits=12,
+        decimal_places=2,
         description="Količina (> 0).",
     )
     unit_price: Decimal = Field(
         ...,
         ge=0,
+        max_digits=14,
+        decimal_places=2,
         description="Jedinična cijena (>= 0).",
     )
     discount_percent: Decimal = Field(
         Decimal("0.00"),
         ge=0,
         lt=100,
+        max_digits=5,
         decimal_places=2,
         description="Discount percentage per item (0 <= discount < 100).",
     )
     vat_rate: Decimal = Field(
         ...,
         ge=0,
+        max_digits=5,
+        decimal_places=4,
         description="Stopa PDV-a za stavku, npr. 0.17 (17%).",
     )
 

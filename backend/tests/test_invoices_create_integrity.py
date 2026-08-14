@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from sqlalchemy import event
 from sqlalchemy.exc import IntegrityError
 
-from app.db import engine
+from app.db import SessionLocal, engine
 from app.main import app
+from app.models import Invoice, InvoiceItem
 from app.routes import invoices as invoices_route
 from app.schemas.invoice import InvoiceCreate, InvoiceItemCreate
 from tests.invoice_profile_helpers import save_complete_profile
@@ -165,6 +168,161 @@ def test_trim_happens_before_length_validation() -> None:
 
     assert response.status_code == 201, response.text
     assert response.json()["invoice_number"] == invoice_number
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("quantity", "1.1", Decimal("1.1")),
+        ("quantity", "1.01", Decimal("1.01")),
+        ("quantity", "9999999999.99", Decimal("9999999999.99")),
+        ("unit_price", "999999999999.99", Decimal("999999999999.99")),
+        ("discount_percent", "99.99", Decimal("99.99")),
+        ("vat_rate", "9.9999", Decimal("9.9999")),
+    ],
+)
+def test_invoice_item_decimal_values_at_supported_boundaries_are_accepted(
+    field: str,
+    value: str,
+    expected: Decimal,
+) -> None:
+    item = _payload()["items"][0]
+    item[field] = value
+
+    validated = InvoiceItemCreate.model_validate(item)
+
+    assert getattr(validated, field) == expected
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("quantity", "10000000000.00"),
+        ("unit_price", "1000000000000.00"),
+        ("vat_rate", "10.0000"),
+    ],
+)
+def test_invoice_item_values_over_db_precision_are_rejected(
+    field: str,
+    value: str,
+) -> None:
+    item = _payload()["items"][0]
+    item[field] = value
+
+    with pytest.raises(ValidationError) as captured:
+        InvoiceItemCreate.model_validate(item)
+
+    assert any(
+        error["loc"] == (field,) and error["type"] == "decimal_whole_digits"
+        for error in captured.value.errors()
+    )
+
+
+def _assert_invoice_and_items_not_persisted(
+    tenant_code: str,
+    invoice_number: str,
+) -> None:
+    with SessionLocal() as db:
+        invoice_count = (
+            db.query(Invoice)
+            .filter(
+                Invoice.tenant_code == tenant_code,
+                Invoice.invoice_number == invoice_number,
+            )
+            .count()
+        )
+        item_count = (
+            db.query(InvoiceItem)
+            .join(Invoice, InvoiceItem.invoice_id == Invoice.id)
+            .filter(
+                Invoice.tenant_code == tenant_code,
+                Invoice.invoice_number == invoice_number,
+            )
+            .count()
+        )
+
+    assert invoice_count == 0
+    assert item_count == 0
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("quantity", "1.001"),
+        ("unit_price", "100.001"),
+        ("discount_percent", "1.001"),
+        ("vat_rate", "0.17001"),
+    ],
+)
+def test_excess_decimal_places_return_422_without_persistence(
+    field: str,
+    value: str,
+) -> None:
+    headers = _headers(f"invoice-decimals-{field}")
+    invoice_number = f"DEC-{uuid4().hex[:10]}"
+    payload = _payload(invoice_number)
+    payload["items"][0][field] = value
+
+    response = client.post("/invoices", headers=headers, json=payload)
+
+    assert response.status_code == 422, response.text
+    assert any(
+        error["loc"][-1] == field and error["type"] == "decimal_max_places"
+        for error in response.json()["detail"]
+    )
+    _assert_invoice_and_items_not_persisted(
+        headers["X-Tenant-Code"],
+        invoice_number,
+    )
+
+
+def test_valid_decimal_values_remain_consistent_after_db_refresh() -> None:
+    headers = _headers("invoice-decimal-refresh")
+    invoice_number = f"DEC-OK-{uuid4().hex[:8]}"
+    payload = _payload(invoice_number)
+    payload["items"][0].update(
+        {
+            "quantity": "1.25",
+            "unit_price": "100.00",
+            "discount_percent": "10.00",
+            "vat_rate": "0.1700",
+        }
+    )
+
+    response = client.post("/invoices", headers=headers, json=payload)
+
+    assert response.status_code == 201, response.text
+    created_item = response.json()["items"][0]
+    assert Decimal(created_item["quantity"]) == Decimal("1.25")
+    assert Decimal(created_item["unit_price"]) == Decimal("100.00")
+    assert Decimal(created_item["discount_percent"]) == Decimal("10.00")
+    assert Decimal(created_item["vat_rate"]) == Decimal("0.1700")
+    assert Decimal(created_item["base_amount"]) == Decimal("112.50")
+    assert Decimal(created_item["vat_amount"]) == Decimal("19.13")
+    assert Decimal(created_item["total_amount"]) == Decimal("131.63")
+
+    with SessionLocal() as db:
+        stored_invoice = (
+            db.query(Invoice)
+            .filter(
+                Invoice.tenant_code == headers["X-Tenant-Code"],
+                Invoice.invoice_number == invoice_number,
+            )
+            .one()
+        )
+        stored_item = (
+            db.query(InvoiceItem)
+            .filter(InvoiceItem.invoice_id == stored_invoice.id)
+            .one()
+        )
+
+    assert stored_item.quantity == Decimal("1.25")
+    assert stored_item.unit_price == Decimal("100.00")
+    assert stored_item.discount_percent == Decimal("10.00")
+    assert stored_item.vat_rate == Decimal("0.1700")
+    assert stored_item.base_amount == Decimal("112.50")
+    assert stored_item.vat_amount == Decimal("19.13")
+    assert stored_item.total_amount == Decimal("131.63")
 
 
 @pytest.mark.parametrize(
