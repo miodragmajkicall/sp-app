@@ -1,9 +1,8 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/ExportInspectionPage.tsx
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { apiClient, getApiBaseUrl } from "../services/apiClient";
-import { downloadInspectionZip } from "../services/exportApi";
 
 interface DashboardMonthlyResponse {
   tenant_code: string;
@@ -41,12 +40,7 @@ function formatDateLabel(value: string): string {
 export default function ExportInspectionPage() {
   const apiBaseUrl = getApiBaseUrl();
 
-  const {
-    data: currentMonthly,
-    isLoading: isLoadingCurrent,
-    isError: isErrorCurrent,
-    error: errorCurrent,
-  } = useQuery<DashboardMonthlyResponse, Error>({
+  const { data: currentMonthly } = useQuery<DashboardMonthlyResponse, Error>({
     queryKey: ["export", "bootstrap", "dashboard-monthly-current"],
     queryFn: async () => {
       const res = await apiClient.get<DashboardMonthlyResponse>(
@@ -60,124 +54,42 @@ export default function ExportInspectionPage() {
   const initialYear = currentMonthly?.year ?? new Date().getFullYear();
   const initialMonth = currentMonthly?.month ?? new Date().getMonth() + 1;
 
-  const defaultFrom = useMemo(
+  const fromDate = useMemo(
     () => firstDayOfMonth(initialYear, initialMonth),
     [initialYear, initialMonth],
   );
 
-  const defaultTo = useMemo(
+  const toDate = useMemo(
     () => lastDayOfMonth(initialYear, initialMonth),
     [initialYear, initialMonth],
   );
 
-  const [fromDate, setFromDate] = useState<string>(defaultFrom);
-  const [toDate, setToDate] = useState<string>(defaultTo);
-
-  useEffect(() => {
-    setFromDate(defaultFrom);
-    setToDate(defaultTo);
-  }, [defaultFrom, defaultTo]);
-
-  const [includeOutgoing, setIncludeOutgoing] = useState(true);
-  const [includeIncoming, setIncludeIncoming] = useState(true);
-  const [includeKpr, setIncludeKpr] = useState(true);
-  const [includePromet, setIncludePromet] = useState(true);
-  const [includeCashBank, setIncludeCashBank] = useState(true);
-  const [includeTaxes, setIncludeTaxes] = useState(true);
-
-  const [isDownloading, setIsDownloading] = useState(false);
-  const [errorText, setErrorText] = useState<string>("");
-
-  const includedCount = [
-    includeOutgoing,
-    includeIncoming,
-    includeKpr,
-    includePromet,
-    includeCashBank,
-    includeTaxes,
-  ].filter(Boolean).length;
-
-  const isLoading = isLoadingCurrent;
-  const isError = isErrorCurrent;
-
-  async function handleDownload() {
-    setErrorText("");
-
-    if (!fromDate || !toDate) {
-      setErrorText("Molim izaberi period (od / do).");
-      return;
-    }
-
-    if (fromDate > toDate) {
-      setErrorText("Neispravan period: datum 'od' ne može biti poslije datuma 'do'.");
-      return;
-    }
-
-    if (includedCount === 0) {
-      setErrorText("Mora biti izabran barem jedan segment za ZIP export.");
-      return;
-    }
-
-    try {
-      setIsDownloading(true);
-
-      await downloadInspectionZip({
-        from_date: fromDate,
-        to_date: toDate,
-        include_outgoing_invoices_pdf: includeOutgoing,
-        include_input_invoices_pdf: includeIncoming,
-        include_kpr_pdf: includeKpr,
-        include_promet_pdf: includePromet,
-        include_cash_bank_pdf: includeCashBank,
-        include_taxes_pdf: includeTaxes,
-      });
-    } catch (err: any) {
-      const msg =
-        err?.response?.data?.detail ||
-        err?.message ||
-        "Neuspješno preuzimanje ZIP-a.";
-      setErrorText(String(msg));
-    } finally {
-      setIsDownloading(false);
-    }
-  }
+  const includedCount = 6;
 
   const exportOptions = [
     {
       title: "Izlazne fakture",
       description: "PDF kopije izlaznih faktura za odabrani period.",
-      checked: includeOutgoing,
-      setChecked: setIncludeOutgoing,
     },
     {
       title: "Ulazni računi",
       description: "PDF dokumentacija ulaznih računa i dobavljača.",
-      checked: includeIncoming,
-      setChecked: setIncludeIncoming,
     },
     {
       title: "KPR",
       description: "Knjiga prihoda i rashoda za inspekcijski period.",
-      checked: includeKpr,
-      setChecked: setIncludeKpr,
     },
     {
       title: "Knjiga prometa",
       description: "KP-1042 / promet evidencija za izabrani period.",
-      checked: includePromet,
-      setChecked: setIncludePromet,
     },
     {
       title: "Kasa / Banka",
       description: "Izvještaj tokova novca, blagajne i računa.",
-      checked: includeCashBank,
-      setChecked: setIncludeCashBank,
     },
     {
       title: "Porezi i doprinosi",
       description: "Mjesečni/godišnji TAX/SAM obračuni za period.",
-      checked: includeTaxes,
-      setChecked: setIncludeTaxes,
     },
   ];
 
@@ -196,9 +108,8 @@ export default function ExportInspectionPage() {
               </h1>
 
               <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
-                Kreiranje ZIP paketa sa relevantnim dokumentima za odabrani
-                period: fakture, ulazni računi, KPR, knjiga prometa, kasa/banka
-                i poreski obračuni.
+                Izvoz za inspekciju još nije dostupan. Stvarni generatori
+                dokumenata još nisu implementirani.
               </p>
 
               <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-300">
@@ -259,7 +170,7 @@ export default function ExportInspectionPage() {
             <div className="rounded-2xl border border-white/10 bg-white/10 p-4 backdrop-blur">
               <p className="text-xs text-slate-300">Fakture</p>
               <p className="mt-2 text-2xl font-semibold text-emerald-300">
-                {includeOutgoing || includeIncoming ? "DA" : "NE"}
+                PLAN
               </p>
               <p className="mt-1 text-[11px] text-slate-400">
                 Izlazne i ulazne fakture.
@@ -269,7 +180,7 @@ export default function ExportInspectionPage() {
             <div className="rounded-2xl border border-white/10 bg-white/10 p-4 backdrop-blur">
               <p className="text-xs text-slate-300">Evidencije</p>
               <p className="mt-2 text-2xl font-semibold text-amber-300">
-                {includeKpr || includePromet || includeCashBank ? "DA" : "NE"}
+                PLAN
               </p>
               <p className="mt-1 text-[11px] text-slate-400">
                 KPR, promet i kasa/banka.
@@ -279,7 +190,7 @@ export default function ExportInspectionPage() {
             <div className="rounded-2xl border border-white/10 bg-white/10 p-4 backdrop-blur">
               <p className="text-xs text-slate-300">Porezi</p>
               <p className="mt-2 text-2xl font-semibold text-white">
-                {includeTaxes ? "DA" : "NE"}
+                PLAN
               </p>
               <p className="mt-1 text-[11px] text-slate-400">
                 TAX/SAM obračuni.
@@ -296,52 +207,44 @@ export default function ExportInspectionPage() {
               Period exporta
             </p>
             <h2 className="mt-1 text-lg font-semibold text-slate-900">
-              Odaberi opseg dokumenata
+              Pregled budućeg opsega dokumenata
             </h2>
             <p className="mt-1 text-xs leading-5 text-slate-500">
-              ZIP se kreira za dokumente i evidencije u odabranom periodu. Default
-              period dolazi iz tekućeg dashboard mjeseca.
+              Period dolazi iz tekućeg dashboard mjeseca i prikazan je samo kao
+              pregled planirane funkcije.
             </p>
           </div>
 
           <button
             type="button"
-            onClick={handleDownload}
-            disabled={isDownloading || isLoading || isError}
-            className={
-              "rounded-2xl px-5 py-3 text-sm font-semibold shadow-sm transition " +
-              (isDownloading || isLoading || isError
-                ? "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400"
-                : "bg-slate-950 text-white hover:bg-slate-800")
-            }
-            title={
-              isError
-                ? "Ne mogu učitati početne informacije sa servera."
-                : "Kreiraj ZIP i preuzmi."
-            }
+            disabled
+            className="cursor-not-allowed rounded-2xl border border-slate-200 bg-slate-100 px-5 py-3 text-sm font-semibold text-slate-400 shadow-sm"
+            title="Izvoz za inspekciju još nije dostupan."
           >
-            {isDownloading ? "Kreiram ZIP..." : "Preuzmi ZIP paket"}
+            Izvoz nije dostupan
           </button>
         </div>
 
         <div className="mt-5 grid gap-3 md:grid-cols-2">
-          <label className="space-y-1 text-xs font-medium text-slate-600">
+          <label className="space-y-1 text-xs font-medium text-slate-500">
             Period od
             <input
               type="date"
               value={fromDate}
-              onChange={(e) => setFromDate(e.target.value)}
-              className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+              disabled
+              readOnly
+              className="w-full cursor-not-allowed rounded-2xl border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-500 shadow-sm"
             />
           </label>
 
-          <label className="space-y-1 text-xs font-medium text-slate-600">
+          <label className="space-y-1 text-xs font-medium text-slate-500">
             Period do
             <input
               type="date"
               value={toDate}
-              onChange={(e) => setToDate(e.target.value)}
-              className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
+              disabled
+              readOnly
+              className="w-full cursor-not-allowed rounded-2xl border border-slate-200 bg-slate-100 px-3 py-2 text-sm text-slate-500 shadow-sm"
             />
           </label>
         </div>
@@ -356,24 +259,6 @@ export default function ExportInspectionPage() {
             {includedCount} od 6 segmenata
           </span>
         </div>
-
-        {isLoading && (
-          <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-            Učitavam početne podatke...
-          </div>
-        )}
-
-        {isError && (
-          <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            Greška: {errorCurrent?.message ?? "Neuspješno učitavanje."}
-          </div>
-        )}
-
-        {errorText && (
-          <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">
-            Greška: {errorText}
-          </div>
-        )}
       </section>
 
       <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
@@ -383,15 +268,15 @@ export default function ExportInspectionPage() {
               Sadržaj ZIP paketa
             </p>
             <h2 className="mt-1 text-lg font-semibold text-slate-900">
-              Šta uključiti u export
+              Planirani segmenti
             </h2>
             <p className="mt-1 text-xs leading-5 text-slate-500">
-              Izaberi segmente koje želiš uključiti u inspekcijski paket.
+              Segmenti su prikazani kao pregled i trenutno nisu dostupni.
             </p>
           </div>
 
           <div className="rounded-full border border-slate-200 bg-slate-50 px-3 py-1 text-xs font-semibold text-slate-700">
-            {includedCount}/6 aktivno
+            {includedCount}/6 planirano
           </div>
         </div>
 
@@ -399,37 +284,23 @@ export default function ExportInspectionPage() {
           {exportOptions.map((option) => (
             <label
               key={option.title}
-              className={
-                "cursor-pointer rounded-3xl border p-4 shadow-sm transition " +
-                (option.checked
-                  ? "border-emerald-200 bg-emerald-50"
-                  : "border-slate-200 bg-white hover:bg-slate-50")
-              }
+              className="cursor-not-allowed rounded-3xl border border-slate-200 bg-slate-50 p-4 shadow-sm"
             >
               <div className="flex items-start gap-3">
                 <input
                   type="checkbox"
-                  checked={option.checked}
-                  onChange={(e) => option.setChecked(e.target.checked)}
+                  checked
+                  disabled
+                  readOnly
                   className="mt-1"
                 />
 
                 <div>
-                  <p
-                    className={
-                      "text-sm font-semibold " +
-                      (option.checked ? "text-emerald-900" : "text-slate-900")
-                    }
-                  >
+                  <p className="text-sm font-semibold text-slate-700">
                     {option.title}
                   </p>
 
-                  <p
-                    className={
-                      "mt-1 text-xs leading-5 " +
-                      (option.checked ? "text-emerald-700" : "text-slate-500")
-                    }
-                  >
+                  <p className="mt-1 text-xs leading-5 text-slate-500">
                     {option.description}
                   </p>
                 </div>
@@ -439,25 +310,22 @@ export default function ExportInspectionPage() {
         </div>
 
         <div className="mt-5 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-800">
-          <span className="font-semibold">Napomena:</span> Ako neki PDF generator
-          još nije implementiran u backendu, backend treba vratiti jasnu grešku
-          ili izostaviti taj segment. To ćemo standardizovati u backend export
-          sprintu.
+          <span className="font-semibold">Nedostupno:</span> Izvoz za inspekciju
+          još nije dostupan. Stvarni generatori dokumenata još nisu implementirani.
         </div>
       </section>
 
       <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
         <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-          Cilj modula
+          Planirana funkcionalnost
         </p>
         <h2 className="mt-1 text-lg font-semibold text-slate-900">
-          Jedan klik do inspekcijskog paketa
+          Budući inspekcijski paket
         </h2>
         <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
-          Ova stranica treba da omogući korisniku da brzo pripremi kompletan
-          paket dokumenata za kontrolu, slanje, arhivu ili print. Trenutni UI je
-          spreman za produkcijski tok, dok ćemo backend export engine širiti po
-          segmentima.
+          Ova stranica prikazuje planirani period i segmente budućeg paketa.
+          Preuzimanje će biti omogućeno tek kada stvarni generatori dokumenata
+          budu implementirani.
         </p>
       </section>
     </div>

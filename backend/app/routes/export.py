@@ -201,69 +201,11 @@ def export_inspection_zip(
     db: Session = Depends(_get_session_dep),
     x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
 ) -> StreamingResponse:
-    tenant = require_tenant_code(x_tenant_code)
-    ensure_tenant_exists(db, tenant)
-
-    # Validacija perioda (test ocekuje 400 kad je from_date > to_date)
-    if payload.from_date > payload.to_date:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid period: from_date cannot be after to_date",
-        )
-
-    suffix = _period_suffix(payload.from_date, payload.to_date)
-
-    buffer = BytesIO()
-    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-        if payload.include_outgoing_invoices_pdf:
-            _add_pdf(
-                zf,
-                f"01_invoices_outgoing/outgoing_invoices_{suffix}.pdf",
-                "Izlazne fakture",
-            )
-
-        if payload.include_input_invoices_pdf:
-            _add_pdf(
-                zf,
-                f"02_invoices_incoming/input_invoices_{suffix}.pdf",
-                "Ulazni racuni",
-            )
-
-        if payload.include_kpr_pdf:
-            _add_pdf(
-                zf,
-                f"03_kpr/KPR_{suffix}.pdf",
-                "KPR (Knjiga prihoda i rashoda)",
-            )
-
-        if payload.include_promet_pdf:
-            _add_pdf(
-                zf,
-                f"04_promet/knjiga_prometa_{suffix}.pdf",
-                "Knjiga prometa",
-            )
-
-        if payload.include_cash_bank_pdf:
-            _add_pdf(
-                zf,
-                f"05_cash_bank/cash_bank_{suffix}.pdf",
-                "Cash/Bank",
-            )
-
-        if payload.include_taxes_pdf:
-            _add_pdf(
-                zf,
-                f"06_taxes/taxes_{suffix}.pdf",
-                "Porezi",
-            )
-
-    buffer.seek(0)
-
-    filename = _zip_filename(tenant, payload.from_date, payload.to_date)
-    headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
-
-    return StreamingResponse(
-        buffer,
-        media_type="application/zip",
-        headers=headers,
+    require_tenant_code(x_tenant_code)
+    raise HTTPException(
+        status_code=status.HTTP_501_NOT_IMPLEMENTED,
+        detail=(
+            "Inspection ZIP export is not available because document generators "
+            "are not implemented"
+        ),
     )
