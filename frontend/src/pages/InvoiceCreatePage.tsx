@@ -1,12 +1,11 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/InvoiceCreatePage.tsx
 import axios from "axios";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 
-import { createInvoice, fetchInvoicesList } from "../services/invoicesApi";
+import { createInvoice, fetchNextInvoiceNumber } from "../services/invoicesApi";
 import type {
-  InvoiceListResponse,
   InvoiceCreatePayload,
   NewInvoiceBuyerType,
 } from "../types/invoice";
@@ -216,40 +215,25 @@ export default function InvoiceCreatePage() {
 
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+  const previousAutoNumberRef = useRef("");
 
-  const { data: invoicesListData } = useQuery<InvoiceListResponse>({
-    queryKey: ["invoices", "list-for-number-suggestion"],
-    queryFn: () => fetchInvoicesList(),
+  const { data: suggestedNumber } = useQuery({
+    queryKey: ["invoices", "next-number", issueDate],
+    queryFn: () => fetchNextInvoiceNumber(issueDate),
+    enabled: issueDate.length > 0,
   });
 
   useEffect(() => {
-    if (!invoicesListData) return;
-    if (number.trim() !== "") return;
-    if (!issueDate) return;
+    if (!suggestedNumber) return;
 
-    const [year, month] = issueDate.split("-");
-    if (!year || !month) return;
+    const currentNumber = number.trim();
+    const canApplySuggestion =
+      currentNumber === "" || currentNumber === previousAutoNumberRef.current;
+    if (!canApplySuggestion) return;
 
-    const prefix = `${year}/${month}/`;
-
-    let maxSuffix = 0;
-    for (const inv of invoicesListData.items) {
-      if (!inv.number) continue;
-      if (!inv.number.startsWith(prefix)) continue;
-
-      const suffixStr = inv.number.slice(prefix.length);
-      const suffixNum = parseInt(suffixStr, 10);
-
-      if (Number.isFinite(suffixNum) && suffixNum > maxSuffix) {
-        maxSuffix = suffixNum;
-      }
-    }
-
-    const nextSuffix = maxSuffix + 1;
-    const formattedSuffix = String(nextSuffix).padStart(4, "0");
-
-    setNumber(`${prefix}${formattedSuffix}`);
-  }, [invoicesListData, issueDate, number]);
+    previousAutoNumberRef.current = suggestedNumber;
+    setNumber(suggestedNumber);
+  }, [number, suggestedNumber]);
 
   function handleIssueDateChange(value: string) {
     setIssueDate(value);

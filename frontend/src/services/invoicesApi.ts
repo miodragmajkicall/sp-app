@@ -130,6 +130,19 @@ export async function fetchInvoicesList(
 }
 
 /**
+ * Prijedlog narednog broja fakture za datum izdavanja.
+ */
+export async function fetchNextInvoiceNumber(
+  issueDate: string,
+): Promise<string> {
+  const response = await apiClient.get<{ invoice_number: string }>(
+    "/invoices/next-number",
+    { params: { issue_date: issueDate } },
+  );
+  return response.data.invoice_number;
+}
+
+/**
  * Detaljna faktura – GET /invoices/{id}
  */
 export async function fetchInvoiceById(

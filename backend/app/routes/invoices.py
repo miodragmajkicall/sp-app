@@ -806,6 +806,45 @@ def mark_invoice_paid(
 
 
 # ======================================================
+#  NEXT INVOICE NUMBER
+# ======================================================
+
+
+@router.get(
+    "/invoices/next-number",
+    summary="Predloži naredni broj fakture",
+)
+def get_next_invoice_number(
+    issue_date: date = Query(...),
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+    ),
+) -> dict[str, str]:
+    tenant = _require_tenant(x_tenant_code)
+    _ensure_tenant_exists(db, tenant)
+
+    prefix = f"{issue_date.year:04d}/{issue_date.month:02d}/"
+    stmt = select(Invoice.invoice_number).where(
+        Invoice.tenant_code == tenant,
+        Invoice.invoice_number.like(f"{prefix}%"),
+    )
+    invoice_numbers = db.execute(stmt).scalars().all()
+
+    max_suffix = 0
+    for invoice_number in invoice_numbers:
+        suffix = invoice_number[len(prefix) :]
+        if suffix.isdigit():
+            max_suffix = max(max_suffix, int(suffix))
+
+    next_suffix = max_suffix + 1
+    return {
+        "invoice_number": f"{prefix}{next_suffix:04d}",
+    }
+
+
+# ======================================================
 #  GET BY ID
 # ======================================================
 
