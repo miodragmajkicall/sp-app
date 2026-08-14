@@ -1,4 +1,5 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/InvoiceCreatePage.tsx
+import axios from "axios";
 import { useEffect, useState, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
@@ -23,6 +24,86 @@ const INCOMPLETE_COMPANY_PROFILE_MESSAGE =
 const INCOMPLETE_COMPANY_PROFILE_USER_MESSAGE =
   "Prije izdavanja fakture dovr\u0161i poslovni naziv, adresu i " +
   "JIB/PIB u Settings \u2192 Profil firme.";
+
+const DUPLICATE_INVOICE_NUMBER_MESSAGE =
+  "Invoice number already exists for this tenant";
+
+type ValidationErrorDetail = {
+  loc?: unknown;
+  msg?: unknown;
+  type?: unknown;
+};
+
+const TOO_LONG_MESSAGES: Record<string, string> = {
+  invoice_number: "Broj fakture je predugačak (najviše 32 znaka).",
+  buyer_name: "Naziv kupca je predugačak (najviše 128 znakova).",
+  buyer_address: "Adresa kupca je predugačka (najviše 256 znakova).",
+  buyer_tax_id: "JIB/PIB kupca je predugačak (najviše 64 znaka).",
+};
+
+function getInvoiceCreateErrorMessage(error: unknown): string {
+  if (!axios.isAxiosError(error)) {
+    return "Fakturu nije moguće sačuvati. Pokušajte ponovo.";
+  }
+
+  if (!error.response) {
+    return "Povezivanje sa serverom nije moguće. Pokušajte ponovo.";
+  }
+
+  const responseData = error.response.data as
+    | { detail?: unknown }
+    | undefined;
+  const detail = responseData?.detail;
+
+  if (
+    error.response.status === 409 &&
+    detail === INCOMPLETE_COMPANY_PROFILE_MESSAGE
+  ) {
+    return INCOMPLETE_COMPANY_PROFILE_USER_MESSAGE;
+  }
+
+  if (
+    error.response.status === 409 &&
+    detail === DUPLICATE_INVOICE_NUMBER_MESSAGE
+  ) {
+    return "Faktura sa ovim brojem već postoji.";
+  }
+
+  if (error.response.status === 422) {
+    const validationErrors: ValidationErrorDetail[] = Array.isArray(detail)
+      ? detail
+      : [];
+
+    if (
+      validationErrors.some((item) =>
+        String(item.msg ?? "").includes(
+          "due_date must be on or after issue_date",
+        ),
+      )
+    ) {
+      return "Rok plaćanja ne može biti prije datuma izdavanja.";
+    }
+
+    for (const item of validationErrors) {
+      const location = Array.isArray(item.loc) ? item.loc : [];
+      const field = location[location.length - 1];
+      const isTooLong =
+        item.type === "string_too_long" ||
+        String(item.msg ?? "").includes("at most");
+      if (isTooLong && typeof field === "string" && TOO_LONG_MESSAGES[field]) {
+        return TOO_LONG_MESSAGES[field];
+      }
+    }
+
+    return "Provjerite unesene podatke.";
+  }
+
+  if (error.response.status >= 500) {
+    return "Fakturu trenutno nije moguće sačuvati. Pokušajte ponovo.";
+  }
+
+  return "Fakturu nije moguće sačuvati. Pokušajte ponovo.";
+}
 
 function getTodayAsDateString(): string {
   return new Date().toISOString().slice(0, 10);
@@ -101,9 +182,6 @@ export default function InvoiceCreatePage() {
   const [buyerIdNumber, setBuyerIdNumber] = useState("");
 
   const [note, setNote] = useState("");
-
-  const [sendEmail, setSendEmail] = useState(false);
-  const [buyerEmail, setBuyerEmail] = useState("");
 
   const [items, setItems] = useState<InvoiceItem[]>([
     {
@@ -333,18 +411,10 @@ export default function InvoiceCreatePage() {
         items: preparedItems,
       };
 
-      await createInvoice(payload).catch((error: any) => {
-        if (
-          error?.response?.data?.detail ===
-          INCOMPLETE_COMPANY_PROFILE_MESSAGE
-        ) {
-          throw new Error(INCOMPLETE_COMPANY_PROFILE_USER_MESSAGE);
-        }
-        throw error;
-      });
+      await createInvoice(payload);
       navigate("/invoices");
-    } catch (err: any) {
-      setErrorMsg(err?.message ?? "Greška pri snimanju fakture");
+    } catch (error: unknown) {
+      setErrorMsg(getInvoiceCreateErrorMessage(error));
     } finally {
       setSaving(false);
     }
@@ -736,11 +806,9 @@ export default function InvoiceCreatePage() {
 
           <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
             <div className="mb-4 border-b border-slate-100 pb-4">
-              <h2 className="text-base font-semibold text-slate-900">
-                Napomena i email opcije
-              </h2>
+              <h2 className="text-base font-semibold text-slate-900">Napomena</h2>
               <p className="mt-1 text-sm text-slate-500">
-                Dodatni tekst na fakturi i placeholder za budući email modul.
+                Dodatni tekst koji će biti prikazan na fakturi.
               </p>
             </div>
 
@@ -756,38 +824,6 @@ export default function InvoiceCreatePage() {
                   onChange={(e) => setNote(e.target.value)}
                   placeholder="npr. Plaćanje po prijemu fakture, rok 7 dana..."
                 />
-              </div>
-
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <div className="flex items-start gap-3">
-                  <input
-                    id="send-email"
-                    type="checkbox"
-                    className="mt-1"
-                    checked={sendEmail}
-                    onChange={(e) => setSendEmail(e.target.checked)}
-                  />
-                  <div className="flex-1 space-y-2">
-                    <label
-                      htmlFor="send-email"
-                      className="block text-sm font-semibold text-slate-800"
-                    >
-                      Pošalji fakturu kupcu putem emaila
-                    </label>
-                    <input
-                      type="email"
-                      className="input bg-white text-sm"
-                      placeholder="email kupca"
-                      value={buyerEmail}
-                      onChange={(e) => setBuyerEmail(e.target.value)}
-                      disabled={!sendEmail}
-                    />
-                    <p className="text-xs leading-5 text-slate-500">
-                      Opcija je trenutno samo vizuelna. Kasniji modul može
-                      koristiti ovaj podatak za automatsko slanje fakture.
-                    </p>
-                  </div>
-                </div>
               </div>
             </div>
           </section>

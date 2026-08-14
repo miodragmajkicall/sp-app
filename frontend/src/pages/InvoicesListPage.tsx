@@ -304,10 +304,10 @@ export default function InvoicesListPage() {
                 Ukupno: {total}
               </span>
               <span className="inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-slate-200 ring-1 ring-white/10">
-                Neplaćene: {stats.unpaidCount}
+                Neplaćene na stranici: {stats.unpaidCount}
               </span>
               <span className="inline-flex items-center rounded-full bg-white/10 px-3 py-1 text-xs font-medium text-slate-200 ring-1 ring-white/10">
-                Dospjele: {stats.overdueCount}
+                Dospjele na stranici: {stats.overdueCount}
               </span>
             </div>
           </div>
@@ -366,36 +366,36 @@ export default function InvoicesListPage() {
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <KpiCard
-          title="Fakture u prikazu"
+          title="Ukupno faktura"
           value={String(total)}
-          subtitle={isFetching ? "Osvježavanje u toku" : "Prema aktivnim filterima"}
+          subtitle={isFetching ? "Osvježavanje u toku" : "U filtriranom rezultatu"}
           icon={<Receipt className="h-5 w-5" />}
           tone="slate"
         />
 
         <KpiCard
-          title="Ukupan iznos"
+          title="Ukupan iznos na stranici"
           value={formatAmount(stats.totalAmount)}
-          subtitle="Suma trenutno učitanih faktura"
+          subtitle="Suma faktura na ovoj stranici"
           icon={<Wallet className="h-5 w-5" />}
           tone="sky"
         />
 
         <KpiCard
-          title="Neplaćeno"
+          title="Neplaćeno na stranici"
           value={formatAmount(stats.unpaidAmount)}
-          subtitle={`${stats.unpaidCount} faktura čeka naplatu`}
+          subtitle={`${stats.unpaidCount} faktura na ovoj stranici`}
           icon={<AlertTriangle className="h-5 w-5" />}
           tone={stats.unpaidCount > 0 ? "amber" : "emerald"}
         />
 
         <KpiCard
-          title="Dospjelo"
+          title="Dospjelo na stranici"
           value={String(stats.overdueCount)}
           subtitle={
             stats.overdueCount > 0
-              ? "Potrebna provjera naplate"
-              : "Nema dospjelih faktura"
+              ? "Potrebna provjera na ovoj stranici"
+              : "Nema dospjelih na ovoj stranici"
           }
           icon={<CheckCircle2 className="h-5 w-5" />}
           tone={stats.overdueCount > 0 ? "rose" : "emerald"}

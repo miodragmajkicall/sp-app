@@ -1,7 +1,9 @@
 # /home/miso/dev/sp-app/sp-app/backend/app/routes/invoices.py
 from __future__ import annotations
 
+import csv
 import io
+import re
 from datetime import date
 from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional
@@ -45,6 +47,32 @@ INVOICE_NUMBER_UNIQUE_CONSTRAINT = "uq_invoice_number_per_tenant"
 UNEXPECTED_INTEGRITY_ERROR_MESSAGE = (
     "Unable to create invoice due to a data integrity error"
 )
+
+
+def _protect_spreadsheet_text(value: str) -> str:
+    for character in value:
+        code_point = ord(character)
+        if character.isspace() or code_point < 32 or 0x7F <= code_point <= 0x9F:
+            continue
+        if character in {"=", "+", "-", "@"}:
+            return f"'{value}"
+        break
+    return value
+
+
+def _safe_invoice_filename_component(
+    invoice_number: str | None,
+    invoice_id: int,
+) -> str:
+    component = re.sub(
+        r"[^A-Za-z0-9._-]+",
+        "_",
+        invoice_number or "",
+    )
+    component = component.strip(" ._-")[:80].strip(" ._-")
+    if not component:
+        return str(invoice_id)
+    return component
 
 
 def _normalize_snapshot_text(value: object) -> Optional[str]:
@@ -635,32 +663,44 @@ def export_invoices(
     base_stmt = base_stmt.order_by(Invoice.issue_date.desc(), Invoice.id.desc())
     rows: List[Invoice] = db.execute(base_stmt).scalars().all()
 
-    # Priprema CSV sadržaja (Excel-friendly, delimiter ';', UTF-8 sa BOM)
     output = io.StringIO()
-    # Header red
-    output.write(
-        "Broj fakture;Datum izdavanja;Rok plaćanja;Kupac;Ukupan iznos;Plaćena\n"
+    output.write("sep=;\r\n")
+    writer = csv.writer(
+        output,
+        delimiter=";",
+        lineterminator="\r\n",
+    )
+    writer.writerow(
+        [
+            "Broj fakture",
+            "Datum izdavanja",
+            "Rok plaćanja",
+            "Kupac",
+            "Ukupan iznos",
+            "Plaćena",
+        ]
     )
 
     for inv in rows:
-        invoice_number = inv.invoice_number or ""
         issue_date_str = inv.issue_date.isoformat() if inv.issue_date else ""
         due_date_str = inv.due_date.isoformat() if inv.due_date else ""
-        buyer_name = inv.buyer_name or ""
         total_amount = f"{inv.total_amount:.2f}" if inv.total_amount is not None else ""
         is_paid_str = "DA" if inv.is_paid else "NE"
 
-        line = (
-            f"{invoice_number};"
-            f"{issue_date_str};"
-            f"{due_date_str};"
-            f"{buyer_name};"
-            f"{total_amount};"
-            f"{is_paid_str}\n"
+        writer.writerow(
+            [
+                _protect_spreadsheet_text(inv.invoice_number or ""),
+                issue_date_str,
+                due_date_str,
+                _protect_spreadsheet_text(inv.buyer_name or ""),
+                total_amount,
+                is_paid_str,
+            ]
         )
-        output.write(line)
 
-    csv_bytes = ("\ufeff" + output.getvalue()).encode("utf-8")  # BOM za Excel
+    csv_bytes = b"\xff\xfe" + output.getvalue().encode(
+        "utf-16-le"
+    )
     buffer = io.BytesIO(csv_bytes)
 
     filename = "invoices-export.csv"
@@ -670,7 +710,7 @@ def export_invoices(
 
     return StreamingResponse(
         buffer,
-        media_type="text/csv; charset=utf-8",
+        media_type="text/csv; charset=utf-16le",
         headers=headers,
     )
 
@@ -888,7 +928,10 @@ def get_invoice_pdf(
     pdf_bytes = render_invoice_pdf(invoice, logo_bytes=logo_bytes)
     buffer = io.BytesIO(pdf_bytes)
 
-    filename = f"invoice-{invoice.invoice_number or invoice.id}.pdf"
+    filename_component = _safe_invoice_filename_component(
+        invoice.invoice_number, invoice.id
+    )
+    filename = f"invoice-{filename_component}.pdf"
     headers = {
         "Content-Disposition": f'inline; filename="{filename}"',
     }

@@ -552,3 +552,81 @@ def test_long_values_wrap_and_many_items_paginate_with_repeated_headers() -> Non
         in pdf
     )
     assert b"Ukupno: 22.23 KM" in pdf
+
+
+@pytest.mark.parametrize(
+    ("invoice_number", "expected_component"),
+    [
+        ("PDF/INV\\01", "PDF_INV_01"),
+        ('PDF"INV-02', "PDF_INV-02"),
+        ("PDF\r\nINV-03", "PDF_INV-03"),
+        ("Ž-račun-04", "ra_un-04"),
+    ],
+)
+def test_invoice_pdf_sanitizes_content_disposition_filename(
+    invoice_number: str,
+    expected_component: str,
+) -> None:
+    headers = _headers("pdf-safe-filename")
+    created = _create_invoice(
+        headers,
+        invoice_number=invoice_number,
+    )
+
+    response = client.get(
+        f"/invoices/{created['id']}/pdf",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    content_disposition = response.headers["content-disposition"]
+    assert content_disposition == (
+        f'inline; filename="invoice-{expected_component}.pdf"'
+    )
+    filename_match = re.fullmatch(
+        r'inline; filename="([A-Za-z0-9._-]+)"',
+        content_disposition,
+    )
+    assert filename_match is not None
+    filename = filename_match.group(1)
+    assert "\r" not in filename
+    assert "\n" not in filename
+    assert '"' not in filename
+    assert "/" not in filename
+    assert "\\" not in filename
+
+
+def test_invoice_pdf_filename_component_is_limited_and_has_id_fallback() -> None:
+    long_component = invoice_routes._safe_invoice_filename_component(
+        "A" * 100,
+        123,
+    )
+    assert long_component == "A" * 80
+    assert len(long_component) == 80
+
+    for unusable in (None, "", "._- ", "Žčć"):
+        assert (
+            invoice_routes._safe_invoice_filename_component(unusable, 123)
+            == "123"
+        )
+
+
+def test_invoice_pdf_filename_sanitization_does_not_change_pdf_number() -> None:
+    headers = _headers("pdf-original-number")
+    invoice_number = f"ORIG/{uuid4().hex[:8]}"
+    created = _create_invoice(
+        headers,
+        invoice_number=invoice_number,
+    )
+
+    response = client.get(
+        f"/invoices/{created['id']}/pdf",
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    assert invoice_number.encode("ascii") in _pdf_text(response.content)
+    assert (
+        f'inline; filename="invoice-{invoice_number.replace("/", "_")}.pdf"'
+        == response.headers["content-disposition"]
+    )
