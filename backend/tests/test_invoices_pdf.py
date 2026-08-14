@@ -209,6 +209,7 @@ def _invoice(**overrides):
         "buyer_address": "Buyer address 1",
         "buyer_type": "BUSINESS",
         "buyer_tax_id": "4401111111111",
+        "note": None,
         "issuer_business_name": "Historical Issuer SP",
         "issuer_address": "Historical address 10",
         "issuer_tax_id": "4402222222222",
@@ -411,12 +412,38 @@ def test_pdf_preserves_unicode_and_embeds_searchable_noto_fonts() -> None:
     )
 
 
-def test_unsupported_emoji_is_controlled_for_service_and_endpoint() -> None:
+def test_pdf_renders_short_note() -> None:
+    note = "Roba ostaje vlasništvo prodavca do potpune uplate."
+    pdf = render_invoice_pdf(_invoice(note=note))
+    text = _pdf_text(pdf)
+
+    assert len(_pdf_reader(pdf).pages) == 1
+    assert "Napomena" in text
+    assert note in text
+
+
+def test_pdf_renders_searchable_unicode_note() -> None:
+    note = "Mišo čćšđž ČĆŠĐŽ - Напомена за купца"
+    text = _pdf_text(render_invoice_pdf(_invoice(note=note)))
+
+    assert "Napomena" in text
+    assert note in text
+    assert "?" not in text
+
+
+@pytest.mark.parametrize("note", [None, "", "   \n\t  "])
+def test_pdf_omits_empty_note_section(note: str | None) -> None:
+    text = _pdf_text(render_invoice_pdf(_invoice(note=note)))
+
+    assert "Napomena" not in text
+
+
+def test_unsupported_note_emoji_is_controlled_for_service_and_endpoint() -> None:
     with pytest.raises(UnsupportedPdfGlyphError):
-        render_invoice_pdf(_invoice(buyer_name="Kupac 😀"))
+        render_invoice_pdf(_invoice(note="Napomena samo sa emoji znakom 😀"))
 
     headers = _headers("pdf-unsupported-glyph")
-    created = _create_invoice(headers, buyer_name="Kupac 😀")
+    created = _create_invoice(headers, note="Napomena samo sa emoji znakom 😀")
     response = client.get(f"/invoices/{created['id']}/pdf", headers=headers)
     assert response.status_code == 422
     assert response.json() == {
@@ -425,6 +452,63 @@ def test_unsupported_emoji_is_controlled_for_service_and_endpoint() -> None:
             "characters unsupported by the PDF font"
         )
     }
+
+
+def test_long_unicode_note_paginates_after_invoice_content_with_logo() -> None:
+    paragraphs = [
+        f"Pasus {index}: "
+        + (
+            "Дуга напомена за купца i računovodstvene "
+            "informacije čćšđž koje moraju ostati kompletne i čitljive. "
+        )
+        * 5
+        for index in range(1, 16)
+    ]
+    note = "\n\n".join(paragraphs)
+    items = [
+        _item(f"Unicode service {index}: Рачуноводствена услуга čćšđž")
+        for index in range(45)
+    ]
+    pdf = render_invoice_pdf(
+        _invoice(note=note, items=items),
+        logo_bytes=_image_bytes("PNG", color=(20, 100, 180, 120)),
+    )
+    reader = _pdf_reader(pdf)
+    text = _pdf_text(pdf)
+    normalized = " ".join(text.split())
+    semantic_text = re.sub(r"Strana \d+ / \d+", " ", normalized)
+    semantic_text = semantic_text.replace(
+        "Faktura br: UNIT-PDF-1 nastavak", " "
+    )
+    semantic_text = " ".join(semantic_text.split())
+    expected_note = " ".join(note.split())
+
+    assert len(reader.pages) >= 3
+    assert expected_note in semantic_text
+    marker_positions = []
+    for index, paragraph in enumerate(paragraphs, start=1):
+        normalized_paragraph = " ".join(paragraph.split())
+        marker = f"Pasus {index}:"
+        assert semantic_text.count(normalized_paragraph) == 1
+        assert semantic_text.count(marker) == 1
+        marker_positions.append(semantic_text.index(marker))
+    assert marker_positions == sorted(marker_positions)
+    assert expected_note.startswith("Pasus 1: Дуга напомена за купца")
+    assert expected_note.endswith("moraju ostati kompletne i čitljive.")
+    assert "računovodstvene" in expected_note
+    assert "čćšđž" in expected_note
+    assert "?" not in semantic_text
+    assert text.count("Napomena") == 1
+    assert text.count("Osnovica: 19.00 KM") == 1
+    assert text.count("Ukupan PDV: 3.23 KM") == 1
+    assert text.count("Ukupno: 22.23 KM") == 1
+    assert "Instrukcije za uplatu" in text
+    assert text.index("Ukupno: 22.23 KM") < text.index("Napomena")
+    assert text.count("Opis") >= 2
+    assert b"/Subtype /Image" in pdf
+    assert f"Strana 1 / {len(reader.pages)}" in text
+    assert f"Strana {len(reader.pages)} / {len(reader.pages)}" in text
+    assert all((page.extract_text() or "").strip() for page in reader.pages)
 
 
 @pytest.mark.parametrize(

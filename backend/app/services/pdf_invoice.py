@@ -77,6 +77,7 @@ def _invoice_text_values(invoice: "Invoice") -> list[str]:
         "invoice_number",
         "buyer_name",
         "buyer_address",
+        "note",
         "buyer_tax_id",
         "issuer_business_name",
         "issuer_address",
@@ -153,6 +154,21 @@ def _wrap(
                 current = candidate
     if current:
         lines.append(current)
+    return lines
+
+
+def _wrap_preserving_newlines(
+    value: object, width: float, size: float, *, bold: bool = False
+) -> list[str]:
+    source = _text(value)
+    if not source:
+        return []
+    lines: list[str] = []
+    for paragraph in source.splitlines():
+        if paragraph.strip():
+            lines.extend(_wrap(paragraph, width, size, bold=bold))
+        else:
+            lines.append("")
     return lines
 
 
@@ -466,6 +482,26 @@ def render_invoice_pdf(invoice: "Invoice", logo_bytes: bytes | None = None) -> b
         y -= 14
         for value in bank_values:
             y = _draw_wrapped(page, LEFT, y, value, 300, size=8)
+
+    note_lines = _wrap_preserving_newlines(
+        getattr(invoice, "note", None), RIGHT - LEFT, 8
+    )
+    if note_lines:
+        y -= 12
+        if y - 25 < BOTTOM:
+            page = _Page()
+            pages.append(page)
+            y = _continuation_header(page, invoice)
+        page.text(LEFT, y, "Napomena", size=9, bold=True)
+        y -= 14
+        for line in note_lines:
+            if y < BOTTOM:
+                page = _Page()
+                pages.append(page)
+                y = _continuation_header(page, invoice)
+            if line:
+                page.text(LEFT, y, line, size=8)
+            y -= 11
 
     for number, current_page in enumerate(pages, start=1):
         current_page.text(
