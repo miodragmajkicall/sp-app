@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, Field, ConfigDict, model_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 
 BaseConfig = ConfigDict(from_attributes=True, populate_by_name=True)
@@ -51,10 +51,12 @@ class InvoiceItemBase(BaseModel):
 class InvoiceItemCreate(InvoiceItemBase):
     """Model za kreiranje stavki fakture."""
 
-    # polja za računanje – ne šalje ih klijent!
-    base_amount: Optional[Decimal] = Field(None)
-    vat_amount: Optional[Decimal] = Field(None)
-    total_amount: Optional[Decimal] = Field(None)
+    @field_validator("description", mode="before")
+    @classmethod
+    def normalize_description(cls, value):
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
     model_config = ConfigDict(
         from_attributes=True,
@@ -109,10 +111,12 @@ class InvoiceBase(BaseModel):
     buyer_name: str = Field(
         ...,
         min_length=1,
+        max_length=128,
         description="Naziv kupca/klijenta.",
     )
     buyer_address: Optional[str] = Field(
         None,
+        max_length=256,
         description="Adresa kupca (opcionalno).",
     )
     buyer_type: Literal["BUSINESS", "INDIVIDUAL", "UNSPECIFIED"] = Field(
@@ -121,6 +125,7 @@ class InvoiceBase(BaseModel):
     )
     buyer_tax_id: Optional[str] = Field(
         None,
+        max_length=64,
         description="JIB/PIB poslovnog kupca (opcionalno).",
     )
     note: Optional[str] = Field(
@@ -174,6 +179,27 @@ class InvoiceCreate(InvoiceBase):
         description="Lista stavki fakture.",
         min_length=1,
     )
+
+    @field_validator("invoice_number", "buyer_name", mode="before")
+    @classmethod
+    def normalize_required_text(cls, value):
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator("buyer_address", "buyer_tax_id", "note", mode="before")
+    @classmethod
+    def normalize_optional_text(cls, value):
+        if isinstance(value, str):
+            value = value.strip()
+            return value or None
+        return value
+
+    @model_validator(mode="after")
+    def validate_due_date(self):
+        if self.due_date is not None and self.due_date < self.issue_date:
+            raise ValueError("due_date must be on or after issue_date")
+        return self
 
 
 class InvoiceRead(InvoiceBase):

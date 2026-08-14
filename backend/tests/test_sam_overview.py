@@ -4,9 +4,19 @@ from decimal import Decimal
 
 from fastapi.testclient import TestClient
 
+from app.db import SessionLocal
 from app.main import app
+from app.tenant_security import ensure_tenant_exists
 
 client = TestClient(app)
+
+
+def _ensure_test_tenant(tenant_code: str) -> None:
+    db = SessionLocal()
+    try:
+        ensure_tenant_exists(db, tenant_code)
+    finally:
+        db.close()
 
 
 def _d0(value: object) -> Decimal:
@@ -79,7 +89,7 @@ def test_sam_overview_with_one_finalized_month_uses_tax_monthly_results() -> Non
     """
     Scenarij:
 
-    - koristimo postojećeg tenanta 't-demo' (postoji u tabeli tenants),
+    - eksplicitno osiguramo vlastitog test tenanta,
     - radimo sa godinom 2099 i mjesecom 3 da se minimalno sudaramo sa drugim testovima,
     - ako mjesec NIJE finalizovan:
         - pozivamo /tax/monthly/finalize i koristimo taj rezultat,
@@ -93,10 +103,12 @@ def test_sam_overview_with_one_finalized_month_uses_tax_monthly_results() -> Non
     - da yearly_summary.total_due = suma total_due za svih 12 mjeseci,
     - da finalized_months + open_months = 12.
     """
-    tenant_code = "t-demo"
+    tenant_code = "sam-overview-finalized"
     year = 2099
     month = 3
     headers = {"X-Tenant-Code": tenant_code}
+
+    _ensure_test_tenant(tenant_code)
 
     # 1) Pokušamo finalize za (year, month, tenant)
     finalize_resp = client.post(

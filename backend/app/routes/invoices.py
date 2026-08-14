@@ -16,8 +16,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, func, text
-    # NOTE: text is used in _ensure_is_paid_column
+from sqlalchemy import select, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -42,6 +41,10 @@ PERCENT_BASE = Decimal("100")
 INCOMPLETE_COMPANY_PROFILE_MESSAGE = (
     "Company profile must be completed before issuing an invoice"
 )
+INVOICE_NUMBER_UNIQUE_CONSTRAINT = "uq_invoice_number_per_tenant"
+UNEXPECTED_INTEGRITY_ERROR_MESSAGE = (
+    "Unable to create invoice due to a data integrity error"
+)
 
 
 def _normalize_snapshot_text(value: object) -> Optional[str]:
@@ -49,6 +52,13 @@ def _normalize_snapshot_text(value: object) -> Optional[str]:
         return None
     normalized = value.strip()
     return normalized or None
+
+
+def _integrity_constraint_name(exc: IntegrityError) -> str | None:
+    original = getattr(exc, "orig", None)
+    diagnostic = getattr(original, "diag", None)
+    constraint_name = getattr(diagnostic, "constraint_name", None)
+    return constraint_name if isinstance(constraint_name, str) else None
 
 
 def _get_invoice_issuer_snapshot(db: Session, tenant: str) -> dict[str, Optional[str]]:
@@ -152,39 +162,6 @@ def _ensure_tenant_exists(db: Session, code: str) -> None:
 
 
 # ======================================================
-#  SCHEMA SAFETY – osiguranje da postoji is_paid kolona
-# ======================================================
-
-_IS_PAID_COLUMN_CHECKED: bool = False
-
-
-def _ensure_is_paid_column(db: Session) -> None:
-    """
-    Jednostavan zaštitni mehanizam:
-
-    Ako kolona `is_paid` ne postoji u tabeli `invoices`, dodajemo je
-    kroz raw SQL. Ovo omogućava da testovi i razvojni DB nastave
-    da rade čak i ako Alembic migracija nije pokrenuta.
-
-    U produkciji ćemo ovo zamijeniti čistom Alembic migracijom.
-    """
-    global _IS_PAID_COLUMN_CHECKED
-    if _IS_PAID_COLUMN_CHECKED:
-        return
-
-    db.execute(
-        text(
-            """
-            ALTER TABLE invoices
-            ADD COLUMN IF NOT EXISTS is_paid boolean NOT NULL DEFAULT false
-            """
-        )
-    )
-    db.commit()
-    _IS_PAID_COLUMN_CHECKED = True
-
-
-# ======================================================
 #  CREATE
 # ======================================================
 
@@ -269,7 +246,6 @@ def create_invoice(
 
     _ensure_tenant_exists(db, tenant)
     issuer_snapshot = _get_invoice_issuer_snapshot(db, tenant)
-    _ensure_is_paid_column(db)
 
     data = payload.model_dump()
     items_data = data.pop("items", [])
@@ -337,12 +313,17 @@ def create_invoice(
     db.add(invoice)
     try:
         db.commit()
-    except IntegrityError:
+    except IntegrityError as exc:
         db.rollback()
+        if _integrity_constraint_name(exc) == INVOICE_NUMBER_UNIQUE_CONSTRAINT:
+            raise HTTPException(
+                status_code=409,
+                detail="Invoice number already exists for this tenant",
+            ) from exc
         raise HTTPException(
-            status_code=409,
-            detail="Invoice number already exists for this tenant",
-        )
+            status_code=500,
+            detail=UNEXPECTED_INTEGRITY_ERROR_MESSAGE,
+        ) from exc
 
     db.refresh(invoice)
     return invoice
@@ -569,8 +550,6 @@ def list_invoices_ui(
 ) -> InvoiceListResponse:
     tenant = _require_tenant(x_tenant_code)
 
-    _ensure_is_paid_column(db)
-
     base_stmt = _build_invoices_base_stmt_for_ui(
         tenant=tenant,
         year=year,
@@ -642,7 +621,6 @@ def export_invoices(
     ),
 ) -> StreamingResponse:
     tenant = _require_tenant(x_tenant_code)
-    _ensure_is_paid_column(db)
 
     base_stmt = _build_invoices_base_stmt_for_ui(
         tenant=tenant,
@@ -763,8 +741,6 @@ def mark_invoice_paid(
     ),
 ) -> Invoice:
     tenant = _require_tenant(x_tenant_code)
-
-    _ensure_is_paid_column(db)
 
     stmt = select(Invoice).where(
         Invoice.id == invoice_id,
