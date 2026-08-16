@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import CashEntry, Tenant
+from app.models import CashEntry, InputInvoice, Invoice, Tenant
 from app.schemas.cash import (
     CashEntryCreate,
     CashEntryRead,
@@ -55,6 +55,35 @@ def _ensure_tenant_exists(db: Session, code: str) -> None:
     da bi cash i invoices modul koristili istu logiku.
     """
     ensure_tenant_exists(db, code)
+
+
+def _validate_invoice_references(
+    db: Session,
+    tenant: str,
+    data: dict,
+) -> None:
+    """Validate invoice links without revealing cross-tenant resources."""
+    invoice_id = data.get("invoice_id")
+    if invoice_id is not None:
+        invoice = db.execute(
+            select(Invoice).where(
+                Invoice.id == invoice_id,
+                Invoice.tenant_code == tenant,
+            )
+        ).scalars().first()
+        if invoice is None:
+            raise HTTPException(status_code=404, detail="Invoice not found")
+
+    input_invoice_id = data.get("input_invoice_id")
+    if input_invoice_id is not None:
+        input_invoice = db.execute(
+            select(InputInvoice).where(
+                InputInvoice.id == input_invoice_id,
+                InputInvoice.tenant_code == tenant,
+            )
+        ).scalars().first()
+        if input_invoice is None:
+            raise HTTPException(status_code=404, detail="Input invoice not found")
 
 
 # ======================================================
@@ -509,6 +538,8 @@ def create_cash(
     data.setdefault("tenant_code", tenant)
     data.setdefault("created_at", datetime.now(timezone.utc))
 
+    _validate_invoice_references(db, tenant, data)
+
     obj = CashEntry(**data)
     db.add(obj)
     db.commit()
@@ -587,7 +618,10 @@ def patch_cash(
     if not obj:
         raise HTTPException(status_code=404, detail="Cash entry not found")
 
-    for k, v in payload.model_dump(exclude_unset=True).items():
+    update_data = payload.model_dump(exclude_unset=True)
+    _validate_invoice_references(db, tenant, update_data)
+
+    for k, v in update_data.items():
         setattr(obj, k, v)
 
     db.add(obj)
