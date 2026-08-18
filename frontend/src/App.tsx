@@ -442,6 +442,10 @@ function AppShell() {
               element={<InputInvoiceCreatePage />}
             />
             <Route
+              path="/input-invoices/:id/edit"
+              element={<InputInvoiceCreatePage />}
+            />
+            <Route
               path="/input-invoices/:id"
               element={<InputInvoiceDetailPage />}
             />

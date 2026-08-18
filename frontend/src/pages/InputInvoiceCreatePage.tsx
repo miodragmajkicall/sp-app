@@ -1,11 +1,18 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/InputInvoiceCreatePage.tsx
-import { useState, type ChangeEvent, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import {
+  useEffect,
+  useState,
+  type ChangeEvent,
+  type FormEvent,
+} from "react";
+import { useNavigate, useParams } from "react-router-dom";
 
 import {
   createInputInvoice,
   deleteInvoiceAttachment,
+  getInputInvoice,
   linkAttachmentToInputInvoice,
+  updateInputInvoice,
   uploadInvoiceAttachment,
   type InvoiceAttachmentItem,
 } from "../services/inputInvoicesApi";
@@ -28,6 +35,10 @@ function formatAmount(value: number, currency = "BAM"): string {
 
 export default function InputInvoiceCreatePage() {
   const navigate = useNavigate();
+  const { id } = useParams<{ id: string }>();
+
+  const numericId = id ? Number(id) : null;
+  const isEditMode = numericId != null && Number.isFinite(numericId);
 
   const [supplierName, setSupplierName] = useState("");
   const [supplierTaxId, setSupplierTaxId] = useState("");
@@ -55,6 +66,60 @@ export default function InputInvoiceCreatePage() {
 
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
+
+  useEffect(() => {
+    if (!isEditMode || numericId == null) {
+      return;
+    }
+
+    const invoiceId = numericId;
+    let cancelled = false;
+
+    async function loadExistingInvoice() {
+      setErrorMsg("");
+
+      try {
+        const invoice = await getInputInvoice(invoiceId);
+
+        if (cancelled) {
+          return;
+        }
+
+        setSupplierName(invoice.supplier_name);
+        setSupplierTaxId(invoice.supplier_tax_id ?? "");
+        setSupplierAddress(invoice.supplier_address ?? "");
+
+        setInvoiceNumber(invoice.invoice_number);
+        setIssueDate(invoice.issue_date);
+        setPostingDate(invoice.posting_date ?? invoice.issue_date);
+        setDueDate(invoice.due_date ?? "");
+        setCurrency(invoice.currency || "BAM");
+
+        setExpenseCategory(invoice.expense_category ?? "");
+        setIsTaxDeductible(invoice.is_tax_deductible);
+        setIsPaid(invoice.is_paid);
+
+        setIncludeVat(invoice.total_vat > 0);
+        setBaseStr(invoice.total_base.toFixed(2));
+        setTotalStr(invoice.total_amount.toFixed(2));
+
+        setNote(invoice.note ?? "");
+      } catch (err: any) {
+        if (!cancelled) {
+          setErrorMsg(
+            err?.message ??
+              "Greška pri učitavanju postojeće ulazne fakture.",
+          );
+        }
+      }
+    }
+
+    void loadExistingInvoice();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isEditMode, numericId]);
 
   const numericBase = parseFloat(baseStr.replace(",", ".") || "0") || 0;
   const numericTotal = parseFloat(totalStr.replace(",", ".") || "0") || 0;
@@ -194,24 +259,41 @@ export default function InputInvoiceCreatePage() {
 
     const effectivePostingDate = postingDate || issueDate || null;
 
+    const payload = {
+      supplier_name: supplierName.trim(),
+      supplier_tax_id: supplierTaxId.trim() || null,
+      supplier_address: supplierAddress.trim() || null,
+      invoice_number: invoiceNumber.trim(),
+      issue_date: issueDate,
+      posting_date: effectivePostingDate,
+      due_date: dueDate || null,
+      expense_category: expenseCategory || null,
+      is_tax_deductible: isTaxDeductible,
+      is_paid: isPaid,
+      total_base: parseFloat(totalBase.toFixed(2)),
+      total_vat: parseFloat(displayVat.toFixed(2)),
+      total_amount: parseFloat(totalAmount.toFixed(2)),
+      currency: currency.trim() || "BAM",
+      note: note.trim() || null,
+    };
+
     try {
-      const created = await createInputInvoice({
-        supplier_name: supplierName.trim(),
-        supplier_tax_id: supplierTaxId.trim() || null,
-        supplier_address: supplierAddress.trim() || null,
-        invoice_number: invoiceNumber.trim(),
-        issue_date: issueDate,
-        posting_date: effectivePostingDate,
-        due_date: dueDate || null,
-        expense_category: expenseCategory || null,
-        is_tax_deductible: isTaxDeductible,
-        is_paid: isPaid,
-        total_base: parseFloat(totalBase.toFixed(2)),
-        total_vat: parseFloat(displayVat.toFixed(2)),
-        total_amount: parseFloat(totalAmount.toFixed(2)),
-        currency: currency.trim() || "BAM",
-        note: note.trim() || null,
-      });
+      if (isEditMode && numericId != null) {
+        await updateInputInvoice(numericId, payload);
+
+        if (attachments.length > 0) {
+          await Promise.all(
+            attachments.map((att) =>
+              linkAttachmentToInputInvoice(att.id, numericId),
+            ),
+          );
+        }
+
+        navigate(`/input-invoices/${numericId}`);
+        return;
+      }
+
+      const created = await createInputInvoice(payload);
 
       if (attachments.length > 0) {
         await Promise.all(
@@ -223,9 +305,13 @@ export default function InputInvoiceCreatePage() {
 
       navigate("/input-invoices");
     } catch (err: any) {
+      const detail = err?.response?.data?.detail;
+
       setErrorMsg(
-        err?.message ??
-          "Greška pri snimanju ulazne fakture. Provjeri da li kombinacija dobavljač + broj već postoji.",
+        typeof detail === "string"
+          ? detail
+          : err?.message ??
+              "Greška pri snimanju ulazne fakture. Provjeri da li kombinacija dobavljač + broj već postoji.",
       );
     } finally {
       setSaving(false);
@@ -239,25 +325,38 @@ export default function InputInvoiceCreatePage() {
           <div className="flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
             <div className="space-y-3">
               <div className="inline-flex items-center rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-medium text-slate-200">
-                Ulazne fakture · Nova faktura
+                {isEditMode
+                  ? "Ulazne fakture · Uređivanje"
+                  : "Ulazne fakture · Nova faktura"}
               </div>
               <div>
                 <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-                  Kreiranje nove ulazne fakture
+                  {isEditMode
+                    ? `Uređivanje ulazne fakture${
+                        invoiceNumber ? ` ${invoiceNumber}` : ""
+                      }`
+                    : "Kreiranje nove ulazne fakture"}
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
-                  Unesi račun dobavljača, obračunaj PDV, označi poreski status i
-                  priloži PDF ili sliku računa.
+                  {isEditMode
+                    ? "Izmijeni podatke postojeće ulazne fakture i sačuvaj promjene."
+                    : "Unesi račun dobavljača, obračunaj PDV, označi poreski status i priloži PDF ili sliku računa."}
                 </p>
               </div>
             </div>
 
             <button
               type="button"
-              onClick={() => navigate("/input-invoices")}
+              onClick={() =>
+                navigate(
+                  isEditMode && numericId != null
+                    ? `/input-invoices/${numericId}`
+                    : "/input-invoices",
+                )
+              }
               className="inline-flex items-center justify-center rounded-2xl bg-white px-4 py-2.5 text-sm font-bold text-slate-950 shadow-sm transition hover:bg-slate-100"
             >
-              ← Nazad na listu
+              {isEditMode ? "← Nazad na detalj" : "← Nazad na listu"}
             </button>
           </div>
         </div>
@@ -435,6 +534,13 @@ export default function InputInvoiceCreatePage() {
                   onChange={(e) => setExpenseCategory(e.target.value)}
                   className="input"
                 >
+                  {expenseCategory !== "" &&
+                    !EXPENSE_CATEGORY_OPTIONS.includes(expenseCategory) && (
+                      <option value={expenseCategory}>
+                        {expenseCategory}
+                      </option>
+                    )}
+
                   {EXPENSE_CATEGORY_OPTIONS.map((opt) => (
                     <option key={opt || "all"} value={opt}>
                       {opt === "" ? "— Bez kategorije —" : opt}
@@ -680,7 +786,13 @@ export default function InputInvoiceCreatePage() {
               disabled={saving}
               className="w-full rounded-2xl bg-white px-4 py-3 text-sm font-bold text-slate-950 shadow-sm transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
             >
-              {saving ? "Spremam fakturu..." : "Snimi ulaznu fakturu"}
+              {saving
+                ? isEditMode
+                  ? "Čuvam izmjene..."
+                  : "Spremam fakturu..."
+                : isEditMode
+                  ? "Sačuvaj izmjene"
+                  : "Snimi ulaznu fakturu"}
             </button>
           </section>
 
@@ -732,7 +844,13 @@ export default function InputInvoiceCreatePage() {
           <div className="flex gap-2">
             <button
               type="button"
-              onClick={() => navigate("/input-invoices")}
+              onClick={() =>
+                navigate(
+                  isEditMode && numericId != null
+                    ? `/input-invoices/${numericId}`
+                    : "/input-invoices",
+                )
+              }
               className="w-full rounded-2xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 shadow-sm transition hover:bg-slate-50"
             >
               Otkaži

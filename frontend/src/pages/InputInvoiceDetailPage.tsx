@@ -181,13 +181,27 @@ export default function InputInvoiceDetailPage() {
               </div>
             </div>
 
-            <button
-              type="button"
-              onClick={() => navigate("/input-invoices")}
-              className="inline-flex items-center justify-center rounded-2xl bg-white px-4 py-2.5 text-sm font-bold text-slate-950 shadow-sm transition hover:bg-slate-100"
-            >
-              ← Nazad na listu
-            </button>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              {invoice && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    navigate(`/input-invoices/${invoice.id}/edit`)
+                  }
+                  className="inline-flex items-center justify-center rounded-2xl border border-white/20 bg-white/10 px-4 py-2.5 text-sm font-bold text-white shadow-sm transition hover:bg-white/20"
+                >
+                  Uredi fakturu
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => navigate("/input-invoices")}
+                className="inline-flex items-center justify-center rounded-2xl bg-white px-4 py-2.5 text-sm font-bold text-slate-950 shadow-sm transition hover:bg-slate-100"
+              >
+                ← Nazad na listu
+              </button>
+            </div>
           </div>
         </div>
 
