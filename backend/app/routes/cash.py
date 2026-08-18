@@ -535,6 +535,16 @@ def create_cash(
     _ensure_tenant_exists(db, tenant)
 
     data = payload.model_dump()
+
+    if data.get("input_invoice_id") is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Input invoice payments must be created through the "
+                "input invoice payment endpoint"
+            ),
+        )
+
     data.setdefault("tenant_code", tenant)
     data.setdefault("created_at", datetime.now(timezone.utc))
 
@@ -619,6 +629,25 @@ def patch_cash(
         raise HTTPException(status_code=404, detail="Cash entry not found")
 
     update_data = payload.model_dump(exclude_unset=True)
+
+    if obj.input_invoice_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Input invoice payments must be changed through the "
+                "input invoice payment endpoint"
+            ),
+        )
+
+    if "input_invoice_id" in update_data:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Input invoice payments must be created through the "
+                "input invoice payment endpoint"
+            ),
+        )
+
     _validate_invoice_references(db, tenant, update_data)
 
     for k, v in update_data.items():
@@ -710,6 +739,15 @@ def delete_cash(
     obj = db.execute(stmt).scalars().first()
     if not obj:
         raise HTTPException(status_code=404, detail="Cash entry not found")
+
+    if obj.input_invoice_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Input invoice payments must be removed through the "
+                "input invoice payment endpoint"
+            ),
+        )
 
     # Samo brisanje – zaštita od finalizovanih perioda je u model event handleru.
     db.delete(obj)

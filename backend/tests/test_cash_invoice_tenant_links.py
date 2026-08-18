@@ -74,100 +74,97 @@ def _create_cash(
     return response.json()
 
 
-def test_create_accepts_same_tenant_invoice_links(client: TestClient) -> None:
+def test_create_accepts_same_tenant_outgoing_invoice_link(
+    client: TestClient,
+) -> None:
     headers = _headers("cash-link-valid")
-    invoice_id, input_invoice_id = _create_invoice_pair(
-        headers["X-Tenant-Code"]
-    )
+    invoice_id, _ = _create_invoice_pair(headers["X-Tenant-Code"])
 
     created = _create_cash(
         client,
         headers,
         invoice_id=invoice_id,
-        input_invoice_id=input_invoice_id,
     )
 
     assert created["invoice_id"] == invoice_id
-    assert created["input_invoice_id"] == input_invoice_id
+    assert created["input_invoice_id"] is None
 
 
-@pytest.mark.parametrize(
-    ("field", "detail"),
-    [
-        ("invoice_id", "Invoice not found"),
-        ("input_invoice_id", "Input invoice not found"),
-    ],
-)
-def test_create_rejects_cross_tenant_invoice_links(
+def test_create_rejects_input_invoice_link(client: TestClient) -> None:
+    headers = _headers("cash-input-link-rejected")
+    _, input_invoice_id = _create_invoice_pair(headers["X-Tenant-Code"])
+
+    response = client.post(
+        "/cash/",
+        headers=headers,
+        json=_cash_payload(input_invoice_id=input_invoice_id),
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json() == {
+        "detail": (
+            "Input invoice payments must be created through the "
+            "input invoice payment endpoint"
+        )
+    }
+
+    listed = client.get("/cash/", headers=headers)
+    assert listed.status_code == 200, listed.text
+    assert listed.json() == []
+
+
+def test_create_rejects_cross_tenant_outgoing_invoice_link(
     client: TestClient,
-    field: str,
-    detail: str,
 ) -> None:
     owner_headers = _headers("cash-link-owner")
     requester_headers = _headers("cash-link-requester")
-    invoice_id, input_invoice_id = _create_invoice_pair(
-        owner_headers["X-Tenant-Code"]
-    )
-    linked_id = invoice_id if field == "invoice_id" else input_invoice_id
+    invoice_id, _ = _create_invoice_pair(owner_headers["X-Tenant-Code"])
 
     response = client.post(
         "/cash/",
         headers=requester_headers,
-        json=_cash_payload(**{field: linked_id}),
+        json=_cash_payload(invoice_id=invoice_id),
     )
 
     assert response.status_code == 404, response.text
-    assert response.json() == {"detail": detail}
+    assert response.json() == {"detail": "Invoice not found"}
+
     listed = client.get("/cash/", headers=requester_headers)
     assert listed.status_code == 200, listed.text
     assert listed.json() == []
 
 
-@pytest.mark.parametrize(
-    ("field", "detail"),
-    [
-        ("invoice_id", "Invoice not found"),
-        ("input_invoice_id", "Input invoice not found"),
-    ],
-)
-def test_create_rejects_missing_invoice_links(
+def test_create_rejects_missing_outgoing_invoice_link(
     client: TestClient,
-    field: str,
-    detail: str,
 ) -> None:
     headers = _headers("cash-link-missing")
 
     response = client.post(
         "/cash/",
         headers=headers,
-        json=_cash_payload(**{field: 9_999_999_999}),
+        json=_cash_payload(invoice_id=9_999_999_999),
     )
 
     assert response.status_code == 404, response.text
-    assert response.json() == {"detail": detail}
+    assert response.json() == {"detail": "Invoice not found"}
 
 
-def test_patch_validates_preserves_and_unlinks_references(
+def test_patch_preserves_and_unlinks_outgoing_invoice_reference(
     client: TestClient,
 ) -> None:
     headers = _headers("cash-link-patch")
-    invoice_id, input_invoice_id = _create_invoice_pair(
-        headers["X-Tenant-Code"]
-    )
+    invoice_id, _ = _create_invoice_pair(headers["X-Tenant-Code"])
     created = _create_cash(client, headers)
     cash_id = created["id"]
 
     linked = client.patch(
         f"/cash/{cash_id}",
         headers=headers,
-        json={
-            "invoice_id": invoice_id,
-            "input_invoice_id": input_invoice_id,
-        },
+        json={"invoice_id": invoice_id},
     )
     assert linked.status_code == 200, linked.text
     assert linked.json()["invoice_id"] == invoice_id
-    assert linked.json()["input_invoice_id"] == input_invoice_id
+    assert linked.json()["input_invoice_id"] is None
 
     preserved = client.patch(
         f"/cash/{cash_id}",
@@ -176,64 +173,87 @@ def test_patch_validates_preserves_and_unlinks_references(
     )
     assert preserved.status_code == 200, preserved.text
     assert preserved.json()["invoice_id"] == invoice_id
-    assert preserved.json()["input_invoice_id"] == input_invoice_id
+    assert preserved.json()["input_invoice_id"] is None
 
     unlinked = client.patch(
         f"/cash/{cash_id}",
         headers=headers,
-        json={"invoice_id": None, "input_invoice_id": None},
+        json={"invoice_id": None},
     )
     assert unlinked.status_code == 200, unlinked.text
     assert unlinked.json()["invoice_id"] is None
     assert unlinked.json()["input_invoice_id"] is None
 
 
-@pytest.mark.parametrize(
-    ("field", "use_missing", "detail"),
-    [
-        ("invoice_id", False, "Invoice not found"),
-        ("input_invoice_id", False, "Input invoice not found"),
-        ("invoice_id", True, "Invoice not found"),
-    ],
-)
-def test_rejected_patch_does_not_change_existing_links(
+def test_patch_rejects_input_invoice_link_and_preserves_existing_data(
     client: TestClient,
-    field: str,
-    use_missing: bool,
-    detail: str,
 ) -> None:
-    headers = _headers("cash-link-safe")
-    other_headers = _headers("cash-link-other")
+    headers = _headers("cash-input-link-patch")
     invoice_id, input_invoice_id = _create_invoice_pair(
         headers["X-Tenant-Code"]
-    )
-    other_invoice_id, other_input_invoice_id = _create_invoice_pair(
-        other_headers["X-Tenant-Code"]
     )
     created = _create_cash(
         client,
         headers,
         invoice_id=invoice_id,
-        input_invoice_id=input_invoice_id,
     )
     cash_id = created["id"]
-    invalid_id = 9_999_999_999
-    if not use_missing:
-        invalid_id = (
-            other_invoice_id
-            if field == "invoice_id"
-            else other_input_invoice_id
-        )
 
     rejected = client.patch(
         f"/cash/{cash_id}",
         headers=headers,
-        json={field: invalid_id},
+        json={"input_invoice_id": input_invoice_id},
     )
 
-    assert rejected.status_code == 404, rejected.text
-    assert rejected.json() == {"detail": detail}
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json() == {
+        "detail": (
+            "Input invoice payments must be created through the "
+            "input invoice payment endpoint"
+        )
+    }
+
     stored = client.get(f"/cash/{cash_id}", headers=headers)
     assert stored.status_code == 200, stored.text
     assert stored.json()["invoice_id"] == invoice_id
-    assert stored.json()["input_invoice_id"] == input_invoice_id
+    assert stored.json()["input_invoice_id"] is None
+
+
+@pytest.mark.parametrize(
+    "use_missing",
+    [False, True],
+)
+def test_rejected_outgoing_invoice_patch_preserves_existing_link(
+    client: TestClient,
+    use_missing: bool,
+) -> None:
+    headers = _headers("cash-link-safe")
+    other_headers = _headers("cash-link-other")
+
+    invoice_id, _ = _create_invoice_pair(headers["X-Tenant-Code"])
+    other_invoice_id, _ = _create_invoice_pair(
+        other_headers["X-Tenant-Code"]
+    )
+
+    created = _create_cash(
+        client,
+        headers,
+        invoice_id=invoice_id,
+    )
+    cash_id = created["id"]
+
+    invalid_id = 9_999_999_999 if use_missing else other_invoice_id
+
+    rejected = client.patch(
+        f"/cash/{cash_id}",
+        headers=headers,
+        json={"invoice_id": invalid_id},
+    )
+
+    assert rejected.status_code == 404, rejected.text
+    assert rejected.json() == {"detail": "Invoice not found"}
+
+    stored = client.get(f"/cash/{cash_id}", headers=headers)
+    assert stored.status_code == 200, stored.text
+    assert stored.json()["invoice_id"] == invoice_id
+    assert stored.json()["input_invoice_id"] is None

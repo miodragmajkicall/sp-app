@@ -19,11 +19,18 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import InputInvoice, FinalizedPeriodModificationError
+from app.models import (
+    CashEntry,
+    FinalizedPeriodModificationError,
+    InputInvoice,
+    TaxMonthlyResult,
+)
 from app.schemas.input_invoice import (
     InputInvoiceCreate,
-    InputInvoiceRead,
     InputInvoiceListResponse,
+    InputInvoicePaymentCreate,
+    InputInvoicePaymentRead,
+    InputInvoiceRead,
     InputInvoiceUpdate,
 )
 from app.tenant_security import require_tenant_code, ensure_tenant_exists
@@ -151,6 +158,10 @@ def create_input_invoice(
     _ensure_tenant_exists(db, tenant)
 
     data = payload.model_dump()
+
+    # Status plaćanja je server-authoritative i mijenja se isključivo
+    # kroz dedicated payment lifecycle.
+    data["is_paid"] = False
 
     # Ako datum knjiženja nije eksplicitno postavljen, koristi datum dokumenta
     if not data.get("posting_date") and data.get("issue_date"):
@@ -603,6 +614,34 @@ def update_input_invoice(
 
     update_data = payload.model_dump(exclude_unset=True)
 
+    if "is_paid" in update_data:
+        raise HTTPException(
+            status_code=409,
+            detail="Payment status can only be changed through the input invoice payment endpoint",
+        )
+
+    payment_sensitive_fields = {
+        "total_base",
+        "total_vat",
+        "total_amount",
+        "currency",
+    }
+    if payment_sensitive_fields.intersection(update_data):
+        linked_payment_id = db.execute(
+            select(CashEntry.id).where(
+                CashEntry.tenant_code == tenant,
+                CashEntry.input_invoice_id == invoice_id,
+            )
+        ).scalar_one_or_none()
+        if linked_payment_id is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Financial fields of a paid input invoice cannot be changed; "
+                    "remove the payment first"
+                ),
+            )
+
     # Prazna kategorija troška se tretira kao None
     if update_data.get("expense_category") == "":
         update_data["expense_category"] = None
@@ -624,6 +663,172 @@ def update_input_invoice(
 
     db.refresh(obj)
     return obj
+
+
+# ======================================================
+#  PAYMENT
+# ======================================================
+
+
+@router.post(
+    "/input-invoices/{invoice_id}/payment",
+    response_model=InputInvoicePaymentRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Evidentiraj puno plaćanje ulazne fakture",
+)
+def create_input_invoice_payment(
+    invoice_id: int,
+    payload: InputInvoicePaymentCreate,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem ulazna faktura mora pripadati.",
+    ),
+) -> InputInvoicePaymentRead:
+    tenant = _require_tenant(x_tenant_code)
+
+    invoice = db.execute(
+        select(InputInvoice).where(
+            InputInvoice.id == invoice_id,
+            InputInvoice.tenant_code == tenant,
+        )
+    ).scalars().first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Input invoice not found")
+
+    existing_payment_id = db.execute(
+        select(CashEntry.id).where(
+            CashEntry.tenant_code == tenant,
+            CashEntry.input_invoice_id == invoice_id,
+        )
+    ).scalar_one_or_none()
+    if existing_payment_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Input invoice payment already exists",
+        )
+
+    finalized_payment_period = db.execute(
+        select(TaxMonthlyResult.id).where(
+            TaxMonthlyResult.tenant_code == tenant,
+            TaxMonthlyResult.year == payload.payment_date.year,
+            TaxMonthlyResult.month == payload.payment_date.month,
+            TaxMonthlyResult.is_final.is_(True),
+        )
+    ).scalar_one_or_none()
+    if finalized_payment_period is not None:
+        exc = FinalizedPeriodModificationError(
+            tenant_code=tenant,
+            year=payload.payment_date.year,
+            month=payload.payment_date.month,
+        )
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    payment = CashEntry(
+        tenant_code=tenant,
+        entry_date=payload.payment_date,
+        kind="expense",
+        amount=invoice.total_amount,
+        account=payload.account,
+        invoice_id=None,
+        input_invoice_id=invoice.id,
+        description=payload.note,
+    )
+
+    db.add(payment)
+    invoice.is_paid = True
+    db.add(invoice)
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Input invoice payment already exists",
+        )
+
+    db.refresh(payment)
+
+    return InputInvoicePaymentRead(
+        id=payment.id,
+        payment_date=payment.entry_date,
+        account=payment.account,
+        amount=payment.amount,
+        note=payment.description,
+    )
+
+
+# ======================================================
+#  PAYMENT DELETE / UNDO
+# ======================================================
+
+
+@router.delete(
+    "/input-invoices/{invoice_id}/payment",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Poništi evidentirano plaćanje ulazne fakture",
+)
+def delete_input_invoice_payment(
+    invoice_id: int,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem ulazna faktura mora pripadati.",
+    ),
+) -> Response:
+    tenant = _require_tenant(x_tenant_code)
+
+    invoice = db.execute(
+        select(InputInvoice).where(
+            InputInvoice.id == invoice_id,
+            InputInvoice.tenant_code == tenant,
+        )
+    ).scalars().first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Input invoice not found")
+
+    payment = db.execute(
+        select(CashEntry).where(
+            CashEntry.tenant_code == tenant,
+            CashEntry.input_invoice_id == invoice_id,
+        )
+    ).scalars().first()
+    if not payment:
+        raise HTTPException(
+            status_code=404,
+            detail="Input invoice payment not found",
+        )
+
+    finalized_payment_period = db.execute(
+        select(TaxMonthlyResult.id).where(
+            TaxMonthlyResult.tenant_code == tenant,
+            TaxMonthlyResult.year == payment.entry_date.year,
+            TaxMonthlyResult.month == payment.entry_date.month,
+            TaxMonthlyResult.is_final.is_(True),
+        )
+    ).scalar_one_or_none()
+    if finalized_payment_period is not None:
+        exc = FinalizedPeriodModificationError(
+            tenant_code=tenant,
+            year=payment.entry_date.year,
+            month=payment.entry_date.month,
+        )
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    db.delete(payment)
+    invoice.is_paid = False
+    db.add(invoice)
+
+    try:
+        db.commit()
+    except FinalizedPeriodModificationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ======================================================
@@ -688,6 +893,21 @@ def delete_input_invoice(
     obj = db.execute(stmt).scalars().first()
     if not obj:
         raise HTTPException(status_code=404, detail="Input invoice not found")
+
+    linked_payment_id = db.execute(
+        select(CashEntry.id).where(
+            CashEntry.tenant_code == tenant,
+            CashEntry.input_invoice_id == invoice_id,
+        )
+    ).scalar_one_or_none()
+    if linked_payment_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Input invoice with an existing payment cannot be deleted; "
+                "remove the payment first"
+            ),
+        )
 
     try:
         db.delete(obj)

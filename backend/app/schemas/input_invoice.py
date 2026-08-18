@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional, List
+from typing import Literal, Optional, List
 
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -268,6 +268,47 @@ class InputInvoiceUpdate(BaseModel):
         None,
         description="Nova interna napomena (ako se mijenja).",
     )
+
+
+# ============================================================
+#  INPUT INVOICE PAYMENT
+# ============================================================
+
+
+class InputInvoicePaymentCreate(BaseModel):
+    """
+    Payload za evidentiranje punog plaćanja ulazne fakture.
+    Iznos se ne prima od klijenta nego ga backend uzima sa fakture.
+    """
+
+    model_config = BaseConfig
+
+    payment_date: date = Field(
+        ...,
+        description="Datum plaćanja ulazne fakture (YYYY-MM-DD).",
+    )
+    account: Literal["cash", "bank"] = Field(
+        ...,
+        description="Način plaćanja: cash = kasa, bank = banka.",
+    )
+    note: Optional[str] = Field(
+        None,
+        description="Opcionalna napomena uz plaćanje.",
+    )
+
+
+class InputInvoicePaymentRead(BaseModel):
+    """
+    Evidentirano puno plaćanje ulazne fakture.
+    """
+
+    model_config = BaseConfig
+
+    id: int = Field(..., description="ID povezanog CashEntry zapisa.")
+    payment_date: date = Field(..., description="Datum plaćanja.")
+    account: Literal["cash", "bank"] = Field(..., description="Kasa ili banka.")
+    amount: Decimal = Field(..., description="Plaćeni iznos.")
+    note: Optional[str] = Field(None, description="Napomena uz plaćanje.")
 
 
 # ============================================================

@@ -20,7 +20,9 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     event,
+    inspect as sa_inspect,
 )
+
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import declarative_base, relationship, object_session
 
@@ -118,6 +120,10 @@ class CashEntry(Base):
         CheckConstraint(
             "account in ('cash','bank')",
             name="ck_cash_entries_account",
+        ),
+        UniqueConstraint(
+            "input_invoice_id",
+            name="uq_cash_entries_input_invoice_id",
         ),
     )
 
@@ -652,6 +658,19 @@ def _cash_entry_before_delete(mapper, connection, target: CashEntry) -> None:
 
 @event.listens_for(InputInvoice, "before_update")
 def _input_invoice_before_update(mapper, connection, target: InputInvoice) -> None:
+    state = sa_inspect(target)
+    changed_fields = {
+        attr.key
+        for attr in state.attrs
+        if attr.history.has_changes()
+    }
+
+    # Status plaćanja pripada payment lifecycle-u, a ne poreskom periodu
+    # same ulazne fakture. Npr. majska faktura smije biti plaćena u avgustu
+    # iako je maj već finalizovan.
+    if changed_fields == {"is_paid"}:
+        return
+
     if target.issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
 
