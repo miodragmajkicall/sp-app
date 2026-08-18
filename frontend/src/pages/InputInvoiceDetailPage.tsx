@@ -1,9 +1,14 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/InputInvoiceDetailPage.tsx
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 
 import type { InputInvoiceDetail } from "../types/inputInvoice";
 import {
+  deleteInputInvoice,
   downloadInvoiceAttachment,
   fetchInvoiceAttachments,
   getInputInvoice,
@@ -74,6 +79,7 @@ function StatusBadge({
 export default function InputInvoiceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const numericId = id ? Number(id) : null;
 
@@ -98,6 +104,21 @@ export default function InputInvoiceDetailPage() {
     queryFn: fetchInvoiceAttachments,
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (invoiceId: number) => deleteInputInvoice(invoiceId),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({
+          queryKey: ["input-invoices"],
+        }),
+        queryClient.invalidateQueries({
+          queryKey: ["invoice-attachments"],
+        }),
+      ]);
+      navigate("/input-invoices");
+    },
+  });
+
   if (numericId == null || !Number.isFinite(numericId)) {
     return (
       <div className="mx-auto max-w-4xl rounded-3xl border border-red-200 bg-red-50 p-6 shadow-sm">
@@ -120,6 +141,22 @@ export default function InputInvoiceDetailPage() {
 
   const linkedAttachments =
     attachments?.filter((att) => att.input_invoice_id === numericId) ?? [];
+
+  const handleDelete = () => {
+    if (!invoice || deleteMutation.isPending) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Da li ste sigurni da želite obrisati ulaznu fakturu ${invoice.invoice_number} dobavljača ${invoice.supplier_name}? Ovu radnju nije moguće poništiti.`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    deleteMutation.mutate(invoice.id);
+  };
 
   return (
     <div className="mx-auto max-w-7xl space-y-6">
@@ -249,11 +286,17 @@ export default function InputInvoiceDetailPage() {
                   <p className="mt-2 font-mono text-lg font-semibold text-slate-900">
                     {invoice.invoice_number || "-"}
                   </p>
-                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                  <div className="mt-4 grid gap-3 sm:grid-cols-3">
                     <div>
                       <p className="text-xs text-slate-400">Datum izdavanja</p>
                       <p className="mt-1 text-sm font-semibold text-slate-800">
                         {formatDate(invoice.issue_date)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-400">Datum knjiženja</p>
+                      <p className="mt-1 text-sm font-semibold text-slate-800">
+                        {formatDate(invoice.posting_date)}
                       </p>
                     </div>
                     <div>
@@ -454,7 +497,63 @@ export default function InputInvoiceDetailPage() {
                     {invoice.supplier_name || "-"}
                   </span>
                 </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-slate-500">Plaćanje</span>
+                  <StatusBadge tone={invoice.is_paid ? "emerald" : "amber"}>
+                    {invoice.is_paid ? "Plaćeno" : "Nije plaćeno"}
+                  </StatusBadge>
+                </div>
+
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-slate-500">Poreski status</span>
+                  <StatusBadge tone={invoice.is_tax_deductible ? "blue" : "amber"}>
+                    {invoice.is_tax_deductible ? "Priznat" : "Nepriznat"}
+                  </StatusBadge>
+                </div>
+
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-slate-500">Kategorija</span>
+                  <StatusBadge>
+                    {invoice.expense_category || "Bez kategorije"}
+                  </StatusBadge>
+                </div>
               </div>
+            </section>
+            <section className="rounded-3xl border border-red-200 bg-white p-5 shadow-sm">
+              <h3 className="text-sm font-semibold text-slate-900">
+                Upravljanje fakturom
+              </h3>
+
+              <p className="mt-1 text-xs leading-5 text-slate-500">
+                Brisanje ulazne fakture je trajna radnja i nije je moguće
+                poništiti.
+              </p>
+
+              {deleteMutation.isError && (
+                <div className="mt-4 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs leading-5 text-red-700">
+                  {(
+                    deleteMutation.error as {
+                      response?: {
+                        data?: {
+                          detail?: string;
+                        };
+                      };
+                    }
+                  ).response?.data?.detail ||
+                    "Brisanje ulazne fakture nije uspjelo."}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={handleDelete}
+                disabled={deleteMutation.isPending}
+                className="mt-4 w-full rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm font-bold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {deleteMutation.isPending
+                  ? "Brišem..."
+                  : "Obriši ulaznu fakturu"}
+              </button>
             </section>
 
             <div className="text-xs text-slate-500">

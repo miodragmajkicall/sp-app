@@ -277,6 +277,16 @@ export async function updateInputInvoice(
   await apiClient.put(`/input-invoices/${id}`, body);
 }
 
+/**
+ * Brisanje postojeće ulazne fakture.
+ * Backend endpoint: DELETE /input-invoices/{id}
+ */
+export async function deleteInputInvoice(
+  id: number,
+): Promise<void> {
+  await apiClient.delete(`/input-invoices/${id}`);
+}
+
 /* ======================================================
  *  ATTACHMENTS – tenant-wide lista + upload/download/delete/link
  *  (koristi /invoice-attachments backend rute)
