@@ -1,6 +1,9 @@
 # /home/miso/dev/sp-app/sp-app/tests/test_kpr.py
 from __future__ import annotations
 
+from decimal import Decimal
+from uuid import uuid4
+
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -170,3 +173,63 @@ def test_kpr_export_pdf():
     # Ne mora biti ogroman, ali svakako > 0
     assert isinstance(pdf_bytes, (bytes, bytearray))
     assert len(pdf_bytes) > 100
+
+def test_kpr_input_invoice_payment_is_not_double_counted_and_keeps_tax_flag():
+    tenant = f"kpr-input-payment-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+
+    input_invoice_payload = {
+        "supplier_name": "KPR Payment Test Supplier",
+        "supplier_tax_id": "1234567890000",
+        "supplier_address": "Banja Luka",
+        "invoice_number": f"KPR-PAY-{uuid4().hex[:8]}",
+        "issue_date": "2026-08-10",
+        "due_date": "2026-08-20",
+        "posting_date": "2026-08-10",
+        "is_tax_deductible": False,
+        "total_base": "100.00",
+        "total_vat": "17.00",
+        "total_amount": "117.00",
+        "currency": "BAM",
+        "note": "KPR regression test",
+    }
+
+    create_resp = client.post(
+        "/input-invoices",
+        json=input_invoice_payload,
+        headers=headers,
+    )
+    assert create_resp.status_code == 201, create_resp.text
+
+    input_invoice = create_resp.json()
+    input_invoice_id = input_invoice["id"]
+
+    payment_resp = client.post(
+        f"/input-invoices/{input_invoice_id}/payment",
+        json={
+            "payment_date": "2026-08-18",
+            "account": "bank",
+            "note": "Plaćanje KPR regression testa",
+        },
+        headers=headers,
+    )
+    assert payment_resp.status_code == 201, payment_resp.text
+
+    kpr_resp = client.get(
+        "/kpr?year=2026&month=8",
+        headers=headers,
+    )
+    assert kpr_resp.status_code == 200, kpr_resp.text
+
+    data = kpr_resp.json()
+
+    assert data["total"] == 1
+    assert len(data["items"]) == 1
+
+    row = data["items"][0]
+
+    assert row["source"] == "input_invoice"
+    assert row["source_id"] == input_invoice_id
+    assert row["kind"] == "expense"
+    assert Decimal(str(row["amount"])) == Decimal("117.00")
+    assert row["tax_deductible"] is False

@@ -147,7 +147,7 @@ def _collect_kpr_rows(
                 description=getattr(inp, "note", None),
                 amount=_as_decimal(getattr(inp, "total_amount", 0)),
                 currency=getattr(inp, "currency", "BAM") or "BAM",
-                tax_deductible=True,  # V1: sve rashode tretiramo kao poreski priznate
+                tax_deductible=bool(inp.is_tax_deductible),
                 source="input_invoice",
                 source_id=inp.id,
             )
@@ -156,7 +156,10 @@ def _collect_kpr_rows(
     # ---------------------------
     # 3) CashEntry – income/expense
     # ---------------------------
-    cash_filters = [CashEntry.tenant_code == tenant_code]
+    cash_filters = [
+        CashEntry.tenant_code == tenant_code,
+        CashEntry.input_invoice_id.is_(None),
+    ]
     if year is not None:
         cash_filters.append(func.extract("year", CashEntry.entry_date) == year)
     if month is not None:

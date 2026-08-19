@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import MetaData, Table
@@ -338,3 +339,137 @@ def test_tax_monthly_auto_aggregates_invoices_and_cash() -> None:
     finally:
         _cleanup_tax_test_data(db, tenant_code)
         db.close()
+
+def _create_tax_input_invoice(
+    *,
+    headers: dict[str, str],
+    issue_date: str,
+    is_tax_deductible: bool,
+) -> int:
+    payload = {
+        "supplier_name": "TAX Regression Supplier",
+        "supplier_tax_id": "1234567890000",
+        "supplier_address": "Banja Luka",
+        "invoice_number": f"TAX-IN-{uuid4().hex[:10]}",
+        "issue_date": issue_date,
+        "due_date": issue_date,
+        "posting_date": issue_date,
+        "is_tax_deductible": is_tax_deductible,
+        "total_base": "100.00",
+        "total_vat": "17.00",
+        "total_amount": "117.00",
+        "currency": "BAM",
+        "note": "TAX regression test",
+    }
+
+    response = client.post(
+        "/input-invoices",
+        json=payload,
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+
+    return response.json()["id"]
+
+
+def _pay_tax_input_invoice(
+    *,
+    headers: dict[str, str],
+    input_invoice_id: int,
+    payment_date: str,
+) -> None:
+    response = client.post(
+        f"/input-invoices/{input_invoice_id}/payment",
+        json={
+            "payment_date": payment_date,
+            "account": "bank",
+            "note": "TAX regression payment",
+        },
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+
+
+def test_tax_auto_does_not_double_count_input_invoice_payment() -> None:
+    tenant = f"tax-input-payment-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+
+    input_invoice_id = _create_tax_input_invoice(
+        headers=headers,
+        issue_date="2026-08-10",
+        is_tax_deductible=True,
+    )
+
+    _pay_tax_input_invoice(
+        headers=headers,
+        input_invoice_id=input_invoice_id,
+        payment_date="2026-08-18",
+    )
+
+    response = client.get(
+        "/tax/monthly/auto",
+        params={"year": 2026, "month": 8},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+
+    assert _dec2(response.json()["total_expense"]) == Decimal("117.00")
+
+
+def test_tax_auto_payment_in_later_month_is_not_second_expense() -> None:
+    tenant = f"tax-cross-period-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+
+    input_invoice_id = _create_tax_input_invoice(
+        headers=headers,
+        issue_date="2026-05-10",
+        is_tax_deductible=True,
+    )
+
+    _pay_tax_input_invoice(
+        headers=headers,
+        input_invoice_id=input_invoice_id,
+        payment_date="2026-08-18",
+    )
+
+    may_response = client.get(
+        "/tax/monthly/auto",
+        params={"year": 2026, "month": 5},
+        headers=headers,
+    )
+    assert may_response.status_code == 200, may_response.text
+    assert _dec2(may_response.json()["total_expense"]) == Decimal("117.00")
+
+    august_response = client.get(
+        "/tax/monthly/auto",
+        params={"year": 2026, "month": 8},
+        headers=headers,
+    )
+    assert august_response.status_code == 200, august_response.text
+    assert _dec2(august_response.json()["total_expense"]) == Decimal("0.00")
+
+
+def test_tax_auto_excludes_paid_nondeductible_input_invoice() -> None:
+    tenant = f"tax-nondeductible-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+
+    input_invoice_id = _create_tax_input_invoice(
+        headers=headers,
+        issue_date="2026-09-10",
+        is_tax_deductible=False,
+    )
+
+    _pay_tax_input_invoice(
+        headers=headers,
+        input_invoice_id=input_invoice_id,
+        payment_date="2026-09-18",
+    )
+
+    response = client.get(
+        "/tax/monthly/auto",
+        params={"year": 2026, "month": 9},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+
+    assert _dec2(response.json()["total_expense"]) == Decimal("0.00")

@@ -536,6 +536,7 @@ def _aggregate_monthly_income_and_expense(
 
     stmt_cash = select(income_expr.label("cash_income"), expense_expr.label("cash_expense")).where(
         CashEntry.tenant_code == tenant_code,
+        CashEntry.input_invoice_id.is_(None),
         CashEntry.entry_date >= month_start,
         CashEntry.entry_date < month_end,
     )
@@ -546,6 +547,7 @@ def _aggregate_monthly_income_and_expense(
 
     stmt_input_invoices = select(func.coalesce(func.sum(InputInvoice.total_amount), 0).label("input_expense")).where(
         InputInvoice.tenant_code == tenant_code,
+        InputInvoice.is_tax_deductible.is_(True),
         InputInvoice.issue_date >= month_start,
         InputInvoice.issue_date < month_end,
     )
