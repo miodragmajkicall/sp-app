@@ -671,7 +671,17 @@ def _input_invoice_before_update(mapper, connection, target: InputInvoice) -> No
     if changed_fields == {"is_paid"}:
         return
 
-    if target.issue_date:
+    issue_date_history = state.attrs.issue_date.history
+    original_issue_date = (
+        issue_date_history.deleted[0]
+        if issue_date_history.has_changes() and issue_date_history.deleted
+        else target.issue_date
+    )
+
+    if original_issue_date:
+        _ensure_month_not_finalized(target, original_issue_date)
+
+    if target.issue_date and target.issue_date != original_issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
 
 

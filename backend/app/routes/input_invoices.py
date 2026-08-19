@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal, ROUND_HALF_UP
 from typing import List, Optional
 
 from fastapi import (
@@ -64,6 +65,29 @@ def _ensure_tenant_exists(db: Session, code: str) -> None:
     za kreiranje minimalnog tenanta kada radimo demo/test scenarije.
     """
     ensure_tenant_exists(db, code)
+
+
+_MONEY_QUANT = Decimal("0.01")
+
+
+def _money_2(value: Decimal) -> Decimal:
+    return value.quantize(_MONEY_QUANT, rounding=ROUND_HALF_UP)
+
+
+def _validate_input_invoice_amounts(
+    *,
+    total_base: Decimal,
+    total_vat: Decimal,
+    total_amount: Decimal,
+) -> None:
+    expected_total = _money_2(_money_2(total_base) + _money_2(total_vat))
+    actual_total = _money_2(total_amount)
+
+    if expected_total != actual_total:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="total_amount must equal total_base + total_vat",
+        )
 
 
 # ======================================================
@@ -158,6 +182,12 @@ def create_input_invoice(
     _ensure_tenant_exists(db, tenant)
 
     data = payload.model_dump()
+
+    _validate_input_invoice_amounts(
+        total_base=data["total_base"],
+        total_vat=data["total_vat"],
+        total_amount=data["total_amount"],
+    )
 
     # Status plaćanja je server-authoritative i mijenja se isključivo
     # kroz dedicated payment lifecycle.
@@ -641,6 +671,25 @@ def update_input_invoice(
                     "remove the payment first"
                 ),
             )
+
+    amount_fields = {
+        "total_base",
+        "total_vat",
+        "total_amount",
+    }
+    updated_amount_fields = amount_fields.intersection(update_data)
+    if updated_amount_fields:
+        if any(update_data[field] is None for field in updated_amount_fields):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Input invoice amounts cannot be null",
+            )
+
+        _validate_input_invoice_amounts(
+            total_base=update_data.get("total_base", obj.total_base),
+            total_vat=update_data.get("total_vat", obj.total_vat),
+            total_amount=update_data.get("total_amount", obj.total_amount),
+        )
 
     # Prazna kategorija troška se tretira kao None
     if update_data.get("expense_category") == "":

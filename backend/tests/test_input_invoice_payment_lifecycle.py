@@ -478,3 +478,141 @@ def test_paid_invoice_cannot_be_deleted(
         payment = db.get(CashEntry, payment_id)
         assert payment is not None
         assert payment.input_invoice_id == invoice_id
+
+
+def test_input_invoice_cannot_move_out_of_finalized_issue_month(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-finalized-date-move")
+    tenant = headers["X-Tenant-Code"]
+
+    invoice_id = _create_input_invoice(
+        tenant,
+        issue_date=date(2026, 5, 10),
+    )
+
+    _finalize_month(
+        tenant,
+        year=2026,
+        month=5,
+    )
+
+    response = client.put(
+        f"/input-invoices/{invoice_id}",
+        headers=headers,
+        json={
+            "issue_date": "2026-06-10",
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert (
+        "Cannot modify data for finalized tax period 2026-05"
+        in response.json()["detail"]
+    )
+
+    with SessionLocal() as db:
+        invoice = db.get(InputInvoice, invoice_id)
+        assert invoice is not None
+        assert invoice.issue_date == date(2026, 5, 10)
+
+
+def test_input_invoice_create_rejects_inconsistent_amounts(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-amount-create")
+    tenant = headers["X-Tenant-Code"]
+    suffix = uuid4().hex[:10]
+
+    response = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": f"Invalid amount supplier {suffix}",
+            "invoice_number": f"INVALID-{suffix}",
+            "issue_date": "2026-08-10",
+            "posting_date": "2026-08-10",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "118.00",
+            "currency": "BAM",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json() == {
+        "detail": "total_amount must equal total_base + total_vat"
+    }
+
+    with SessionLocal() as db:
+        invoice = db.execute(
+            select(InputInvoice).where(
+                InputInvoice.tenant_code == tenant,
+                InputInvoice.invoice_number == f"INVALID-{suffix}",
+            )
+        ).scalar_one_or_none()
+
+        assert invoice is None
+
+
+def test_input_invoice_partial_update_rejects_inconsistent_amounts(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-amount-update")
+    tenant = headers["X-Tenant-Code"]
+
+    invoice_id = _create_input_invoice(
+        tenant,
+        total_amount=Decimal("117.00"),
+    )
+
+    response = client.put(
+        f"/input-invoices/{invoice_id}",
+        headers=headers,
+        json={
+            "total_amount": "118.00",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json() == {
+        "detail": "total_amount must equal total_base + total_vat"
+    }
+
+    with SessionLocal() as db:
+        invoice = db.get(InputInvoice, invoice_id)
+        assert invoice is not None
+        assert invoice.total_base == Decimal("100.00")
+        assert invoice.total_vat == Decimal("17.00")
+        assert invoice.total_amount == Decimal("117.00")
+
+def test_input_invoice_partial_update_rejects_null_amount(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-amount-null")
+    tenant = headers["X-Tenant-Code"]
+
+    invoice_id = _create_input_invoice(
+        tenant,
+        total_amount=Decimal("117.00"),
+    )
+
+    response = client.put(
+        f"/input-invoices/{invoice_id}",
+        headers=headers,
+        json={
+            "total_amount": None,
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json() == {
+        "detail": "Input invoice amounts cannot be null"
+    }
+
+    with SessionLocal() as db:
+        invoice = db.get(InputInvoice, invoice_id)
+        assert invoice is not None
+        assert invoice.total_base == Decimal("100.00")
+        assert invoice.total_vat == Decimal("17.00")
+        assert invoice.total_amount == Decimal("117.00")
