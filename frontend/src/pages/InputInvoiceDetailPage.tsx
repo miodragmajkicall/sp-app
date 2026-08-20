@@ -1,4 +1,5 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/InputInvoiceDetailPage.tsx
+import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   useMutation,
@@ -6,12 +7,19 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 
-import type { InputInvoiceDetail } from "../types/inputInvoice";
+import type {
+  InputInvoiceDetail,
+  InputInvoicePaymentCreatePayload,
+  InputInvoicePaymentDetail,
+} from "../types/inputInvoice";
 import {
+  createInputInvoicePayment,
   deleteInputInvoice,
+  deleteInputInvoicePayment,
   downloadInvoiceAttachment,
   fetchInvoiceAttachments,
   getInputInvoice,
+  getInputInvoicePayment,
   type InvoiceAttachmentItem,
 } from "../services/inputInvoicesApi";
 
@@ -76,12 +84,43 @@ function StatusBadge({
   );
 }
 
+function getApiErrorDetail(
+  error: unknown,
+  fallback: string,
+): string {
+  const detail = (
+    error as {
+      response?: {
+        data?: {
+          detail?: unknown;
+        };
+      };
+    }
+  )?.response?.data?.detail;
+
+  return typeof detail === "string" && detail.trim()
+    ? detail
+    : fallback;
+}
+
 export default function InputInvoiceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
 
   const numericId = id ? Number(id) : null;
+
+  const [paymentDate, setPaymentDate] = useState(() => {
+    const now = new Date();
+    const localTime = new Date(
+      now.getTime() - now.getTimezoneOffset() * 60_000,
+    );
+    return localTime.toISOString().slice(0, 10);
+  });
+  const [paymentAccount, setPaymentAccount] = useState<"cash" | "bank">(
+    "bank",
+  );
+  const [paymentNote, setPaymentNote] = useState("");
 
   const {
     data: invoice,
@@ -95,6 +134,21 @@ export default function InputInvoiceDetailPage() {
   });
 
   const {
+    data: payment,
+    isLoading: isPaymentLoading,
+    isError: isPaymentError,
+    error: paymentError,
+  } = useQuery<InputInvoicePaymentDetail, Error>({
+    queryKey: ["input-invoice-payment", numericId],
+    enabled:
+      numericId != null &&
+      Number.isFinite(numericId) &&
+      invoice?.is_paid === true,
+    queryFn: () => getInputInvoicePayment(numericId as number),
+    retry: false,
+  });
+
+  const {
     data: attachments,
     isLoading: isAttachmentsLoading,
     isError: isAttachmentsError,
@@ -102,6 +156,44 @@ export default function InputInvoiceDetailPage() {
   } = useQuery<InvoiceAttachmentItem[], Error>({
     queryKey: ["invoice-attachments"],
     queryFn: fetchInvoiceAttachments,
+  });
+
+  const invalidatePaymentRelatedQueries = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ["input-invoice-detail", numericId],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["input-invoice-payment", numericId],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["input-invoices"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["cash"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["dashboard"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["reports"],
+      }),
+    ]);
+  };
+
+  const createPaymentMutation = useMutation({
+    mutationFn: (payload: InputInvoicePaymentCreatePayload) =>
+      createInputInvoicePayment(numericId as number, payload),
+    onSuccess: async () => {
+      await invalidatePaymentRelatedQueries();
+    },
+  });
+
+  const deletePaymentMutation = useMutation({
+    mutationFn: () => deleteInputInvoicePayment(numericId as number),
+    onSuccess: async () => {
+      await invalidatePaymentRelatedQueries();
+    },
   });
 
   const deleteMutation = useMutation({
@@ -118,6 +210,39 @@ export default function InputInvoiceDetailPage() {
       navigate("/input-invoices");
     },
   });
+
+  const handleCreatePayment = () => {
+    if (
+      numericId == null ||
+      !Number.isFinite(numericId) ||
+      paymentDate.trim() === "" ||
+      createPaymentMutation.isPending
+    ) {
+      return;
+    }
+
+    createPaymentMutation.mutate({
+      payment_date: paymentDate,
+      account: paymentAccount,
+      note: paymentNote.trim() || null,
+    });
+  };
+
+  const handleUndoPayment = () => {
+    if (!invoice || deletePaymentMutation.isPending) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Da li želite poništiti evidentirano plaćanje fakture ${invoice.invoice_number}?`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    deletePaymentMutation.mutate();
+  };
 
   if (numericId == null || !Number.isFinite(numericId)) {
     return (
@@ -483,6 +608,194 @@ export default function InputInvoiceDetailPage() {
                   </div>
                 )}
               </div>
+            </section>
+
+            <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="border-b border-slate-100 pb-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                      Plaćanje
+                    </p>
+                    <h2 className="mt-1 text-base font-semibold text-slate-900">
+                      Plaćanje fakture
+                    </h2>
+                  </div>
+
+                  <StatusBadge
+                    tone={invoice.is_paid ? "emerald" : "amber"}
+                  >
+                    {invoice.is_paid ? "Plaćeno" : "Nije plaćeno"}
+                  </StatusBadge>
+                </div>
+              </div>
+
+              {invoice.is_paid ? (
+                <div className="mt-4 space-y-4">
+                  {isPaymentLoading && (
+                    <p className="text-sm text-slate-600">
+                      Učitavam podatke o plaćanju...
+                    </p>
+                  )}
+
+                  {isPaymentError && (
+                    <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs leading-5 text-red-700">
+                      {getApiErrorDetail(
+                        paymentError,
+                        "Podaci o evidentiranom plaćanju nisu dostupni.",
+                      )}
+                    </div>
+                  )}
+
+                  {payment && (
+                    <div className="space-y-3 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-sm">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-emerald-700">
+                          Datum plaćanja
+                        </span>
+                        <span className="font-semibold text-emerald-950">
+                          {formatDate(payment.payment_date)}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-emerald-700">
+                          Račun
+                        </span>
+                        <span className="font-semibold text-emerald-950">
+                          {payment.account === "cash"
+                            ? "Gotovina"
+                            : "Banka"}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-emerald-700">
+                          Iznos
+                        </span>
+                        <span className="font-mono font-semibold text-emerald-950">
+                          {formatAmount(payment.amount)}
+                        </span>
+                      </div>
+
+                      {payment.note && (
+                        <div className="border-t border-emerald-200 pt-3">
+                          <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                            Napomena
+                          </p>
+                          <p className="mt-1 whitespace-pre-line text-sm text-emerald-950">
+                            {payment.note}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {deletePaymentMutation.isError && (
+                    <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs leading-5 text-red-700">
+                      {getApiErrorDetail(
+                        deletePaymentMutation.error,
+                        "Poništavanje plaćanja nije uspjelo.",
+                      )}
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleUndoPayment}
+                    disabled={deletePaymentMutation.isPending}
+                    className="w-full rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm font-bold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {deletePaymentMutation.isPending
+                      ? "Poništavam..."
+                      : "Poništi plaćanje"}
+                  </button>
+                </div>
+              ) : (
+                <div className="mt-4 space-y-4">
+                  <div>
+                    <label
+                      htmlFor="input-invoice-payment-date"
+                      className="text-xs font-semibold uppercase tracking-wide text-slate-500"
+                    >
+                      Datum plaćanja
+                    </label>
+                    <input
+                      id="input-invoice-payment-date"
+                      type="date"
+                      value={paymentDate}
+                      onChange={(event) =>
+                        setPaymentDate(event.target.value)
+                      }
+                      className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                    />
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="input-invoice-payment-account"
+                      className="text-xs font-semibold uppercase tracking-wide text-slate-500"
+                    >
+                      Način plaćanja
+                    </label>
+                    <select
+                      id="input-invoice-payment-account"
+                      value={paymentAccount}
+                      onChange={(event) =>
+                        setPaymentAccount(
+                          event.target.value as "cash" | "bank",
+                        )
+                      }
+                      className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                    >
+                      <option value="bank">Banka</option>
+                      <option value="cash">Gotovina</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label
+                      htmlFor="input-invoice-payment-note"
+                      className="text-xs font-semibold uppercase tracking-wide text-slate-500"
+                    >
+                      Napomena
+                    </label>
+                    <textarea
+                      id="input-invoice-payment-note"
+                      rows={3}
+                      value={paymentNote}
+                      onChange={(event) =>
+                        setPaymentNote(event.target.value)
+                      }
+                      placeholder="Opcionalna napomena o plaćanju"
+                      className="mt-2 w-full resize-y rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                    />
+                  </div>
+
+                  {createPaymentMutation.isError && (
+                    <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs leading-5 text-red-700">
+                      {getApiErrorDetail(
+                        createPaymentMutation.error,
+                        "Evidentiranje plaćanja nije uspjelo.",
+                      )}
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={handleCreatePayment}
+                    disabled={
+                      createPaymentMutation.isPending ||
+                      paymentDate.trim() === ""
+                    }
+                    className="w-full rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {createPaymentMutation.isPending
+                      ? "Evidentiram..."
+                      : "Evidentiraj plaćanje"}
+                  </button>
+                </div>
+              )}
             </section>
 
             <section className="rounded-3xl border border-slate-200 bg-white p-5 shadow-sm">
