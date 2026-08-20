@@ -52,7 +52,6 @@ export default function InputInvoiceCreatePage() {
 
   const [expenseCategory, setExpenseCategory] = useState("");
   const [isTaxDeductible, setIsTaxDeductible] = useState(true);
-  const [isPaid, setIsPaid] = useState(false);
 
   const [includeVat, setIncludeVat] = useState(true);
   const [baseStr, setBaseStr] = useState("");
@@ -97,7 +96,6 @@ export default function InputInvoiceCreatePage() {
 
         setExpenseCategory(invoice.expense_category ?? "");
         setIsTaxDeductible(invoice.is_tax_deductible);
-        setIsPaid(invoice.is_paid);
 
         setIncludeVat(invoice.total_vat > 0);
         setBaseStr(invoice.total_base.toFixed(2));
@@ -269,7 +267,6 @@ export default function InputInvoiceCreatePage() {
       due_date: dueDate || null,
       expense_category: expenseCategory || null,
       is_tax_deductible: isTaxDeductible,
-      is_paid: isPaid,
       total_base: parseFloat(totalBase.toFixed(2)),
       total_vat: parseFloat(displayVat.toFixed(2)),
       total_amount: parseFloat(totalAmount.toFixed(2)),
@@ -568,24 +565,6 @@ export default function InputInvoiceCreatePage() {
                   </span>
                 </span>
               </label>
-
-              <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4 transition hover:bg-slate-100">
-                <input
-                  id="is-paid"
-                  type="checkbox"
-                  className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-900"
-                  checked={isPaid}
-                  onChange={(e) => setIsPaid(e.target.checked)}
-                />
-                <span>
-                  <span className="block text-sm font-semibold text-slate-900">
-                    Plaćeno
-                  </span>
-                  <span className="mt-1 block text-xs leading-5 text-slate-500">
-                    Označi ako je račun već plaćen kroz kasu/banku.
-                  </span>
-                </span>
-              </label>
             </div>
           </section>
 
@@ -830,12 +809,6 @@ export default function InputInvoiceCreatePage() {
                 <span className="text-slate-500">Poreski status</span>
                 <span className="font-semibold text-slate-900">
                   {isTaxDeductible ? "Priznat rashod" : "Nepriznat"}
-                </span>
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-slate-500">Plaćanje</span>
-                <span className="font-semibold text-slate-900">
-                  {isPaid ? "Plaćeno" : "Nije plaćeno"}
                 </span>
               </div>
             </div>

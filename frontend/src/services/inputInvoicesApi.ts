@@ -34,7 +34,6 @@ export interface InputInvoiceCreatePayload {
 
   expense_category?: string | null;
   is_tax_deductible: boolean;
-  is_paid: boolean;
 
   total_base: number;
   total_vat: number;
@@ -59,7 +58,6 @@ export interface InputInvoiceUpdatePayload {
 
   expense_category?: string | null;
   is_tax_deductible?: boolean;
-  is_paid?: boolean;
 
   total_base?: number;
   total_vat?: number;
@@ -191,7 +189,6 @@ export async function createInputInvoice(
     due_date: payload.due_date,
     expense_category: payload.expense_category ?? null,
     is_tax_deductible: payload.is_tax_deductible,
-    is_paid: payload.is_paid,
     total_base: payload.total_base,
     total_vat: payload.total_vat,
     total_amount: payload.total_amount,
@@ -252,9 +249,6 @@ export async function updateInputInvoice(
   }
   if (payload.is_tax_deductible !== undefined) {
     body.is_tax_deductible = payload.is_tax_deductible;
-  }
-  if (payload.is_paid !== undefined) {
-    body.is_paid = payload.is_paid;
   }
 
   if (payload.total_base !== undefined) {
