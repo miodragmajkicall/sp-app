@@ -808,6 +808,55 @@ def create_input_invoice_payment(
         note=payment.description,
     )
 
+# ======================================================
+#  PAYMENT GET
+# ======================================================
+
+
+@router.get(
+    "/input-invoices/{invoice_id}/payment",
+    response_model=InputInvoicePaymentRead,
+    summary="Dohvati evidentirano plaćanje ulazne fakture",
+)
+def get_input_invoice_payment(
+    invoice_id: int,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem ulazna faktura mora pripadati.",
+    ),
+) -> InputInvoicePaymentRead:
+    tenant = _require_tenant(x_tenant_code)
+
+    invoice = db.execute(
+        select(InputInvoice.id).where(
+            InputInvoice.id == invoice_id,
+            InputInvoice.tenant_code == tenant,
+        )
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Input invoice not found")
+
+    payment = db.execute(
+        select(CashEntry).where(
+            CashEntry.tenant_code == tenant,
+            CashEntry.input_invoice_id == invoice_id,
+        )
+    ).scalars().first()
+    if not payment:
+        raise HTTPException(
+            status_code=404,
+            detail="Input invoice payment not found",
+        )
+
+    return InputInvoicePaymentRead(
+        id=payment.id,
+        payment_date=payment.entry_date,
+        account=payment.account,
+        amount=payment.amount,
+        note=payment.description,
+    )
 
 # ======================================================
 #  PAYMENT DELETE / UNDO

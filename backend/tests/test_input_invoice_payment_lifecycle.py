@@ -146,6 +146,85 @@ def test_create_payment_creates_cash_entry_and_marks_invoice_paid(
         assert payment.input_invoice_id == invoice_id
         assert payment.description == "Plaćanje dobavljaču"
 
+def test_get_payment_returns_existing_payment(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-payment-get")
+    invoice_id = _create_input_invoice(
+        headers["X-Tenant-Code"],
+        total_amount=Decimal("117.00"),
+    )
+
+    created = _create_payment(
+        client,
+        headers,
+        invoice_id,
+        payment_date="2026-08-18",
+        account="bank",
+        note="GET payment detail test",
+    )
+    assert created.status_code == 201, created.text
+
+    response = client.get(
+        f"/input-invoices/{invoice_id}/payment",
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+
+    assert data["id"] == created.json()["id"]
+    assert data["payment_date"] == "2026-08-18"
+    assert data["account"] == "bank"
+    assert Decimal(data["amount"]) == Decimal("117.00")
+    assert data["note"] == "GET payment detail test"
+
+
+def test_get_payment_returns_404_for_unpaid_invoice(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-payment-get-unpaid")
+    invoice_id = _create_input_invoice(
+        headers["X-Tenant-Code"],
+    )
+
+    response = client.get(
+        f"/input-invoices/{invoice_id}/payment",
+        headers=headers,
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {
+        "detail": "Input invoice payment not found"
+    }
+
+
+def test_get_payment_is_tenant_isolated(
+    client: TestClient,
+) -> None:
+    owner_headers = _headers("input-payment-get-owner")
+    requester_headers = _headers("input-payment-get-requester")
+
+    invoice_id = _create_input_invoice(
+        owner_headers["X-Tenant-Code"],
+    )
+
+    created = _create_payment(
+        client,
+        owner_headers,
+        invoice_id,
+    )
+    assert created.status_code == 201, created.text
+
+    response = client.get(
+        f"/input-invoices/{invoice_id}/payment",
+        headers=requester_headers,
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {
+        "detail": "Input invoice not found"
+    }
 
 def test_duplicate_payment_is_rejected(
     client: TestClient,
