@@ -4,6 +4,8 @@ import type {
   InputInvoiceListItem,
   InputInvoiceListResponse,
   InputInvoiceDetail,
+  InputInvoicePaymentCreatePayload,
+  InputInvoicePaymentDetail,
 } from "../types/inputInvoice";
 
 /**
@@ -131,6 +133,21 @@ function mapInputInvoiceDetail(r: any): InputInvoiceDetail {
 }
 
 /**
+ * Helper: mapiranje backend payment odgovora u frontend payment model.
+ */
+function mapInputInvoicePaymentDetail(
+  r: any,
+): InputInvoicePaymentDetail {
+  return {
+    id: typeof r.id === "number" ? r.id : Number(r.id),
+    payment_date: r.payment_date,
+    account: r.account,
+    amount: r.amount != null ? Number(r.amount) : 0,
+    note: r.note ?? null,
+  };
+}
+
+/**
  * UI lista ulaznih faktura – koristi /input-invoices/list
  * i mapira odgovor u InputInvoiceListResponse za frontend tabelu.
  */
@@ -209,6 +226,50 @@ export async function getInputInvoice(
 ): Promise<InputInvoiceDetail> {
   const res = await apiClient.get<any>(`/input-invoices/${id}`);
   return mapInputInvoiceDetail(res.data);
+}
+
+/**
+ * Dohvat evidentiranog plaćanja ulazne fakture.
+ * Backend endpoint: GET /input-invoices/{id}/payment
+ */
+export async function getInputInvoicePayment(
+  id: number,
+): Promise<InputInvoicePaymentDetail> {
+  const res = await apiClient.get<any>(
+    `/input-invoices/${id}/payment`,
+  );
+  return mapInputInvoicePaymentDetail(res.data);
+}
+
+/**
+ * Evidentiranje punog plaćanja ulazne fakture.
+ * Backend endpoint: POST /input-invoices/{id}/payment
+ * Iznos određuje backend iz ukupnog iznosa fakture.
+ */
+export async function createInputInvoicePayment(
+  id: number,
+  payload: InputInvoicePaymentCreatePayload,
+): Promise<InputInvoicePaymentDetail> {
+  const res = await apiClient.post<any>(
+    `/input-invoices/${id}/payment`,
+    {
+      payment_date: payload.payment_date,
+      account: payload.account,
+      note: payload.note ?? null,
+    },
+  );
+
+  return mapInputInvoicePaymentDetail(res.data);
+}
+
+/**
+ * Poništavanje evidentiranog plaćanja ulazne fakture.
+ * Backend endpoint: DELETE /input-invoices/{id}/payment
+ */
+export async function deleteInputInvoicePayment(
+  id: number,
+): Promise<void> {
+  await apiClient.delete(`/input-invoices/${id}/payment`);
 }
 
 /**

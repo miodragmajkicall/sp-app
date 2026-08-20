@@ -26,6 +26,27 @@ export interface InputInvoiceListResponse {
 }
 
 /**
+ * Payload za evidentiranje punog plaćanja ulazne fakture.
+ * Iznos se ne šalje jer ga backend uzima sa fakture.
+ */
+export interface InputInvoicePaymentCreatePayload {
+  payment_date: string; // YYYY-MM-DD
+  account: "cash" | "bank";
+  note?: string | null;
+}
+
+/**
+ * Evidentirano puno plaćanje ulazne fakture.
+ */
+export interface InputInvoicePaymentDetail {
+  id: number;
+  payment_date: string; // YYYY-MM-DD
+  account: "cash" | "bank";
+  amount: number;
+  note: string | null;
+}
+
+/**
  * Detaljna šema ulazne fakture (mapira se na backend InputInvoiceRead).
  */
 export interface InputInvoiceDetail {
