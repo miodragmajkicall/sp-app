@@ -183,15 +183,17 @@ def create_input_invoice(
 
     data = payload.model_dump()
 
+    # Finansijska lifecycle polja su server-authoritative.
+    # U trenutnoj V3 fazi ulazne fakture vode se isključivo u BAM,
+    # a status plaćanja mijenja se samo kroz payment lifecycle.
+    data["currency"] = "BAM"
+    data["is_paid"] = False
+
     _validate_input_invoice_amounts(
         total_base=data["total_base"],
         total_vat=data["total_vat"],
         total_amount=data["total_amount"],
     )
-
-    # Status plaćanja je server-authoritative i mijenja se isključivo
-    # kroz dedicated payment lifecycle.
-    data["is_paid"] = False
 
     # Ako datum knjiženja nije eksplicitno postavljen, koristi datum dokumenta
     if not data.get("posting_date") and data.get("issue_date"):
@@ -644,18 +646,12 @@ def update_input_invoice(
 
     update_data = payload.model_dump(exclude_unset=True)
 
-    if "is_paid" in update_data:
-        raise HTTPException(
-            status_code=409,
-            detail="Payment status can only be changed through the input invoice payment endpoint",
-        )
-
     payment_sensitive_fields = {
         "total_base",
         "total_vat",
         "total_amount",
-        "currency",
     }
+
     if payment_sensitive_fields.intersection(update_data):
         linked_payment_id = db.execute(
             select(CashEntry.id).where(

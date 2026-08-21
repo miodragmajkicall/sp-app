@@ -358,7 +358,6 @@ def _create_tax_input_invoice(
         "total_base": "100.00",
         "total_vat": "17.00",
         "total_amount": "117.00",
-        "currency": "BAM",
         "note": "TAX regression test",
     }
 

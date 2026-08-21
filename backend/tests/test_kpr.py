@@ -65,7 +65,6 @@ def _ensure_sample_data() -> None:
         "total_base": "50.00",
         "total_vat": "8.50",
         "total_amount": "58.50",
-        "currency": "BAM",
         "note": "Račun za struju – januar.",
     }
     resp = client.post("/input-invoices", json=input_invoice_payload, headers=HEADERS)
@@ -190,7 +189,6 @@ def test_kpr_input_invoice_payment_is_not_double_counted_and_keeps_tax_flag():
         "total_base": "100.00",
         "total_vat": "17.00",
         "total_amount": "117.00",
-        "currency": "BAM",
         "note": "KPR regression test",
     }
 

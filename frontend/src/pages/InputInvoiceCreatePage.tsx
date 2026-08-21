@@ -29,8 +29,8 @@ const EXPENSE_CATEGORY_OPTIONS = [
   "Ostali troškovi",
 ];
 
-function formatAmount(value: number, currency = "BAM"): string {
-  return `${value > 0 ? value.toFixed(2) : "0.00"} ${currency || "BAM"}`;
+function formatAmount(value: number): string {
+  return `${value > 0 ? value.toFixed(2) : "0.00"} BAM`;
 }
 
 export default function InputInvoiceCreatePage() {
@@ -48,7 +48,6 @@ export default function InputInvoiceCreatePage() {
   const [issueDate, setIssueDate] = useState("");
   const [postingDate, setPostingDate] = useState("");
   const [dueDate, setDueDate] = useState("");
-  const [currency, setCurrency] = useState("BAM");
 
   const [expenseCategory, setExpenseCategory] = useState("");
   const [isTaxDeductible, setIsTaxDeductible] = useState(true);
@@ -92,7 +91,6 @@ export default function InputInvoiceCreatePage() {
         setIssueDate(invoice.issue_date);
         setPostingDate(invoice.posting_date ?? invoice.issue_date);
         setDueDate(invoice.due_date ?? "");
-        setCurrency(invoice.currency || "BAM");
 
         setExpenseCategory(invoice.expense_category ?? "");
         setIsTaxDeductible(invoice.is_tax_deductible);
@@ -270,7 +268,6 @@ export default function InputInvoiceCreatePage() {
       total_base: parseFloat(totalBase.toFixed(2)),
       total_vat: parseFloat(displayVat.toFixed(2)),
       total_amount: parseFloat(totalAmount.toFixed(2)),
-      currency: currency.trim() || "BAM",
       note: note.trim() || null,
     };
 
@@ -368,19 +365,19 @@ export default function InputInvoiceCreatePage() {
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <p className="text-xs font-medium text-slate-500">Osnovica</p>
             <p className="mt-1 font-mono text-lg font-semibold text-slate-900">
-              {formatAmount(totalBase, currency)}
+              {formatAmount(totalBase)}
             </p>
           </div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <p className="text-xs font-medium text-slate-500">PDV</p>
             <p className="mt-1 font-mono text-lg font-semibold text-slate-900">
-              {formatAmount(displayVat, currency)}
+              {formatAmount(displayVat)}
             </p>
           </div>
           <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <p className="text-xs font-medium text-slate-500">Ukupno</p>
             <p className="mt-1 font-mono text-lg font-semibold text-slate-900">
-              {formatAmount(totalAmount, currency)}
+              {formatAmount(totalAmount)}
             </p>
           </div>
         </div>
@@ -447,7 +444,7 @@ export default function InputInvoiceCreatePage() {
                 Podaci o fakturi
               </h2>
               <p className="mt-1 text-sm text-slate-500">
-                Broj dokumenta, datumi, valuta, kategorija i statusi.
+                Broj dokumenta, datumi, kategorija i statusi.
               </p>
             </div>
 
@@ -463,18 +460,6 @@ export default function InputInvoiceCreatePage() {
                   onChange={(e) => setInvoiceNumber(e.target.value)}
                   className="input"
                   placeholder="npr. 2026-INV-001"
-                />
-              </div>
-
-              <div>
-                <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  Valuta
-                </label>
-                <input
-                  type="text"
-                  value={currency}
-                  onChange={(e) => setCurrency(e.target.value)}
-                  className="input"
                 />
               </div>
 
@@ -600,7 +585,7 @@ export default function InputInvoiceCreatePage() {
                     PDV 17%
                   </span>
                   <span className="font-mono text-sm font-bold text-slate-900">
-                    {formatAmount(displayVat, currency)}
+                    {formatAmount(displayVat)}
                   </span>
                 </div>
                 <label className="mt-4 flex cursor-pointer items-start gap-2">
@@ -730,13 +715,13 @@ export default function InputInvoiceCreatePage() {
               <div className="flex items-center justify-between gap-4">
                 <span className="text-slate-300">Osnovica</span>
                 <span className="font-mono font-semibold">
-                  {formatAmount(totalBase, currency)}
+                  {formatAmount(totalBase)}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-4">
                 <span className="text-slate-300">PDV</span>
                 <span className="font-mono font-semibold">
-                  {formatAmount(displayVat, currency)}
+                  {formatAmount(displayVat)}
                 </span>
               </div>
               <div className="flex items-center justify-between gap-4 border-t border-white/10 pt-4">
@@ -744,7 +729,7 @@ export default function InputInvoiceCreatePage() {
                   Ukupno
                 </span>
                 <span className="font-mono text-xl font-bold">
-                  {formatAmount(totalAmount, currency)}
+                  {formatAmount(totalAmount)}
                 </span>
               </div>
             </div>

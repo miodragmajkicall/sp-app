@@ -40,7 +40,6 @@ export interface InputInvoiceCreatePayload {
   total_base: number;
   total_vat: number;
   total_amount: number;
-  currency: string;
   note?: string | null;
 }
 
@@ -65,7 +64,6 @@ export interface InputInvoiceUpdatePayload {
   total_vat?: number;
   total_amount?: number;
 
-  currency?: string;
   note?: string | null;
 }
 
@@ -209,7 +207,6 @@ export async function createInputInvoice(
     total_base: payload.total_base,
     total_vat: payload.total_vat,
     total_amount: payload.total_amount,
-    currency: payload.currency,
     note: payload.note ?? null,
   };
 
@@ -322,9 +319,6 @@ export async function updateInputInvoice(
     body.total_amount = payload.total_amount;
   }
 
-  if (payload.currency !== undefined) {
-    body.currency = payload.currency;
-  }
   if (payload.note !== undefined) {
     body.note = payload.note;
   }

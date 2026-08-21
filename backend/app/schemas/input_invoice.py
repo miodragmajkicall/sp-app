@@ -89,12 +89,6 @@ class InputInvoiceBase(BaseModel):
         ),
     )
 
-    # Status plaćanja – False = nije plaćeno, True = plaćeno
-    is_paid: bool = Field(
-        default=False,
-        description="Status plaćanja (true = plaćeno, false = nije plaćeno).",
-    )
-
     total_base: Decimal = Field(
         ...,
         ge=0,
@@ -111,12 +105,6 @@ class InputInvoiceBase(BaseModel):
         description="Ukupan iznos sa PDV-om (>= 0).",
     )
 
-    currency: str = Field(
-        default="BAM",
-        min_length=1,
-        max_length=8,
-        description="Valuta u kojoj je račun izražen (default 'BAM').",
-    )
     note: Optional[str] = Field(
         None,
         description="Interna napomena uz ulaznu fakturu (opcionalno).",
@@ -139,6 +127,7 @@ class InputInvoiceCreate(InputInvoiceBase):
     model_config = ConfigDict(
         from_attributes=True,
         populate_by_name=True,
+        extra="forbid",
         json_schema_extra={
             "example": {
                 "supplier_name": "Elektrodistribucija Banja Luka",
@@ -150,11 +139,9 @@ class InputInvoiceCreate(InputInvoiceBase):
                 "due_date": "2025-11-15",
                 "expense_category": "Komunalije",
                 "is_tax_deductible": True,
-                "is_paid": False,
                 "total_base": "100.00",
                 "total_vat": "17.00",
                 "total_amount": "117.00",
-                "currency": "BAM",
                 "note": "Račun za električnu energiju za oktobar.",
             }
         },
@@ -178,13 +165,13 @@ class InputInvoiceUpdate(BaseModel):
     model_config = ConfigDict(
         from_attributes=True,
         populate_by_name=True,
+        extra="forbid",
         json_schema_extra={
             "example": {
                 "supplier_name": "Elektrodistribucija Banja Luka",
                 "due_date": "2025-11-20",
                 "expense_category": "Komunalije",
                 "is_tax_deductible": True,
-                "is_paid": True,
                 "note": "Ispravka roka dospijeća i dopuna napomene.",
             }
         },
@@ -237,11 +224,6 @@ class InputInvoiceUpdate(BaseModel):
         description="Da li se rashod priznaje za porez (ako se mijenja).",
     )
 
-    is_paid: Optional[bool] = Field(
-        None,
-        description="Status plaćanja (ako se mijenja).",
-    )
-
     total_base: Optional[Decimal] = Field(
         None,
         ge=0,
@@ -258,12 +240,6 @@ class InputInvoiceUpdate(BaseModel):
         description="Novi ukupan iznos sa PDV-om (>= 0, opcionalno).",
     )
 
-    currency: Optional[str] = Field(
-        None,
-        min_length=1,
-        max_length=8,
-        description="Nova valuta (ako se mijenja).",
-    )
     note: Optional[str] = Field(
         None,
         description="Nova interna napomena (ako se mijenja).",
@@ -322,6 +298,15 @@ class InputInvoiceRead(InputInvoiceBase):
     """
 
     model_config = BaseConfig
+
+    is_paid: bool = Field(
+        ...,
+        description="Status plaćanja kojim upravlja payment lifecycle.",
+    )
+    currency: str = Field(
+        ...,
+        description="Valuta ulazne fakture. Trenutno BAM.",
+    )
 
     id: int = Field(
         ...,

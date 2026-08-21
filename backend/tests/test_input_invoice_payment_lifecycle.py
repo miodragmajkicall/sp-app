@@ -428,7 +428,7 @@ def test_direct_cash_delete_cannot_remove_input_invoice_payment(
         assert db.get(CashEntry, payment_id) is not None
 
 
-def test_regular_update_cannot_change_payment_status(
+def test_regular_update_rejects_payment_status_field(
     client: TestClient,
 ) -> None:
     headers = _headers("input-payment-update-status")
@@ -440,21 +440,21 @@ def test_regular_update_cannot_change_payment_status(
         json={"is_paid": True},
     )
 
-    assert response.status_code == 409, response.text
-    assert response.json() == {
-        "detail": (
-            "Payment status can only be changed through the "
-            "input invoice payment endpoint"
-        )
-    }
+    assert response.status_code == 422, response.text
+
+    detail = response.json()["detail"]
+    assert any(
+        item["type"] == "extra_forbidden"
+        and item["loc"] == ["body", "is_paid"]
+        for item in detail
+    )
 
     with SessionLocal() as db:
         invoice = db.get(InputInvoice, invoice_id)
         assert invoice is not None
         assert invoice.is_paid is False
 
-
-def test_create_endpoint_ignores_manual_paid_status(
+def test_create_endpoint_rejects_manual_paid_status(
     client: TestClient,
 ) -> None:
     headers = _headers("input-payment-create-status")
@@ -471,13 +471,74 @@ def test_create_endpoint_ignores_manual_paid_status(
             "total_base": "100.00",
             "total_vat": "17.00",
             "total_amount": "117.00",
-            "currency": "BAM",
             "is_paid": True,
         },
     )
 
-    assert response.status_code == 201, response.text
-    assert response.json()["is_paid"] is False
+    assert response.status_code == 422, response.text
+
+    detail = response.json()["detail"]
+    assert any(
+        item["type"] == "extra_forbidden"
+        and item["loc"] == ["body", "is_paid"]
+        for item in detail
+    )
+
+def test_create_endpoint_rejects_currency_field(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-create-currency")
+    suffix = uuid4().hex[:10]
+
+    response = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": f"Currency supplier {suffix}",
+            "invoice_number": f"CURRENCY-{suffix}",
+            "issue_date": "2026-08-10",
+            "posting_date": "2026-08-10",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "117.00",
+            "currency": "EUR",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+
+    detail = response.json()["detail"]
+    assert any(
+        item["type"] == "extra_forbidden"
+        and item["loc"] == ["body", "currency"]
+        for item in detail
+    )
+
+def test_regular_update_rejects_currency_field(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-update-currency")
+    invoice_id = _create_input_invoice(headers["X-Tenant-Code"])
+
+    response = client.put(
+        f"/input-invoices/{invoice_id}",
+        headers=headers,
+        json={"currency": "EUR"},
+    )
+
+    assert response.status_code == 422, response.text
+
+    detail = response.json()["detail"]
+    assert any(
+        item["type"] == "extra_forbidden"
+        and item["loc"] == ["body", "currency"]
+        for item in detail
+    )
+
+    with SessionLocal() as db:
+        invoice = db.get(InputInvoice, invoice_id)
+        assert invoice is not None
+        assert invoice.currency == "BAM"
 
 def test_paid_invoice_financial_fields_cannot_be_changed(
     client: TestClient,
@@ -614,7 +675,6 @@ def test_input_invoice_create_rejects_inconsistent_amounts(
             "total_base": "100.00",
             "total_vat": "17.00",
             "total_amount": "118.00",
-            "currency": "BAM",
         },
     )
 

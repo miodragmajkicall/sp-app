@@ -30,7 +30,6 @@ def _make_payload(overrides: Dict[str, Any] | None = None) -> Dict[str, Any]:
         "total_base": "100.00",
         "total_vat": "17.00",
         "total_amount": "117.00",
-        "currency": "BAM",
         "note": "Račun za električnu energiju za oktobar.",
     }
     if overrides:

@@ -403,7 +403,6 @@ def test_invoice_attachment_link_to_input_invoice_ok() -> None:
         "total_base": "50.00",
         "total_vat": "8.50",
         "total_amount": "58.50",
-        "currency": "BAM",
         "note": "Test ulazne fakture",
     }
     inp_resp = client.post(
