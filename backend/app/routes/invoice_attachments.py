@@ -37,6 +37,9 @@ router = APIRouter(
 # Može se override-ovati preko env var: INVOICE_ATTACHMENTS_DIR
 STORAGE_ROOT = Path(os.getenv("INVOICE_ATTACHMENTS_DIR", "data/invoice_attachments"))
 
+# Maksimalna veličina jednog attachment-a: 10 MiB.
+MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024
+
 # Dozvoljeni statusi obrade attachment-a.
 ALLOWED_ATTACHMENT_STATUSES = {
     "uploaded",
@@ -57,16 +60,71 @@ def _ensure_storage_root() -> None:
 
 def _safe_filename(original: str | None) -> str:
     """
-    Vrlo jednostavna sanitizacija imena fajla:
-    - uzimamo samo basename,
-    - zamjenjujemo / i \ sa _,
-    - ako je ime prazno, koristimo 'uploaded-file'.
+    Vraća siguran display/original filename za metadata.
+
+    Korisnički filename se nikada ne koristi kao filesystem putanja.
     """
     if not original:
         return "uploaded-file"
-    name = os.path.basename(original)
-    name = name.replace("/", "_").replace("\\", "_")
-    return name or "uploaded-file"
+
+    normalized = original.replace("\\", "/")
+    name = normalized.rsplit("/", 1)[-1].strip()
+    name = "".join(
+        character
+        for character in name
+        if ord(character) >= 32 and ord(character) != 127
+    )
+
+    if not name or name in {".", ".."}:
+        return "uploaded-file"
+
+    return name[:256]
+
+
+def _detect_attachment_type(file_bytes: bytes) -> tuple[str, str]:
+    """
+    Detektuje stvarni tip fajla iz binarnog sadržaja.
+
+    Ne vjerujemo MIME tipu koji pošalje klijent. Dozvoljeni su samo:
+    - PDF
+    - JPEG
+    - PNG
+
+    Vraća canonical MIME type i sigurnu internu ekstenziju.
+    """
+    if b"%PDF-" in file_bytes[:1024]:
+        return "application/pdf", ".pdf"
+
+    if file_bytes.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg", ".jpg"
+
+    if file_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png", ".png"
+
+    raise HTTPException(
+        status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        detail="Unsupported attachment type; only PDF, JPEG, and PNG are allowed",
+    )
+
+
+def _resolve_storage_path(storage_path: str) -> Path:
+    """
+    Pretvara relativni storage_path u apsolutnu putanju i garantuje
+    da rezultat ostaje unutar STORAGE_ROOT.
+
+    Štiti download/delete i od traversal vrijednosti u bazi i od
+    symlink putanja koje bi nakon resolve() izlazile iz storage root-a.
+    """
+    storage_root = STORAGE_ROOT.resolve()
+    full_path = (storage_root / storage_path).resolve()
+
+    if not full_path.is_relative_to(storage_root):
+        raise HTTPException(
+            status_code=404,
+            detail="File not found",
+        )
+
+    return full_path
 
 
 def _require_tenant(x_tenant_code: Optional[str]) -> str:
@@ -74,7 +132,6 @@ def _require_tenant(x_tenant_code: Optional[str]) -> str:
     Shared helper – potpuno isti pattern kao u invoices.py.
     """
     return require_tenant_code(x_tenant_code)
-
 
 def _ensure_tenant_exists(db: Session, code: str) -> None:
     """
@@ -157,8 +214,9 @@ def upload_invoice_attachment(
         # ali ostavljamo provjeru radi robusnosti.
         raise HTTPException(status_code=400, detail="File is required")
 
-    # Pročitamo sadržaj fajla u memoriju (za sada je ovo sasvim ok)
-    file_bytes = file.file.read()
+    # Čitamo najviše dozvoljeni limit + 1 bajt, tako da prevelik upload
+    # ne učitavamo nekontrolisano u memoriju.
+    file_bytes = file.file.read(MAX_ATTACHMENT_SIZE_BYTES + 1)
     size_bytes = len(file_bytes)
 
     if size_bytes == 0:
@@ -167,38 +225,42 @@ def upload_invoice_attachment(
             detail="Uploaded file is empty",
         )
 
-    content_type = file.content_type or "application/octet-stream"
+    if size_bytes > MAX_ATTACHMENT_SIZE_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="Attachment exceeds maximum size of 10 MiB",
+        )
+
+    content_type, storage_suffix = _detect_attachment_type(file_bytes)
     original_name = _safe_filename(file.filename)
 
     # Osiguramo da direktorij postoji
     _ensure_storage_root()
 
-    # 1) Kreiramo red u DB sa privremenim storage_path vrijednostima
+    # 1) Kreiramo red u DB sa privremenom storage_path vrijednošću.
+    # Originalni/sigurni basename čuvamo kao metadata, ali ga ne koristimo
+    # za fizičku putanju na disku.
     attachment = InvoiceAttachment(
         tenant_code=tenant,
-        invoice_id=None,  # još nije povezano sa izlaznom fakturom
-        input_invoice_id=None,  # još nije povezano sa ulaznom fakturom
+        invoice_id=None,
+        input_invoice_id=None,
         filename=original_name,
         content_type=content_type,
         size_bytes=size_bytes,
-        storage_path="__TEMP__",  # placeholder dok ne znamo ID
+        storage_path="__TEMP__",
         status="uploaded",
     )
 
     db.add(attachment)
-    db.flush()  # dobijamo attachment.id iz sekvence
+    db.flush()  # dobijamo globalno jedinstven attachment.id
 
-    # 2) Sada znamo ID → gradimo relativnu putanju i snimamo fajl na disk
-    tenant_dir = STORAGE_ROOT / tenant
-    tenant_dir.mkdir(parents=True, exist_ok=True)
-
-    relative_path = f"{tenant}/{attachment.id}_{original_name}"
+    # 2) Interno storage ime ne sadrži tenant niti korisnički filename.
+    relative_path = f"{attachment.id}{storage_suffix}"
     full_path = STORAGE_ROOT / relative_path
 
     try:
         full_path.write_bytes(file_bytes)
     except OSError as exc:
-        # Ako snimanje fajla padne, rollback i prijavi grešku
         db.rollback()
         raise HTTPException(
             status_code=500,
@@ -206,7 +268,7 @@ def upload_invoice_attachment(
         ) from exc
 
     # 3) Ažuriramo storage_path i commit-ujemo
-    attachment.storage_path = str(relative_path)
+    attachment.storage_path = relative_path
     db.commit()
     db.refresh(attachment)
 
@@ -226,9 +288,11 @@ def upload_invoice_attachment(
     description=(
         "Vraća listu svih uploadovanih attachment-a ulaznih faktura "
         "za zadatog tenanta.\n\n"
-        "Opcioni filter:\n"
+        "Opcioni filteri:\n"
         "- `invoice_id` – ako je zadat, vraćaju se samo attachment-i "
-        "povezani sa tom izlaznom fakturom.\n\n"
+        "povezani sa tom izlaznom fakturom.\n"
+        "- `input_invoice_id` – ako je zadat, vraćaju se samo attachment-i "
+        "povezani sa tom ulaznom fakturom.\n\n"
         "Ovo služi kao baza za ekran 'ulazne fakture' u UI-ju, gdje korisnik "
         "može vidjeti koje je fajlove uploadovao i kojim redoslijedom će se "
         "obrađivati (OCR, parsiranje, povezivanje sa troškovima, itd.)."
@@ -248,6 +312,13 @@ def list_invoice_attachments(
             "attachment-i koji su povezani sa tom fakturom."
         ),
     ),
+    input_invoice_id: Optional[int] = Query(
+        None,
+        description=(
+            "Opcioni filter: ID ulazne fakture. Ako je zadat, vraćaju se samo "
+            "attachment-i koji su povezani sa tom ulaznom fakturom."
+        ),
+    ),
 ) -> List[InvoiceAttachmentRead]:
     """
     Lista attachment-a za jednog tenanta, iz baze.
@@ -264,6 +335,11 @@ def list_invoice_attachments(
 
     if invoice_id is not None:
         stmt = stmt.where(InvoiceAttachment.invoice_id == invoice_id)
+
+    if input_invoice_id is not None:
+        stmt = stmt.where(
+            InvoiceAttachment.input_invoice_id == input_invoice_id
+        )
 
     stmt = stmt.order_by(
         InvoiceAttachment.created_at.desc(),
@@ -317,15 +393,15 @@ def delete_invoice_attachment(
     if not attachment:
         raise HTTPException(status_code=404, detail="Attachment not found")
 
-    # Pokušamo obrisati fajl sa diska, ali ne pravimo 500 ako fajl fizički ne postoji.
+    # Brišemo samo fajl koji je dokazano unutar STORAGE_ROOT.
     if attachment.storage_path:
-        full_path = STORAGE_ROOT / attachment.storage_path
+        full_path = _resolve_storage_path(attachment.storage_path)
         try:
-            if full_path.exists():
+            if full_path.is_file():
                 full_path.unlink()
         except OSError:
-            # Za ovaj nivo aplikacije nije kritično ako je fajl već nestao,
-            # bitno je da se biznis entitet skloni iz sistema.
+            # Fizički cleanup ne smije blokirati brisanje DB zapisa ako je
+            # fajl već nestao ili filesystem odbije operaciju.
             pass
 
     db.delete(attachment)
@@ -384,8 +460,8 @@ def download_invoice_attachment(
     if not attachment.storage_path:
         raise HTTPException(status_code=404, detail="File not found")
 
-    full_path = STORAGE_ROOT / attachment.storage_path
-    if not full_path.exists():
+    full_path = _resolve_storage_path(attachment.storage_path)
+    if not full_path.is_file():
         raise HTTPException(status_code=404, detail="File not found")
 
     media_type = attachment.content_type or "application/octet-stream"

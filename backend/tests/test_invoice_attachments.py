@@ -4,7 +4,10 @@ import time
 
 from fastapi.testclient import TestClient
 
+from app.db import SessionLocal
 from app.main import app
+from app.models import InvoiceAttachment
+from app.routes.invoice_attachments import STORAGE_ROOT
 from tests.invoice_profile_helpers import save_complete_profile
 
 client = TestClient(app)
@@ -278,7 +281,11 @@ def test_invoice_attachment_link_to_invoice_fails_for_wrong_invoice() -> None:
         "/invoice-attachments",
         headers=headers,
         files={
-            "file": ("test-neg.pdf", b"NEG", "application/pdf"),
+            "file": (
+                "test-neg.pdf",
+                b"%PDF-1.4\nINVOICE LINK NEG TEST",
+                "application/pdf",
+            ),
         },
     )
     assert upload_resp.status_code == 201, upload_resp.text
@@ -315,7 +322,11 @@ def test_invoice_attachment_status_update_flow() -> None:
         "/invoice-attachments",
         headers=headers,
         files={
-            "file": ("status-test.pdf", b"STATUS", "application/pdf"),
+            "file": (
+                "status-test.pdf",
+                b"%PDF-1.4\nSTATUS TEST",
+                "application/pdf",
+            ),
         },
     )
     assert upload_resp.status_code == 201, upload_resp.text
@@ -362,7 +373,11 @@ def test_invoice_attachment_status_invalid_value() -> None:
         "/invoice-attachments",
         headers=headers,
         files={
-            "file": ("status-neg.pdf", b"NEG", "application/pdf"),
+            "file": (
+                "status-neg.pdf",
+                b"%PDF-1.4\nSTATUS NEG TEST",
+                "application/pdf",
+            ),
         },
     )
     assert upload_resp.status_code == 201, upload_resp.text
@@ -462,7 +477,11 @@ def test_invoice_attachment_link_to_input_invoice_fails_for_wrong_input_invoice(
         "/invoice-attachments",
         headers=headers,
         files={
-            "file": ("input-neg.pdf", b"NEG", "application/pdf"),
+            "file": (
+                "input-neg.pdf",
+                b"%PDF-1.4\nINPUT NEG TEST",
+                "application/pdf",
+            ),
         },
     )
     assert upload_resp.status_code == 201, upload_resp.text
@@ -479,3 +498,461 @@ def test_invoice_attachment_link_to_input_invoice_fails_for_wrong_input_invoice(
     assert link_resp.status_code == 404
     body = link_resp.json()
     assert body.get("detail") == "Input invoice not found"
+
+
+def test_invoice_attachment_rejects_fake_pdf_content() -> None:
+    tenant_code = "att-security-fake-pdf"
+    headers = {"X-Tenant-Code": tenant_code}
+
+    response = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": (
+                "fake-invoice.pdf",
+                b"This is plain text, not a PDF file.",
+                "application/pdf",
+            ),
+        },
+    )
+
+    assert response.status_code == 415, response.text
+    assert response.json() == {
+        "detail": "Unsupported attachment type; only PDF, JPEG, and PNG are allowed"
+    }
+
+
+def test_invoice_attachment_detects_jpeg_from_content() -> None:
+    tenant_code = "att-security-jpeg"
+    headers = {"X-Tenant-Code": tenant_code}
+    filename = "receipt-upload.bin"
+    content = b"\xff\xd8\xff\xe0JPEG TEST CONTENT"
+
+    response = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": (
+                filename,
+                content,
+                "application/octet-stream",
+            ),
+        },
+    )
+
+    assert response.status_code == 201, response.text
+
+    data = response.json()
+    assert data["filename"] == filename
+    assert data["content_type"] == "image/jpeg"
+    assert data["size_bytes"] == len(content)
+    assert data["storage_path"].endswith(".jpg")
+    assert filename not in data["storage_path"]
+    assert tenant_code not in data["storage_path"]
+
+
+def test_invoice_attachment_detects_png_from_content() -> None:
+    tenant_code = "att-security-png"
+    headers = {"X-Tenant-Code": tenant_code}
+    filename = "receipt-upload.dat"
+    content = b"\x89PNG\r\n\x1a\nPNG TEST CONTENT"
+
+    response = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": (
+                filename,
+                content,
+                "application/pdf",
+            ),
+        },
+    )
+
+    assert response.status_code == 201, response.text
+
+    data = response.json()
+    assert data["filename"] == filename
+    assert data["content_type"] == "image/png"
+    assert data["size_bytes"] == len(content)
+    assert data["storage_path"].endswith(".png")
+    assert filename not in data["storage_path"]
+    assert tenant_code not in data["storage_path"]
+
+
+def test_invoice_attachment_rejects_file_larger_than_10_mib() -> None:
+    tenant_code = "att-security-too-large"
+    headers = {"X-Tenant-Code": tenant_code}
+
+    content = b"%PDF-1.4\n" + (b"A" * (10 * 1024 * 1024))
+
+    response = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": (
+                "too-large.pdf",
+                content,
+                "application/pdf",
+            ),
+        },
+    )
+
+    assert response.status_code == 413, response.text
+    assert response.json() == {
+        "detail": "Attachment exceeds maximum size of 10 MiB"
+    }
+
+
+def test_invoice_attachment_download_blocks_storage_path_traversal() -> None:
+    tenant_code = "att-security-download-traversal"
+    headers = {"X-Tenant-Code": tenant_code}
+    content = b"%PDF-1.4\nTRAVERSAL DOWNLOAD TEST"
+
+    upload_response = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": (
+                "download-traversal.pdf",
+                content,
+                "application/pdf",
+            ),
+        },
+    )
+    assert upload_response.status_code == 201, upload_response.text
+
+    attachment_id = upload_response.json()["id"]
+    original_storage_path = upload_response.json()["storage_path"]
+
+    outside_path = STORAGE_ROOT.resolve().parent / (
+        f"attachment-download-traversal-{attachment_id}.pdf"
+    )
+    outside_path.write_bytes(b"OUTSIDE STORAGE SECRET")
+
+    try:
+        with SessionLocal() as db:
+            attachment = db.get(InvoiceAttachment, attachment_id)
+            assert attachment is not None
+            attachment.storage_path = f"../{outside_path.name}"
+            db.commit()
+
+        response = client.get(
+            f"/invoice-attachments/{attachment_id}/download",
+            headers=headers,
+        )
+
+        assert response.status_code == 404, response.text
+        assert response.json() == {"detail": "File not found"}
+        assert outside_path.is_file()
+        assert outside_path.read_bytes() == b"OUTSIDE STORAGE SECRET"
+    finally:
+        with SessionLocal() as db:
+            attachment = db.get(InvoiceAttachment, attachment_id)
+            if attachment is not None:
+                attachment.storage_path = original_storage_path
+                db.commit()
+
+        client.delete(
+            f"/invoice-attachments/{attachment_id}",
+            headers=headers,
+        )
+
+        if outside_path.exists():
+            outside_path.unlink()
+
+
+def test_invoice_attachment_delete_blocks_storage_path_traversal() -> None:
+    tenant_code = "att-security-delete-traversal"
+    headers = {"X-Tenant-Code": tenant_code}
+    content = b"%PDF-1.4\nTRAVERSAL DELETE TEST"
+
+    upload_response = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": (
+                "delete-traversal.pdf",
+                content,
+                "application/pdf",
+            ),
+        },
+    )
+    assert upload_response.status_code == 201, upload_response.text
+
+    attachment_id = upload_response.json()["id"]
+    original_storage_path = upload_response.json()["storage_path"]
+
+    outside_path = STORAGE_ROOT.resolve().parent / (
+        f"attachment-delete-traversal-{attachment_id}.pdf"
+    )
+    outside_path.write_bytes(b"DO NOT DELETE")
+
+    try:
+        with SessionLocal() as db:
+            attachment = db.get(InvoiceAttachment, attachment_id)
+            assert attachment is not None
+            attachment.storage_path = f"../{outside_path.name}"
+            db.commit()
+
+        response = client.delete(
+            f"/invoice-attachments/{attachment_id}",
+            headers=headers,
+        )
+
+        assert response.status_code == 404, response.text
+        assert response.json() == {"detail": "File not found"}
+        assert outside_path.is_file()
+        assert outside_path.read_bytes() == b"DO NOT DELETE"
+
+        with SessionLocal() as db:
+            attachment = db.get(InvoiceAttachment, attachment_id)
+            assert attachment is not None
+            assert attachment.storage_path == f"../{outside_path.name}"
+    finally:
+        with SessionLocal() as db:
+            attachment = db.get(InvoiceAttachment, attachment_id)
+            if attachment is not None:
+                attachment.storage_path = original_storage_path
+                db.commit()
+
+        client.delete(
+            f"/invoice-attachments/{attachment_id}",
+            headers=headers,
+        )
+
+        if outside_path.exists():
+            outside_path.unlink()
+
+
+def test_invoice_attachment_filters_by_input_invoice_id() -> None:
+    tenant_code = f"att-filter-input-{time.time_ns()}"
+    headers = {"X-Tenant-Code": tenant_code}
+
+    input_invoice_response = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": "Filter Dobavljač",
+            "invoice_number": "FILTER-001",
+            "issue_date": "2026-08-20",
+            "due_date": "2026-08-25",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "117.00",
+        },
+    )
+    assert input_invoice_response.status_code == 201, input_invoice_response.text
+    input_invoice_id = input_invoice_response.json()["id"]
+
+    linked_upload = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": (
+                "linked-input.pdf",
+                b"%PDF-1.4\nLINKED INPUT FILTER TEST",
+                "application/pdf",
+            ),
+        },
+    )
+    assert linked_upload.status_code == 201, linked_upload.text
+    linked_attachment_id = linked_upload.json()["id"]
+
+    unrelated_upload = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": (
+                "unrelated-input.pdf",
+                b"%PDF-1.4\nUNRELATED INPUT FILTER TEST",
+                "application/pdf",
+            ),
+        },
+    )
+    assert unrelated_upload.status_code == 201, unrelated_upload.text
+    unrelated_attachment_id = unrelated_upload.json()["id"]
+
+    link_response = client.post(
+        f"/invoice-attachments/{linked_attachment_id}/link-to-input-invoice",
+        headers=headers,
+        json={"input_invoice_id": input_invoice_id},
+    )
+    assert link_response.status_code == 200, link_response.text
+
+    list_response = client.get(
+        "/invoice-attachments",
+        headers=headers,
+        params={"input_invoice_id": input_invoice_id},
+    )
+    assert list_response.status_code == 200, list_response.text
+
+    items = list_response.json()
+    ids = [item["id"] for item in items]
+
+    assert linked_attachment_id in ids
+    assert unrelated_attachment_id not in ids
+    assert all(
+        item["input_invoice_id"] == input_invoice_id
+        for item in items
+    )
+
+    client.delete(
+        f"/invoice-attachments/{linked_attachment_id}",
+        headers=headers,
+    )
+    client.delete(
+        f"/invoice-attachments/{unrelated_attachment_id}",
+        headers=headers,
+    )
+
+
+def test_invoice_attachment_download_is_tenant_isolated() -> None:
+    owner_tenant = f"att-download-owner-{time.time_ns()}"
+    other_tenant = f"att-download-other-{time.time_ns()}"
+    owner_headers = {"X-Tenant-Code": owner_tenant}
+    other_headers = {"X-Tenant-Code": other_tenant}
+
+    upload_response = client.post(
+        "/invoice-attachments",
+        headers=owner_headers,
+        files={
+            "file": (
+                "tenant-download.pdf",
+                b"%PDF-1.4\nTENANT DOWNLOAD TEST",
+                "application/pdf",
+            ),
+        },
+    )
+    assert upload_response.status_code == 201, upload_response.text
+    attachment_id = upload_response.json()["id"]
+
+    response = client.get(
+        f"/invoice-attachments/{attachment_id}/download",
+        headers=other_headers,
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "Attachment not found"}
+
+    owner_response = client.get(
+        f"/invoice-attachments/{attachment_id}/download",
+        headers=owner_headers,
+    )
+    assert owner_response.status_code == 200, owner_response.text
+
+    delete_response = client.delete(
+        f"/invoice-attachments/{attachment_id}",
+        headers=owner_headers,
+    )
+    assert delete_response.status_code == 204, delete_response.text
+
+
+def test_invoice_attachment_delete_is_tenant_isolated() -> None:
+    owner_tenant = f"att-delete-owner-{time.time_ns()}"
+    other_tenant = f"att-delete-other-{time.time_ns()}"
+    owner_headers = {"X-Tenant-Code": owner_tenant}
+    other_headers = {"X-Tenant-Code": other_tenant}
+
+    upload_response = client.post(
+        "/invoice-attachments",
+        headers=owner_headers,
+        files={
+            "file": (
+                "tenant-delete.pdf",
+                b"%PDF-1.4\nTENANT DELETE TEST",
+                "application/pdf",
+            ),
+        },
+    )
+    assert upload_response.status_code == 201, upload_response.text
+    attachment_id = upload_response.json()["id"]
+
+    response = client.delete(
+        f"/invoice-attachments/{attachment_id}",
+        headers=other_headers,
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json() == {"detail": "Attachment not found"}
+
+    owner_download = client.get(
+        f"/invoice-attachments/{attachment_id}/download",
+        headers=owner_headers,
+    )
+    assert owner_download.status_code == 200, owner_download.text
+
+    owner_delete = client.delete(
+        f"/invoice-attachments/{attachment_id}",
+        headers=owner_headers,
+    )
+    assert owner_delete.status_code == 204, owner_delete.text
+
+
+def test_invoice_attachment_input_invoice_link_is_tenant_isolated() -> None:
+    owner_tenant = f"att-link-owner-{time.time_ns()}"
+    other_tenant = f"att-link-other-{time.time_ns()}"
+    owner_headers = {"X-Tenant-Code": owner_tenant}
+    other_headers = {"X-Tenant-Code": other_tenant}
+
+    upload_response = client.post(
+        "/invoice-attachments",
+        headers=owner_headers,
+        files={
+            "file": (
+                "tenant-link.pdf",
+                b"%PDF-1.4\nTENANT LINK TEST",
+                "application/pdf",
+            ),
+        },
+    )
+    assert upload_response.status_code == 201, upload_response.text
+    attachment_id = upload_response.json()["id"]
+
+    foreign_invoice_response = client.post(
+        "/input-invoices",
+        headers=other_headers,
+        json={
+            "supplier_name": "Foreign Dobavljač",
+            "invoice_number": "FOREIGN-001",
+            "issue_date": "2026-08-20",
+            "due_date": "2026-08-25",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "117.00",
+        },
+    )
+    assert (
+        foreign_invoice_response.status_code == 201
+    ), foreign_invoice_response.text
+    foreign_input_invoice_id = foreign_invoice_response.json()["id"]
+
+    # Drugi tenant ne smije ni pristupiti attachment-u vlasnika.
+    response_as_other_tenant = client.post(
+        f"/invoice-attachments/{attachment_id}/link-to-input-invoice",
+        headers=other_headers,
+        json={"input_invoice_id": foreign_input_invoice_id},
+    )
+
+    assert response_as_other_tenant.status_code == 404
+    assert response_as_other_tenant.json() == {
+        "detail": "Attachment not found"
+    }
+
+    # Ni vlasnik attachment-a ne smije linkovati fakturu drugog tenanta.
+    response_as_owner = client.post(
+        f"/invoice-attachments/{attachment_id}/link-to-input-invoice",
+        headers=owner_headers,
+        json={"input_invoice_id": foreign_input_invoice_id},
+    )
+
+    assert response_as_owner.status_code == 404
+    assert response_as_owner.json() == {
+        "detail": "Input invoice not found"
+    }
+
+    delete_response = client.delete(
+        f"/invoice-attachments/{attachment_id}",
+        headers=owner_headers,
+    )
+    assert delete_response.status_code == 204, delete_response.text
