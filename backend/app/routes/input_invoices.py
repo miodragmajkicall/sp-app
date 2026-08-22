@@ -90,6 +90,22 @@ def _validate_input_invoice_amounts(
         )
 
 
+def _validate_input_invoice_dates(
+    *,
+    issue_date: date | None,
+    due_date: date | None,
+) -> None:
+    if (
+        issue_date is not None
+        and due_date is not None
+        and due_date < issue_date
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="due_date cannot be before issue_date",
+        )
+
+
 # ======================================================
 #  CREATE
 # ======================================================
@@ -193,6 +209,11 @@ def create_input_invoice(
         total_base=data["total_base"],
         total_vat=data["total_vat"],
         total_amount=data["total_amount"],
+    )
+
+    _validate_input_invoice_dates(
+        issue_date=data["issue_date"],
+        due_date=data.get("due_date"),
     )
 
     # Ako datum knjiženja nije eksplicitno postavljen, koristi datum dokumenta
@@ -646,6 +667,36 @@ def update_input_invoice(
 
     update_data = payload.model_dump(exclude_unset=True)
 
+    required_non_nullable_fields = {
+        "supplier_name",
+        "invoice_number",
+        "issue_date",
+        "is_tax_deductible",
+    }
+    updated_required_fields = required_non_nullable_fields.intersection(update_data)
+    if any(update_data[field] is None for field in updated_required_fields):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Input invoice required fields cannot be null",
+        )
+
+    amount_fields = {
+        "total_base",
+        "total_vat",
+        "total_amount",
+    }
+    updated_amount_fields = amount_fields.intersection(update_data)
+    if any(update_data[field] is None for field in updated_amount_fields):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Input invoice amounts cannot be null",
+        )
+
+    _validate_input_invoice_dates(
+        issue_date=update_data.get("issue_date", obj.issue_date),
+        due_date=update_data.get("due_date", obj.due_date),
+    )
+
     payment_sensitive_fields = {
         "total_base",
         "total_vat",
@@ -668,19 +719,7 @@ def update_input_invoice(
                 ),
             )
 
-    amount_fields = {
-        "total_base",
-        "total_vat",
-        "total_amount",
-    }
-    updated_amount_fields = amount_fields.intersection(update_data)
     if updated_amount_fields:
-        if any(update_data[field] is None for field in updated_amount_fields):
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="Input invoice amounts cannot be null",
-            )
-
         _validate_input_invoice_amounts(
             total_base=update_data.get("total_base", obj.total_base),
             total_vat=update_data.get("total_vat", obj.total_vat),

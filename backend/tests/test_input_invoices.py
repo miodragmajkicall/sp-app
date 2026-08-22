@@ -155,6 +155,32 @@ def test_create_input_invoice_duplicate_for_same_supplier_and_tenant(
     assert body_2["detail"] == "Input invoice already exists for this supplier and tenant"
 
 
+def test_create_input_invoice_duplicate_after_trimming_required_text(
+    client: TestClient,
+) -> None:
+    tenant = "t-input-dup-trim"
+
+    status_code_1, _ = _create_input_invoice(
+        client,
+        tenant_code=tenant,
+    )
+    assert status_code_1 in (201, 409)
+
+    status_code_2, body_2 = _create_input_invoice(
+        client,
+        tenant_code=tenant,
+        overrides={
+            "supplier_name": "  Elektrodistribucija Banja Luka  ",
+            "invoice_number": "  2025-INV-001  ",
+        },
+    )
+
+    assert status_code_2 == 409
+    assert body_2["detail"] == (
+        "Input invoice already exists for this supplier and tenant"
+    )
+
+
 # ======================================================
 #  LIST
 # ======================================================

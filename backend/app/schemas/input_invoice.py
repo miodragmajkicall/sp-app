@@ -5,7 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal, Optional, List
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 # Osnovna Pydantic konfiguracija (isto kao u drugim šemama)
@@ -101,14 +101,21 @@ class InputInvoiceBase(BaseModel):
     )
     total_amount: Decimal = Field(
         ...,
-        ge=0,
-        description="Ukupan iznos sa PDV-om (>= 0).",
+        gt=0,
+        description="Ukupan iznos sa PDV-om (> 0).",
     )
 
     note: Optional[str] = Field(
         None,
         description="Interna napomena uz ulaznu fakturu (opcionalno).",
     )
+
+    @field_validator("supplier_name", "invoice_number", mode="before")
+    @classmethod
+    def strip_required_text(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
 
 # ============================================================
@@ -236,14 +243,21 @@ class InputInvoiceUpdate(BaseModel):
     )
     total_amount: Optional[Decimal] = Field(
         None,
-        ge=0,
-        description="Novi ukupan iznos sa PDV-om (>= 0, opcionalno).",
+        gt=0,
+        description="Novi ukupan iznos sa PDV-om (> 0, opcionalno).",
     )
 
     note: Optional[str] = Field(
         None,
         description="Nova interna napomena (ako se mijenja).",
     )
+
+    @field_validator("supplier_name", "invoice_number", mode="before")
+    @classmethod
+    def strip_required_text(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
 
 # ============================================================

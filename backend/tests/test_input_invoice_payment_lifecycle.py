@@ -755,3 +755,339 @@ def test_input_invoice_partial_update_rejects_null_amount(
         assert invoice.total_base == Decimal("100.00")
         assert invoice.total_vat == Decimal("17.00")
         assert invoice.total_amount == Decimal("117.00")
+
+
+def test_input_invoice_create_rejects_zero_total_amount(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-zero-total-create")
+    suffix = uuid4().hex[:10]
+
+    response = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": f"Zero total supplier {suffix}",
+            "invoice_number": f"ZERO-{suffix}",
+            "issue_date": "2026-08-10",
+            "posting_date": "2026-08-10",
+            "total_base": "0.00",
+            "total_vat": "0.00",
+            "total_amount": "0.00",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+
+    detail = response.json()["detail"]
+    assert any(
+        item["type"] == "greater_than"
+        and item["loc"] == ["body", "total_amount"]
+        for item in detail
+    )
+
+
+def test_input_invoice_update_rejects_zero_total_amount(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-zero-total-update")
+    tenant = headers["X-Tenant-Code"]
+
+    invoice_id = _create_input_invoice(
+        tenant,
+        total_amount=Decimal("117.00"),
+    )
+
+    response = client.put(
+        f"/input-invoices/{invoice_id}",
+        headers=headers,
+        json={
+            "total_amount": "0.00",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+
+    detail = response.json()["detail"]
+    assert any(
+        item["type"] == "greater_than"
+        and item["loc"] == ["body", "total_amount"]
+        for item in detail
+    )
+
+    with SessionLocal() as db:
+        invoice = db.get(InputInvoice, invoice_id)
+        assert invoice is not None
+        assert invoice.total_amount == Decimal("117.00")
+
+
+
+def test_input_invoice_create_trims_supplier_name_and_invoice_number(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-trim-create")
+    suffix = uuid4().hex[:10]
+
+    supplier_name = f"Trim supplier {suffix}"
+    invoice_number = f"TRIM-{suffix}"
+
+    response = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": f"  {supplier_name}  ",
+            "invoice_number": f"  {invoice_number}  ",
+            "issue_date": "2026-08-10",
+            "posting_date": "2026-08-10",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "117.00",
+        },
+    )
+
+    assert response.status_code == 201, response.text
+
+    data = response.json()
+    assert data["supplier_name"] == supplier_name
+    assert data["invoice_number"] == invoice_number
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["supplier_name", "invoice_number"],
+)
+def test_input_invoice_create_rejects_whitespace_only_required_text(
+    client: TestClient,
+    field_name: str,
+) -> None:
+    headers = _headers(f"input-whitespace-{field_name}")
+    suffix = uuid4().hex[:10]
+
+    payload = {
+        "supplier_name": f"Whitespace supplier {suffix}",
+        "invoice_number": f"WS-{suffix}",
+        "issue_date": "2026-08-10",
+        "posting_date": "2026-08-10",
+        "total_base": "100.00",
+        "total_vat": "17.00",
+        "total_amount": "117.00",
+    }
+    payload[field_name] = "   "
+
+    response = client.post(
+        "/input-invoices",
+        headers=headers,
+        json=payload,
+    )
+
+    assert response.status_code == 422, response.text
+
+    detail = response.json()["detail"]
+    assert any(
+        item["type"] == "string_too_short"
+        and item["loc"] == ["body", field_name]
+        for item in detail
+    )
+
+
+def test_input_invoice_update_trims_supplier_name_and_invoice_number(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-trim-update")
+    tenant = headers["X-Tenant-Code"]
+    suffix = uuid4().hex[:10]
+
+    invoice_id = _create_input_invoice(tenant)
+
+    supplier_name = f"Updated supplier {suffix}"
+    invoice_number = f"UPDATED-{suffix}"
+
+    response = client.put(
+        f"/input-invoices/{invoice_id}",
+        headers=headers,
+        json={
+            "supplier_name": f"  {supplier_name}  ",
+            "invoice_number": f"  {invoice_number}  ",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+    assert data["supplier_name"] == supplier_name
+    assert data["invoice_number"] == invoice_number
+
+    with SessionLocal() as db:
+        invoice = db.get(InputInvoice, invoice_id)
+        assert invoice is not None
+        assert invoice.supplier_name == supplier_name
+        assert invoice.invoice_number == invoice_number
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["supplier_name", "invoice_number"],
+)
+def test_input_invoice_update_rejects_whitespace_only_required_text(
+    client: TestClient,
+    field_name: str,
+) -> None:
+    headers = _headers(f"input-update-whitespace-{field_name}")
+    tenant = headers["X-Tenant-Code"]
+
+    invoice_id = _create_input_invoice(tenant)
+
+    response = client.put(
+        f"/input-invoices/{invoice_id}",
+        headers=headers,
+        json={
+            field_name: "   ",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+
+    detail = response.json()["detail"]
+    assert any(
+        item["type"] == "string_too_short"
+        and item["loc"] == ["body", field_name]
+        for item in detail
+    )
+
+
+def test_input_invoice_create_rejects_due_date_before_issue_date(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-invalid-due-create")
+    suffix = uuid4().hex[:10]
+
+    response = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": f"Invalid due supplier {suffix}",
+            "invoice_number": f"DUE-{suffix}",
+            "issue_date": "2026-08-10",
+            "due_date": "2026-08-09",
+            "posting_date": "2026-08-10",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "117.00",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json() == {
+        "detail": "due_date cannot be before issue_date"
+    }
+
+
+def test_input_invoice_update_rejects_due_date_before_existing_issue_date(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-invalid-due-update")
+    tenant = headers["X-Tenant-Code"]
+
+    invoice_id = _create_input_invoice(
+        tenant,
+        issue_date=date(2026, 5, 10),
+    )
+
+    response = client.put(
+        f"/input-invoices/{invoice_id}",
+        headers=headers,
+        json={
+            "due_date": "2026-05-09",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json() == {
+        "detail": "due_date cannot be before issue_date"
+    }
+
+
+def test_input_invoice_update_rejects_issue_date_after_existing_due_date(
+    client: TestClient,
+) -> None:
+    headers = _headers("input-invalid-issue-update")
+    suffix = uuid4().hex[:10]
+
+    created = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": f"Date relation supplier {suffix}",
+            "invoice_number": f"DATE-{suffix}",
+            "issue_date": "2026-08-10",
+            "due_date": "2026-08-15",
+            "posting_date": "2026-08-10",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "117.00",
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    invoice_id = created.json()["id"]
+
+    response = client.put(
+        f"/input-invoices/{invoice_id}",
+        headers=headers,
+        json={
+            "issue_date": "2026-08-16",
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json() == {
+        "detail": "due_date cannot be before issue_date"
+    }
+
+
+@pytest.mark.parametrize(
+    ("field_name", "expected_detail"),
+    [
+        ("supplier_name", "Input invoice required fields cannot be null"),
+        ("invoice_number", "Input invoice required fields cannot be null"),
+        ("issue_date", "Input invoice required fields cannot be null"),
+        ("is_tax_deductible", "Input invoice required fields cannot be null"),
+        ("total_base", "Input invoice amounts cannot be null"),
+        ("total_vat", "Input invoice amounts cannot be null"),
+    ],
+)
+def test_input_invoice_update_rejects_null_not_nullable_fields(
+    client: TestClient,
+    field_name: str,
+    expected_detail: str,
+) -> None:
+    headers = _headers(f"input-null-{field_name}")
+    tenant = headers["X-Tenant-Code"]
+
+    invoice_id = _create_input_invoice(
+        tenant,
+        total_amount=Decimal("117.00"),
+    )
+
+    response = client.put(
+        f"/input-invoices/{invoice_id}",
+        headers=headers,
+        json={
+            field_name: None,
+        },
+    )
+
+    assert response.status_code == 422, response.text
+    assert response.json() == {
+        "detail": expected_detail
+    }
+
+    with SessionLocal() as db:
+        invoice = db.get(InputInvoice, invoice_id)
+        assert invoice is not None
+        assert invoice.supplier_name is not None
+        assert invoice.invoice_number is not None
+        assert invoice.issue_date is not None
+        assert invoice.is_tax_deductible is not None
+        assert invoice.total_base == Decimal("100.00")
+        assert invoice.total_vat == Decimal("17.00")
+        assert invoice.total_amount == Decimal("117.00")
