@@ -1,5 +1,5 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/InputInvoiceDetailPage.tsx
-import { useState } from "react";
+import { useState, type ChangeEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   useMutation,
@@ -16,10 +16,14 @@ import {
   createInputInvoicePayment,
   deleteInputInvoice,
   deleteInputInvoicePayment,
+  deleteInvoiceAttachment,
   downloadInvoiceAttachment,
   fetchInvoiceAttachments,
   getInputInvoice,
   getInputInvoicePayment,
+  linkAttachmentToInputInvoice,
+  previewInvoiceAttachment,
+  uploadInvoiceAttachment,
   type InvoiceAttachmentItem,
 } from "../services/inputInvoicesApi";
 
@@ -154,8 +158,12 @@ export default function InputInvoiceDetailPage() {
     isError: isAttachmentsError,
     error: attachmentsError,
   } = useQuery<InvoiceAttachmentItem[], Error>({
-    queryKey: ["invoice-attachments"],
-    queryFn: fetchInvoiceAttachments,
+    queryKey: ["invoice-attachments", { inputInvoiceId: numericId }],
+    enabled: numericId != null && Number.isFinite(numericId),
+    queryFn: () =>
+      fetchInvoiceAttachments({
+        inputInvoiceId: numericId as number,
+      }),
   });
 
   const invalidatePaymentRelatedQueries = async () => {
@@ -193,6 +201,49 @@ export default function InputInvoiceDetailPage() {
     mutationFn: () => deleteInputInvoicePayment(numericId as number),
     onSuccess: async () => {
       await invalidatePaymentRelatedQueries();
+    },
+  });
+
+  const uploadAttachmentMutation = useMutation({
+    mutationFn: async (file: File) => {
+      let uploaded: InvoiceAttachmentItem;
+
+      try {
+        uploaded = await uploadInvoiceAttachment(file);
+      } catch (error) {
+        throw new Error(
+          getApiErrorDetail(error, "Upload dokumenta nije uspio."),
+        );
+      }
+
+      try {
+        return await linkAttachmentToInputInvoice(
+          uploaded.id,
+          numericId as number,
+        );
+      } catch (error) {
+        throw new Error(
+          `Dokument je uploadovan, ali povezivanje sa fakturom nije uspjelo. Dokument je sačuvan među nepovezanim dokumentima. ${getApiErrorDetail(
+            error,
+            "",
+          )}`.trim(),
+        );
+      }
+    },
+    onSettled: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["invoice-attachments"],
+      });
+    },
+  });
+
+  const deleteAttachmentMutation = useMutation({
+    mutationFn: (attachmentId: number) =>
+      deleteInvoiceAttachment(attachmentId),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({
+        queryKey: ["invoice-attachments"],
+      });
     },
   });
 
@@ -244,6 +295,37 @@ export default function InputInvoiceDetailPage() {
     deletePaymentMutation.mutate();
   };
 
+  const handleAttachmentFileChange = (
+    event: ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0];
+
+    if (!file || uploadAttachmentMutation.isPending) {
+      return;
+    }
+
+    uploadAttachmentMutation.mutate(file);
+    event.target.value = "";
+  };
+
+  const handleDeleteAttachment = (attachment: InvoiceAttachmentItem) => {
+    if (deleteAttachmentMutation.isPending) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Da li želite obrisati dokument ${
+        attachment.filename ?? `attachment-${attachment.id}`
+      }?`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    deleteAttachmentMutation.mutate(attachment.id);
+  };
+
   if (numericId == null || !Number.isFinite(numericId)) {
     return (
       <div className="mx-auto max-w-4xl rounded-3xl border border-red-200 bg-red-50 p-6 shadow-sm">
@@ -264,8 +346,7 @@ export default function InputInvoiceDetailPage() {
     );
   }
 
-  const linkedAttachments =
-    attachments?.filter((att) => att.input_invoice_id === numericId) ?? [];
+  const linkedAttachments = attachments ?? [];
 
   const handleDelete = () => {
     if (!invoice || deleteMutation.isPending) {
@@ -541,9 +622,36 @@ export default function InputInvoiceDetailPage() {
                   Priloženi dokumenti
                 </h2>
                 <p className="mt-1 text-sm leading-5 text-slate-500">
-                  Računi, slike ili PDF dokumenti povezani sa ovom ulaznom
-                  fakturom.
+                  PDF, JPEG ili PNG dokumenti povezani sa ovom ulaznom fakturom.
                 </p>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-dashed border-slate-300 bg-slate-50 p-4">
+                <label className="mb-2 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  Dodaj dokument
+                </label>
+
+                <input
+                  type="file"
+                  accept="application/pdf,image/jpeg,image/png"
+                  onChange={handleAttachmentFileChange}
+                  disabled={uploadAttachmentMutation.isPending}
+                  className="block w-full text-xs text-slate-700 file:mr-3 file:rounded-xl file:border-0 file:bg-slate-950 file:px-4 file:py-2 file:text-xs file:font-bold file:text-white hover:file:bg-slate-800 disabled:opacity-60"
+                />
+
+                {uploadAttachmentMutation.isPending && (
+                  <p className="mt-2 text-xs text-slate-500">
+                    Uploadujem i povezujem dokument...
+                  </p>
+                )}
+
+                {uploadAttachmentMutation.isError && (
+                  <div className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+                    {uploadAttachmentMutation.error instanceof Error
+                      ? uploadAttachmentMutation.error.message
+                      : "Dodavanje dokumenta nije uspjelo."}
+                  </div>
+                )}
               </div>
 
               <div className="mt-4">
@@ -560,6 +668,15 @@ export default function InputInvoiceDetailPage() {
                   </div>
                 )}
 
+                {deleteAttachmentMutation.isError && (
+                  <div className="mb-3 rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs leading-5 text-red-700">
+                    {getApiErrorDetail(
+                      deleteAttachmentMutation.error,
+                      "Brisanje dokumenta nije uspjelo.",
+                    )}
+                  </div>
+                )}
+
                 {!isAttachmentsLoading &&
                   !isAttachmentsError &&
                   linkedAttachments.length === 0 && (
@@ -568,8 +685,8 @@ export default function InputInvoiceDetailPage() {
                         Nema povezanih dokumenata
                       </p>
                       <p className="mt-1 text-xs leading-5 text-slate-500">
-                        Dokument prvo uploaduj kroz listu ulaznih faktura, pa ga
-                        poveži sa ovom fakturom.
+                        Dodaj PDF, JPEG ili PNG dokument direktno uz ovu
+                        ulaznu fakturu.
                       </p>
                     </div>
                   )}
@@ -596,13 +713,34 @@ export default function InputInvoiceDetailPage() {
                           </StatusBadge>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => downloadInvoiceAttachment(att.id)}
-                          className="mt-4 w-full rounded-xl border border-slate-300 bg-white px-4 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
-                        >
-                          Otvori / preuzmi
-                        </button>
+                        <div className="mt-4 grid grid-cols-3 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => previewInvoiceAttachment(att.id)}
+                            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+                          >
+                            Pregledaj
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => downloadInvoiceAttachment(att.id)}
+                            className="rounded-xl border border-slate-300 bg-white px-3 py-2 text-xs font-bold text-slate-700 shadow-sm transition hover:bg-slate-50"
+                          >
+                            Preuzmi
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteAttachment(att)}
+                            disabled={deleteAttachmentMutation.isPending}
+                            className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-bold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            {deleteAttachmentMutation.isPending
+                              ? "Brišem..."
+                              : "Obriši"}
+                          </button>
+                        </div>
                       </div>
                     ))}
                   </div>

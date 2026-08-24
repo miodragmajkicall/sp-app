@@ -10,6 +10,7 @@ import { useNavigate, useParams } from "react-router-dom";
 import {
   createInputInvoice,
   deleteInvoiceAttachment,
+  fetchInvoiceAttachments,
   getInputInvoice,
   linkAttachmentToInputInvoice,
   updateInputInvoice,
@@ -100,6 +101,27 @@ export default function InputInvoiceCreatePage() {
         setTotalStr(invoice.total_amount.toFixed(2));
 
         setNote(invoice.note ?? "");
+
+        try {
+          const existingAttachments = await fetchInvoiceAttachments({
+            inputInvoiceId: invoiceId,
+          });
+
+          if (!cancelled) {
+            setAttachments(existingAttachments);
+          }
+        } catch (attachmentError: any) {
+          if (!cancelled) {
+            const detail = attachmentError?.response?.data?.detail;
+
+            setUploadError(
+              typeof detail === "string"
+                ? detail
+                : attachmentError?.message ??
+                    "Greška pri učitavanju postojećih priloga.",
+            );
+          }
+        }
       } catch (err: any) {
         if (!cancelled) {
           setErrorMsg(
@@ -272,32 +294,45 @@ export default function InputInvoiceCreatePage() {
     };
 
     try {
+      let savedInvoiceId: number;
+
       if (isEditMode && numericId != null) {
         await updateInputInvoice(numericId, payload);
-
-        if (attachments.length > 0) {
-          await Promise.all(
-            attachments.map((att) =>
-              linkAttachmentToInputInvoice(att.id, numericId),
-            ),
-          );
-        }
-
-        navigate(`/input-invoices/${numericId}`);
-        return;
+        savedInvoiceId = numericId;
+      } else {
+        const created = await createInputInvoice(payload);
+        savedInvoiceId = created.id;
       }
 
-      const created = await createInputInvoice(payload);
+      const attachmentsToLink = attachments.filter(
+        (att) => att.input_invoice_id !== savedInvoiceId,
+      );
 
-      if (attachments.length > 0) {
-        await Promise.all(
-          attachments.map((att) =>
-            linkAttachmentToInputInvoice(att.id, created.id),
+      if (attachmentsToLink.length > 0) {
+        const linkResults = await Promise.allSettled(
+          attachmentsToLink.map((att) =>
+            linkAttachmentToInputInvoice(att.id, savedInvoiceId),
           ),
         );
+
+        const failedLinkCount = linkResults.filter(
+          (result) => result.status === "rejected",
+        ).length;
+
+        if (failedLinkCount > 0) {
+          window.alert(
+            `Faktura je uspješno ${
+              isEditMode ? "sačuvana" : "kreirana"
+            }, ali za ${
+              failedLinkCount === 1
+                ? "1 prilog nije potvrđeno povezivanje"
+                : `${failedLinkCount} priloga nije potvrđeno povezivanje`
+            }. Provjeri dokumente na detalju fakture i nepovezane dokumente na listi ulaznih faktura.`,
+          );
+        }
       }
 
-      navigate("/input-invoices");
+      navigate(`/input-invoices/${savedInvoiceId}`);
     } catch (err: any) {
       const detail = err?.response?.data?.detail;
 
@@ -648,7 +683,7 @@ export default function InputInvoiceCreatePage() {
                 </label>
                 <input
                   type="file"
-                  accept="application/pdf,image/*"
+                  accept="application/pdf,image/jpeg,image/png"
                   onChange={handleFileChange}
                   disabled={isUploading}
                   className="block w-full text-xs text-slate-700 file:mr-3 file:rounded-xl file:border-0 file:bg-slate-950 file:px-4 file:py-2 file:text-xs file:font-bold file:text-white hover:file:bg-slate-800"

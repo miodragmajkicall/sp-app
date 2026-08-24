@@ -6,6 +6,7 @@ import { useNavigate } from "react-router-dom";
 import {
   deleteInvoiceAttachment,
   downloadInvoiceAttachment,
+  fetchInputInvoiceLinkCandidates,
   fetchInputInvoicesList,
   fetchInvoiceAttachments,
   linkAttachmentToInputInvoice,
@@ -153,7 +154,22 @@ export default function InputInvoicesPage() {
     isRefetching: isRefetchingAttachments,
   } = useQuery<InvoiceAttachmentItem[], Error>({
     queryKey: ["invoice-attachments"],
-    queryFn: fetchInvoiceAttachments,
+    queryFn: () => fetchInvoiceAttachments(),
+  });
+
+  const hasUnmatchedAttachments =
+    attachments?.some((att) => att.input_invoice_id == null) ?? false;
+
+  const {
+    data: attachmentInvoiceCandidates,
+    isLoading: isAttachmentInvoiceCandidatesLoading,
+    isError: isAttachmentInvoiceCandidatesError,
+    error: attachmentInvoiceCandidatesError,
+    refetch: refetchAttachmentInvoiceCandidates,
+  } = useQuery<InputInvoiceListItem[], Error>({
+    queryKey: ["input-invoices", "attachment-link-candidates"],
+    queryFn: fetchInputInvoiceLinkCandidates,
+    enabled: hasUnmatchedAttachments,
   });
 
   const uploadMutation = useMutation({
@@ -223,6 +239,9 @@ export default function InputInvoicesPage() {
   const items: InputInvoiceListItem[] = invoicesData?.items ?? [];
   const total = invoicesData?.total ?? 0;
 
+  const attachmentLinkCandidates: InputInvoiceListItem[] =
+    attachmentInvoiceCandidates ?? [];
+
   const unmatchedAttachments: InvoiceAttachmentItem[] =
     attachments?.filter((att) => att.input_invoice_id == null) ?? [];
 
@@ -245,6 +264,10 @@ export default function InputInvoicesPage() {
   const refreshAll = () => {
     refetch();
     refetchAttachments();
+
+    if (hasUnmatchedAttachments) {
+      refetchAttachmentInvoiceCandidates();
+    }
   };
 
   return (
@@ -702,44 +725,69 @@ export default function InputInvoicesPage() {
                     </div>
                   </div>
 
-                  <div className="mt-3 border-t border-slate-100 pt-3">
-                    <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
-                      Poveži sa ulaznom fakturom
-                    </label>
-                    <select
-                      className="input bg-white text-xs"
-                      value={attachmentTargetInvoice[att.id] ?? ""}
-                      onChange={(e) =>
-                        setAttachmentTargetInvoice((prev) => ({
-                          ...prev,
-                          [att.id]:
-                            e.target.value === ""
-                              ? ""
-                              : Number(e.target.value),
-                        }))
-                      }
-                      disabled={items.length === 0 || isLinking}
-                    >
-                      <option value="">— Odaberi ulaznu fakturu —</option>
-                      {items.map((inv) => (
-                        <option key={inv.id} value={inv.id}>
-                          {inv.number
-                            ? `${inv.number} · ${inv.supplier_name ?? ""}`.trim()
-                            : `#${inv.id} · ${inv.supplier_name ?? ""}`}
-                        </option>
-                      ))}
-                    </select>
+                    <div className="mt-3 border-t border-slate-100 pt-3">
+                      <label className="mb-1.5 block text-xs font-semibold uppercase tracking-wide text-slate-500">
+                        Poveži sa ulaznom fakturom
+                      </label>
 
-                    <button
-                      type="button"
-                      onClick={() => handleLinkAttachment(att.id)}
-                      disabled={isLinking || items.length === 0}
-                      className="mt-3 w-full rounded-xl bg-slate-950 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      {isLinking ? "Povezujem..." : "Poveži dokument"}
-                    </button>
+                      {isAttachmentInvoiceCandidatesError && (
+                        <p className="mb-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                          Greška pri učitavanju faktura:{" "}
+                          {attachmentInvoiceCandidatesError?.message}
+                        </p>
+                      )}
+
+                      <select
+                        className="input bg-white text-xs"
+                        value={attachmentTargetInvoice[att.id] ?? ""}
+                        onChange={(e) =>
+                          setAttachmentTargetInvoice((prev) => ({
+                            ...prev,
+                            [att.id]:
+                              e.target.value === ""
+                                ? ""
+                                : Number(e.target.value),
+                          }))
+                        }
+                        disabled={
+                          isAttachmentInvoiceCandidatesLoading ||
+                          isAttachmentInvoiceCandidatesError ||
+                          attachmentLinkCandidates.length === 0 ||
+                          isLinking
+                        }
+                      >
+                        <option value="">
+                          {isAttachmentInvoiceCandidatesLoading
+                            ? "— Učitavam ulazne fakture —"
+                            : attachmentLinkCandidates.length === 0
+                              ? "— Nema dostupnih ulaznih faktura —"
+                              : "— Odaberi ulaznu fakturu —"}
+                        </option>
+
+                        {attachmentLinkCandidates.map((inv) => (
+                          <option key={inv.id} value={inv.id}>
+                            {inv.number
+                              ? `${inv.number} · ${inv.supplier_name ?? ""}`.trim()
+                              : `#${inv.id} · ${inv.supplier_name ?? ""}`}
+                          </option>
+                        ))}
+                      </select>
+
+                      <button
+                        type="button"
+                        onClick={() => handleLinkAttachment(att.id)}
+                        disabled={
+                          isLinking ||
+                          isAttachmentInvoiceCandidatesLoading ||
+                          isAttachmentInvoiceCandidatesError ||
+                          attachmentLinkCandidates.length === 0
+                        }
+                        className="mt-3 w-full rounded-xl bg-slate-950 px-4 py-2 text-xs font-bold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {isLinking ? "Povezujem..." : "Poveži dokument"}
+                      </button>
+                    </div>
                   </div>
-                </div>
               ))}
             </div>
 

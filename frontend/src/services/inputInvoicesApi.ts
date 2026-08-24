@@ -187,6 +187,38 @@ export async function fetchInputInvoices(
 }
 
 /**
+ * Dohvata sve ulazne fakture koje mogu biti cilj za povezivanje attachment-a.
+ * Backend dozvoljava najviše 200 zapisa po zahtjevu, pa se stranice
+ * dohvaćaju redom dok ne prikupimo cijeli tenant rezultat.
+ */
+export async function fetchInputInvoiceLinkCandidates(): Promise<
+  InputInvoiceListItem[]
+> {
+  const pageSize = 200;
+  const items: InputInvoiceListItem[] = [];
+  let offset = 0;
+  let total = 0;
+
+  do {
+    const page = await fetchInputInvoicesList({
+      limit: pageSize,
+      offset,
+    });
+
+    items.push(...page.items);
+    total = page.total;
+
+    if (page.items.length === 0) {
+      break;
+    }
+
+    offset += page.items.length;
+  } while (offset < total);
+
+  return items;
+}
+
+/**
  * Kreiranje nove ulazne fakture.
  * Backend endpoint: POST /input-invoices
  * Vraća kreiranu fakturu (InputInvoiceDetail) radi daljeg linkovanja attachment-a.
@@ -357,14 +389,29 @@ export interface InvoiceAttachmentItem {
 }
 
 /**
- * Dohvata sve attachment-e za jednog tenanta.
+ * Opcioni filteri za dohvat attachment-a.
  */
-export async function fetchInvoiceAttachments(): Promise<
-  InvoiceAttachmentItem[]
-> {
+export interface FetchInvoiceAttachmentsOptions {
+  invoiceId?: number;
+  inputInvoiceId?: number;
+}
+
+/**
+ * Dohvata attachment-e za jednog tenanta, opciono filtrirane po fakturi.
+ */
+export async function fetchInvoiceAttachments(
+  options: FetchInvoiceAttachmentsOptions = {},
+): Promise<InvoiceAttachmentItem[]> {
   const res = await apiClient.get<InvoiceAttachmentItem[]>(
     "/invoice-attachments",
+    {
+      params: {
+        invoice_id: options.invoiceId,
+        input_invoice_id: options.inputInvoiceId,
+      },
+    },
   );
+
   return res.data;
 }
 
@@ -391,13 +438,10 @@ export async function uploadInvoiceAttachment(
   return res.data;
 }
 
-/**
- * Download/preview fajla attachment-a.
- * Backend route: GET /invoice-attachments/{attachment_id}/download
- */
-export async function downloadInvoiceAttachment(
-  attachmentId: number,
-): Promise<void> {
+async function fetchInvoiceAttachmentBlob(attachmentId: number): Promise<{
+  blob: Blob;
+  filename: string;
+}> {
   const res = await apiClient.get(
     `/invoice-attachments/${attachmentId}/download`,
     {
@@ -421,15 +465,38 @@ export async function downloadInvoiceAttachment(
     }
   }
 
-  const blob = new Blob([res.data], { type: contentTypeHeader });
+  return {
+    blob: new Blob([res.data], { type: contentTypeHeader }),
+    filename,
+  };
+}
+
+/**
+ * Otvara attachment u novom tabu radi pregleda.
+ * Backend route: GET /invoice-attachments/{attachment_id}/download
+ */
+export async function previewInvoiceAttachment(
+  attachmentId: number,
+): Promise<void> {
+  const { blob } = await fetchInvoiceAttachmentBlob(attachmentId);
   const url = URL.createObjectURL(blob);
 
-  if (
-    contentTypeHeader.startsWith("application/pdf") ||
-    contentTypeHeader.startsWith("image/")
-  ) {
-    window.open(url, "_blank", "noopener,noreferrer");
-  }
+  window.open(url, "_blank", "noopener,noreferrer");
+
+  window.setTimeout(() => {
+    URL.revokeObjectURL(url);
+  }, 60_000);
+}
+
+/**
+ * Preuzima attachment na uređaj.
+ * Backend route: GET /invoice-attachments/{attachment_id}/download
+ */
+export async function downloadInvoiceAttachment(
+  attachmentId: number,
+): Promise<void> {
+  const { blob, filename } = await fetchInvoiceAttachmentBlob(attachmentId);
+  const url = URL.createObjectURL(blob);
 
   const link = document.createElement("a");
   link.href = url;
