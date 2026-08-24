@@ -620,7 +620,7 @@ def test_paid_invoice_cannot_be_deleted(
         assert payment.input_invoice_id == invoice_id
 
 
-def test_input_invoice_cannot_move_out_of_finalized_issue_month(
+def test_unpaid_input_invoice_can_move_out_of_finalized_issue_month(
     client: TestClient,
 ) -> None:
     headers = _headers("input-finalized-date-move")
@@ -645,16 +645,12 @@ def test_input_invoice_cannot_move_out_of_finalized_issue_month(
         },
     )
 
-    assert response.status_code == 400, response.text
-    assert (
-        "Cannot modify data for finalized tax period 2026-05"
-        in response.json()["detail"]
-    )
+    assert response.status_code == 200, response.text
 
     with SessionLocal() as db:
         invoice = db.get(InputInvoice, invoice_id)
         assert invoice is not None
-        assert invoice.issue_date == date(2026, 5, 10)
+        assert invoice.issue_date == date(2026, 6, 10)
 
 
 def test_input_invoice_create_rejects_inconsistent_amounts(

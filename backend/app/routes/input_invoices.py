@@ -24,8 +24,11 @@ from app.models import (
     CashEntry,
     FinalizedPeriodModificationError,
     InputInvoice,
-    TaxMonthlyResult,
 )
+from app.services.input_invoice_recognition import (
+    resolve_stored_input_invoice_recognition,
+)
+from app.services.period_guard import ensure_period_open
 from app.schemas.input_invoice import (
     InputInvoiceCreate,
     InputInvoiceListResponse,
@@ -703,6 +706,27 @@ def update_input_invoice(
         "total_amount",
     }
 
+    finalized_sensitive_fields = {
+        "supplier_name",
+        "supplier_tax_id",
+        "invoice_number",
+        "issue_date",
+        "posting_date",
+        "expense_category",
+        "is_tax_deductible",
+    }
+
+    if finalized_sensitive_fields.intersection(update_data):
+        recognition = resolve_stored_input_invoice_recognition(db, obj)
+        try:
+            ensure_period_open(
+                db,
+                tenant_code=tenant,
+                period_date=recognition.integrity_date,
+            )
+        except FinalizedPeriodModificationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     if payment_sensitive_fields.intersection(update_data):
         linked_payment_id = db.execute(
             select(CashEntry.id).where(
@@ -793,20 +817,13 @@ def create_input_invoice_payment(
             detail="Input invoice payment already exists",
         )
 
-    finalized_payment_period = db.execute(
-        select(TaxMonthlyResult.id).where(
-            TaxMonthlyResult.tenant_code == tenant,
-            TaxMonthlyResult.year == payload.payment_date.year,
-            TaxMonthlyResult.month == payload.payment_date.month,
-            TaxMonthlyResult.is_final.is_(True),
-        )
-    ).scalar_one_or_none()
-    if finalized_payment_period is not None:
-        exc = FinalizedPeriodModificationError(
+    try:
+        ensure_period_open(
+            db,
             tenant_code=tenant,
-            year=payload.payment_date.year,
-            month=payload.payment_date.month,
+            period_date=payload.payment_date,
         )
+    except FinalizedPeriodModificationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     payment = CashEntry(
@@ -935,20 +952,13 @@ def delete_input_invoice_payment(
             detail="Input invoice payment not found",
         )
 
-    finalized_payment_period = db.execute(
-        select(TaxMonthlyResult.id).where(
-            TaxMonthlyResult.tenant_code == tenant,
-            TaxMonthlyResult.year == payment.entry_date.year,
-            TaxMonthlyResult.month == payment.entry_date.month,
-            TaxMonthlyResult.is_final.is_(True),
-        )
-    ).scalar_one_or_none()
-    if finalized_payment_period is not None:
-        exc = FinalizedPeriodModificationError(
+    try:
+        ensure_period_open(
+            db,
             tenant_code=tenant,
-            year=payment.entry_date.year,
-            month=payment.entry_date.month,
+            period_date=payment.entry_date,
         )
+    except FinalizedPeriodModificationError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
     db.delete(payment)
@@ -1041,6 +1051,16 @@ def delete_input_invoice(
                 "remove the payment first"
             ),
         )
+
+    recognition = resolve_stored_input_invoice_recognition(db, obj)
+    try:
+        ensure_period_open(
+            db,
+            tenant_code=tenant,
+            period_date=recognition.integrity_date,
+        )
+    except FinalizedPeriodModificationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
     try:
         db.delete(obj)

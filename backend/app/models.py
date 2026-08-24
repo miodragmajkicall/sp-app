@@ -20,7 +20,6 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     event,
-    inspect as sa_inspect,
 )
 
 from sqlalchemy.dialects.postgresql import JSONB
@@ -654,41 +653,6 @@ def _cash_entry_before_update(mapper, connection, target: CashEntry) -> None:
 def _cash_entry_before_delete(mapper, connection, target: CashEntry) -> None:
     if target.entry_date:
         _ensure_month_not_finalized(target, target.entry_date)
-
-
-@event.listens_for(InputInvoice, "before_update")
-def _input_invoice_before_update(mapper, connection, target: InputInvoice) -> None:
-    state = sa_inspect(target)
-    changed_fields = {
-        attr.key
-        for attr in state.attrs
-        if attr.history.has_changes()
-    }
-
-    # Status plaćanja pripada payment lifecycle-u, a ne poreskom periodu
-    # same ulazne fakture. Npr. majska faktura smije biti plaćena u avgustu
-    # iako je maj već finalizovan.
-    if changed_fields == {"is_paid"}:
-        return
-
-    issue_date_history = state.attrs.issue_date.history
-    original_issue_date = (
-        issue_date_history.deleted[0]
-        if issue_date_history.has_changes() and issue_date_history.deleted
-        else target.issue_date
-    )
-
-    if original_issue_date:
-        _ensure_month_not_finalized(target, original_issue_date)
-
-    if target.issue_date and target.issue_date != original_issue_date:
-        _ensure_month_not_finalized(target, target.issue_date)
-
-
-@event.listens_for(InputInvoice, "before_delete")
-def _input_invoice_before_delete(mapper, connection, target: InputInvoice) -> None:
-    if target.issue_date:
-        _ensure_month_not_finalized(target, target.issue_date)
 
 
 # ======================================================
