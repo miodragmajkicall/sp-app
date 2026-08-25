@@ -1,6 +1,7 @@
 # /home/miso/dev/sp-app/sp-app/backend/app/routes/reports.py
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import List, Optional
 import csv
@@ -9,9 +10,11 @@ import io
 from fastapi import APIRouter, Depends, Header, Path
 from fastapi.responses import Response
 from pydantic import BaseModel
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
+from app.models import CashEntry
 from app.tenant_security import require_tenant_code
 from app.routes.tax import _aggregate_monthly_income_and_expense, yearly_tax_preview
 
@@ -33,6 +36,47 @@ def _require_tenant(x_tenant_code: Optional[str]) -> str:
     - Ako je postavljen → vraća vrijednost header-a kao string.
     """
     return require_tenant_code(x_tenant_code)
+
+
+
+def _aggregate_monthly_cashflow(
+    *,
+    year: int,
+    month: int,
+    tenant_code: str,
+    db: Session,
+) -> tuple[Decimal, Decimal]:
+    month_start = date(year, month, 1)
+    month_end = (
+        date(year + 1, 1, 1)
+        if month == 12
+        else date(year, month + 1, 1)
+    )
+
+    income_expr = func.coalesce(
+        func.sum(case((CashEntry.kind == "income", CashEntry.amount), else_=0)),
+        0,
+    )
+    expense_expr = func.coalesce(
+        func.sum(case((CashEntry.kind == "expense", CashEntry.amount), else_=0)),
+        0,
+    )
+
+    row = db.execute(
+        select(
+            income_expr.label("cash_income"),
+            expense_expr.label("cash_expense"),
+        ).where(
+            CashEntry.tenant_code == tenant_code,
+            CashEntry.entry_date >= month_start,
+            CashEntry.entry_date < month_end,
+        )
+    ).one()
+
+    return (
+        row.cash_income or Decimal("0.00"),
+        row.cash_expense or Decimal("0.00"),
+    )
 
 
 # ======================================================
@@ -75,11 +119,11 @@ class YearSummaryResponse(BaseModel):
     description=(
         "Vraća godišnji **cashflow overview** za jednog tenenta, grupisano po mjesecima.\n\n"
         "Za svaki mjesec (1–12) računa:\n"
-        "- `income`  → prihodi iz invoices + cash_entries (kind='income')\n"
-        "- `expense` → rashodi iz cash_entries (kind='expense') + input_invoices\n"
+        "- `income`  → stvarni prilivi iz cash_entries (kind='income')\n"
+        "- `expense` → stvarni odlivi iz cash_entries (kind='expense')\n"
         "- `profit`  → `income - expense`\n\n"
-        "Podaci se računaju korištenjem iste agregacione logike kao i TAX modul "
-        "(`_aggregate_monthly_income_and_expense`).\n\n"
+        "Period se određuje prema `CashEntry.entry_date`. Linked plaćanja ulaznih "
+        "faktura uključena su jednom kao stvarna novčana kretanja.\n\n"
         "Ovaj endpoint je idealan za grafički prikaz u UI-ju (npr. bar/line chart "
         "sa 12 tačaka za godinu).\n\n"
         "Primjer poziva:\n"
@@ -108,23 +152,20 @@ def get_cashflow_year(
     """
     Godišnji cashflow overview po mjesecima.
 
-    Za svaki mjesec od 1 do 12 internim pozivom koristi
-    `_aggregate_monthly_income_and_expense` iz TAX modula kako bi dobio
-    ukupne prihode i rashode za taj mjesec, a zatim računa profit:
+    Prihodi i rashodi predstavljaju stvarna novčana kretanja iz CashEntry,
+    filtrirana po `entry_date`.
+
+    Linked plaćanje ulazne fakture ostaje uključeno kao jedan stvarni novčani
+    odljev. Sama InputInvoice ne dodaje se zasebno u cashflow.
 
     `profit = income - expense`.
-
-    Rezultat je stabilan, koristi iste izvore podataka kao i TAX mjesečni obračun:
-    - invoices
-    - cash_entries
-    - input_invoices
     """
     tenant = _require_tenant(x_tenant_code)
 
     items: list[CashflowMonthlyItem] = []
 
     for month in range(1, 13):
-        total_income, total_expense = _aggregate_monthly_income_and_expense(
+        total_income, total_expense = _aggregate_monthly_cashflow(
             year=year,
             month=month,
             tenant_code=tenant,
@@ -200,14 +241,13 @@ def export_cashflow_year_csv(
 
     # 12 mjeseci
     for month in range(1, 13):
-        total_income, total_expense = _aggregate_monthly_income_and_expense(
+        total_income, total_expense = _aggregate_monthly_cashflow(
             year=year,
             month=month,
             tenant_code=tenant,
             db=db,
         )
         profit = total_income - total_expense
-
         writer.writerow(
             [
                 year,
