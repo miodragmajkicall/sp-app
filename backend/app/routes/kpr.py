@@ -7,14 +7,18 @@ from io import BytesIO, StringIO
 from typing import List, Optional
 import csv
 
-from fastapi import APIRouter, Depends, Header, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import CashEntry, Invoice, InputInvoice
+from app.models import CashEntry, Invoice
 from app.schemas.kpr import KprListResponse, KprRowItem
+from app.services.recognized_input_expenses import (
+    UnsupportedInputExpenseRecognitionError,
+    list_recognized_input_expenses,
+)
 from app.tenant_security import ensure_tenant_exists, require_tenant_code
 
 
@@ -125,31 +129,41 @@ def _collect_kpr_rows(
     # ---------------------------
     # 2) Ulazne fakture (InputInvoice) – expense
     # ---------------------------
-    in_filters = [InputInvoice.tenant_code == tenant_code]
-    if year is not None:
-        in_filters.append(func.extract("year", InputInvoice.issue_date) == year)
-    if month is not None:
-        in_filters.append(func.extract("month", InputInvoice.issue_date) == month)
+    date_from = None
+    date_to = None
+    if year is not None and month is not None:
+        date_from = date(year, month, 1)
+        date_to = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
+    elif year is not None:
+        date_from = date(year, 1, 1)
+        date_to = date(year + 1, 1, 1)
 
-    in_stmt = (
-        select(InputInvoice)
-        .where(*in_filters)
-        .order_by(InputInvoice.issue_date.asc(), InputInvoice.id.asc())
-    )
-    for inp in db.execute(in_stmt).scalars().all():
+    try:
+        recognized_input_expenses = list_recognized_input_expenses(
+            db,
+            tenant_code=tenant_code,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except UnsupportedInputExpenseRecognitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    for inp in recognized_input_expenses:
+        if month is not None and year is None and inp.recognition_date.month != month:
+            continue
         rows.append(
             KprRowItem(
-                date=inp.issue_date,
+                date=inp.recognition_date,
                 kind="expense",
                 category="input_invoice",
                 counterparty=getattr(inp, "supplier_name", None),
                 document_number=getattr(inp, "invoice_number", None),
                 description=getattr(inp, "note", None),
-                amount=_as_decimal(getattr(inp, "total_amount", 0)),
-                currency=getattr(inp, "currency", "BAM") or "BAM",
-                tax_deductible=bool(inp.is_tax_deductible),
+                amount=_as_decimal(inp.amount),
+                currency=inp.currency,
+                tax_deductible=inp.is_tax_deductible,
                 source="input_invoice",
-                source_id=inp.id,
+                source_id=inp.invoice_id,
             )
         )
 
@@ -206,7 +220,7 @@ def _collect_kpr_rows(
     description=(
         "Vraća objedinjenu listu prihoda i rashoda (KPR) za jednog tenanta.\n\n"
         "Podržani filteri:\n"
-        "- `year` i `month` – filtriranje po datumu (issue_date / entry_date),\n"
+        "- `year` i `month` – filtriranje po datumu priznavanja / entry_date,\n"
         "- `limit` i `offset` – jednostavna paginacija nad agregiranom listom.\n\n"
         "Svaka stavka ima polja: `date`, `kind`, `category`, `amount`, "
         "`source`, `source_id` i prateća meta polja."

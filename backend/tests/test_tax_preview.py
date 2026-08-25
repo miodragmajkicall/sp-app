@@ -371,6 +371,20 @@ def _create_tax_input_invoice(
     return response.json()["id"]
 
 
+def _set_tax_cash_profile(headers: dict[str, str]) -> None:
+    response = client.put(
+        "/settings/tax",
+        headers=headers,
+        json={
+            "entity": "RS",
+            "regime": "pausal",
+            "scenario_key": "rs_primary",
+            "has_additional_activity": False,
+        },
+    )
+    assert response.status_code == 200, response.text
+
+
 def _pay_tax_input_invoice(
     *,
     headers: dict[str, str],
@@ -392,6 +406,7 @@ def _pay_tax_input_invoice(
 def test_tax_auto_does_not_double_count_input_invoice_payment() -> None:
     tenant = f"tax-input-payment-{uuid4().hex[:12]}"
     headers = {"X-Tenant-Code": tenant}
+    _set_tax_cash_profile(headers)
 
     input_invoice_id = _create_tax_input_invoice(
         headers=headers,
@@ -418,6 +433,7 @@ def test_tax_auto_does_not_double_count_input_invoice_payment() -> None:
 def test_tax_auto_payment_in_later_month_is_not_second_expense() -> None:
     tenant = f"tax-cross-period-{uuid4().hex[:12]}"
     headers = {"X-Tenant-Code": tenant}
+    _set_tax_cash_profile(headers)
 
     input_invoice_id = _create_tax_input_invoice(
         headers=headers,
@@ -437,7 +453,7 @@ def test_tax_auto_payment_in_later_month_is_not_second_expense() -> None:
         headers=headers,
     )
     assert may_response.status_code == 200, may_response.text
-    assert _dec2(may_response.json()["total_expense"]) == Decimal("117.00")
+    assert _dec2(may_response.json()["total_expense"]) == Decimal("0.00")
 
     august_response = client.get(
         "/tax/monthly/auto",
@@ -445,12 +461,13 @@ def test_tax_auto_payment_in_later_month_is_not_second_expense() -> None:
         headers=headers,
     )
     assert august_response.status_code == 200, august_response.text
-    assert _dec2(august_response.json()["total_expense"]) == Decimal("0.00")
+    assert _dec2(august_response.json()["total_expense"]) == Decimal("117.00")
 
 
 def test_tax_auto_excludes_paid_nondeductible_input_invoice() -> None:
     tenant = f"tax-nondeductible-{uuid4().hex[:12]}"
     headers = {"X-Tenant-Code": tenant}
+    _set_tax_cash_profile(headers)
 
     input_invoice_id = _create_tax_input_invoice(
         headers=headers,
@@ -472,3 +489,108 @@ def test_tax_auto_excludes_paid_nondeductible_input_invoice() -> None:
     assert response.status_code == 200, response.text
 
     assert _dec2(response.json()["total_expense"]) == Decimal("0.00")
+
+
+def test_tax_auto_unpaid_cash_basis_invoice_is_not_issue_month_expense() -> None:
+    tenant = f"tax-unpaid-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+    _set_tax_cash_profile(headers)
+    _create_tax_input_invoice(
+        headers=headers,
+        issue_date="2026-05-10",
+        is_tax_deductible=True,
+    )
+
+    response = client.get(
+        "/tax/monthly/auto",
+        params={"year": 2026, "month": 5},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert _dec2(response.json()["total_expense"]) == Decimal("0.00")
+
+
+def test_tax_auto_unresolved_context_fails_closed_for_paid_input_expense() -> None:
+    tenant = f"tax-unresolved-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+    invoice_id = _create_tax_input_invoice(
+        headers=headers,
+        issue_date="2026-05-10",
+        is_tax_deductible=True,
+    )
+    _pay_tax_input_invoice(
+        headers=headers,
+        input_invoice_id=invoice_id,
+        payment_date="2026-08-18",
+    )
+
+    response = client.get(
+        "/tax/monthly/auto",
+        params={"year": 2026, "month": 8},
+        headers=headers,
+    )
+    assert response.status_code == 409, response.text
+    assert (
+        "recognition policy is not configured"
+        in response.json()["detail"]
+    )
+
+
+def test_tax_recognized_input_expense_is_tenant_isolated() -> None:
+    owner = f"tax-owner-{uuid4().hex[:10]}"
+    other = f"tax-other-{uuid4().hex[:10]}"
+    owner_headers = {"X-Tenant-Code": owner}
+    other_headers = {"X-Tenant-Code": other}
+    _set_tax_cash_profile(owner_headers)
+    _set_tax_cash_profile(other_headers)
+    invoice_id = _create_tax_input_invoice(
+        headers=owner_headers,
+        issue_date="2026-05-10",
+        is_tax_deductible=True,
+    )
+    _pay_tax_input_invoice(
+        headers=owner_headers,
+        input_invoice_id=invoice_id,
+        payment_date="2026-08-18",
+    )
+
+    response = client.get(
+        "/tax/monthly/auto",
+        params={"year": 2026, "month": 8},
+        headers=other_headers,
+    )
+    assert response.status_code == 200, response.text
+    assert _dec2(response.json()["total_expense"]) == Decimal("0.00")
+
+
+def test_tax_yearly_preview_uses_migrated_finalized_month_expense() -> None:
+    tenant = f"tax-yearly-rec-{uuid4().hex[:10]}"
+    headers = {"X-Tenant-Code": tenant}
+    _set_tax_cash_profile(headers)
+    invoice_id = _create_tax_input_invoice(
+        headers=headers,
+        issue_date="2026-05-10",
+        is_tax_deductible=True,
+    )
+    _pay_tax_input_invoice(
+        headers=headers,
+        input_invoice_id=invoice_id,
+        payment_date="2026-08-18",
+    )
+
+    finalized = client.post(
+        "/tax/monthly/finalize",
+        params={"year": 2026, "month": 8},
+        headers=headers,
+    )
+    assert finalized.status_code == 200, finalized.text
+    assert _dec2(finalized.json()["total_expense"]) == Decimal("117.00")
+
+    yearly = client.get(
+        "/tax/yearly/preview",
+        params={"year": 2026},
+        headers=headers,
+    )
+    assert yearly.status_code == 200, yearly.text
+    assert yearly.json()["months_included"] == 1
+    assert _dec2(yearly.json()["total_expense"]) == Decimal("117.00")

@@ -6,7 +6,10 @@ from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
+from app.db import SessionLocal
 from app.main import app
+from app.models import TenantTaxProfileSettings
+from app.tenant_security import ensure_tenant_exists
 from tests.invoice_profile_helpers import save_complete_profile
 
 client = TestClient(app)
@@ -15,6 +18,21 @@ TENANT = "kpr-test-tenant"
 HEADERS = {"X-Tenant-Code": TENANT}
 
 _data_created = False
+
+
+def _set_cash_profile(tenant: str) -> None:
+    with SessionLocal() as db:
+        ensure_tenant_exists(db, tenant)
+        db.add(
+            TenantTaxProfileSettings(
+                tenant_code=tenant,
+                entity="RS",
+                regime="pausal",
+                scenario_key="rs_primary",
+                has_additional_activity=False,
+            )
+        )
+        db.commit()
 
 
 def _ensure_sample_data() -> None:
@@ -176,6 +194,7 @@ def test_kpr_export_pdf():
 def test_kpr_input_invoice_payment_is_not_double_counted_and_keeps_tax_flag():
     tenant = f"kpr-input-payment-{uuid4().hex[:12]}"
     headers = {"X-Tenant-Code": tenant}
+    _set_cash_profile(tenant)
 
     input_invoice_payload = {
         "supplier_name": "KPR Payment Test Supplier",
@@ -231,3 +250,124 @@ def test_kpr_input_invoice_payment_is_not_double_counted_and_keeps_tax_flag():
     assert row["kind"] == "expense"
     assert Decimal(str(row["amount"])) == Decimal("117.00")
     assert row["tax_deductible"] is False
+
+
+def test_kpr_cash_basis_invoice_is_recognized_only_in_payment_month():
+    tenant = f"kpr-recognition-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+    _set_cash_profile(tenant)
+
+    create_resp = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": "Recognition Supplier",
+            "invoice_number": f"KPR-REC-{uuid4().hex[:8]}",
+            "issue_date": "2026-05-10",
+            "posting_date": "2026-05-10",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "117.00",
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    invoice_id = create_resp.json()["id"]
+
+    may = client.get("/kpr?year=2026&month=5", headers=headers)
+    assert may.status_code == 200, may.text
+    assert not any(row["source_id"] == invoice_id for row in may.json()["items"])
+
+    payment = client.post(
+        f"/input-invoices/{invoice_id}/payment",
+        headers=headers,
+        json={"payment_date": "2026-08-18", "account": "bank"},
+    )
+    assert payment.status_code == 201, payment.text
+
+    august = client.get("/kpr?year=2026&month=8", headers=headers)
+    assert august.status_code == 200, august.text
+    invoice_rows = [row for row in august.json()["items"] if row["source_id"] == invoice_id]
+    assert len(invoice_rows) == 1
+    assert invoice_rows[0]["date"] == "2026-08-18"
+
+
+def test_kpr_nonlinked_cash_expense_remains_visible():
+    tenant = f"kpr-cash-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+    response = client.post(
+        "/cash/",
+        headers=headers,
+        json={
+            "entry_date": "2026-08-19",
+            "kind": "expense",
+            "amount": "30.00",
+            "note": "Independent expense",
+        },
+    )
+    assert response.status_code == 201, response.text
+
+    kpr = client.get("/kpr?year=2026&month=8", headers=headers)
+    assert kpr.status_code == 200, kpr.text
+    assert any(
+        row["source"] == "cash" and Decimal(str(row["amount"])) == Decimal("30.00")
+        for row in kpr.json()["items"]
+    )
+
+
+def test_kpr_unresolved_context_does_not_fall_back_to_issue_date():
+    tenant = f"kpr-unresolved-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+    create_resp = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": "Unsupported Supplier",
+            "invoice_number": f"KPR-UNR-{uuid4().hex[:8]}",
+            "issue_date": "2026-05-10",
+            "posting_date": "2026-05-10",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "117.00",
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+
+    kpr = client.get("/kpr?year=2026&month=5", headers=headers)
+    assert kpr.status_code == 200, kpr.text
+    assert not any(
+        row["source_id"] == create_resp.json()["id"] for row in kpr.json()["items"]
+    )
+
+def test_kpr_paid_input_invoice_with_unresolved_context_fails_closed():
+    tenant = f"kpr-unresolved-paid-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+
+    create_resp = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": "Unsupported Paid Supplier",
+            "invoice_number": f"KPR-UNR-PAID-{uuid4().hex[:8]}",
+            "issue_date": "2026-05-10",
+            "posting_date": "2026-05-10",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "117.00",
+        },
+    )
+    assert create_resp.status_code == 201, create_resp.text
+    invoice_id = create_resp.json()["id"]
+
+    payment = client.post(
+        f"/input-invoices/{invoice_id}/payment",
+        headers=headers,
+        json={"payment_date": "2026-08-18", "account": "bank"},
+    )
+    assert payment.status_code == 201, payment.text
+
+    kpr = client.get("/kpr?year=2026&month=8", headers=headers)
+    assert kpr.status_code == 409, kpr.text
+    assert (
+        "recognition policy is not configured"
+        in kpr.json()["detail"]
+    )

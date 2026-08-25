@@ -17,7 +17,6 @@ from app.db import get_session as _get_session_dep
 from app.models import (
     CashEntry,
     Invoice,
-    InputInvoice,
     TaxMonthlyResult,
     TaxYearlyResult,
     TaxMonthlyFinalizeHistory,
@@ -38,6 +37,10 @@ from app.schemas.tax import (
     TaxMonthlyPaymentUpsert,
 )
 from app.schemas.tax_settings import TaxSettingsRead, TaxSettingsUpsert
+from app.services.recognized_input_expenses import (
+    UnsupportedInputExpenseRecognitionError,
+    list_recognized_input_expenses,
+)
 from app.tenant_security import require_tenant_code
 
 router = APIRouter(
@@ -545,14 +548,19 @@ def _aggregate_monthly_income_and_expense(
     cash_income = cash_row.cash_income or Decimal("0.00")
     cash_expense = cash_row.cash_expense or Decimal("0.00")
 
-    stmt_input_invoices = select(func.coalesce(func.sum(InputInvoice.total_amount), 0).label("input_expense")).where(
-        InputInvoice.tenant_code == tenant_code,
-        InputInvoice.is_tax_deductible.is_(True),
-        InputInvoice.issue_date >= month_start,
-        InputInvoice.issue_date < month_end,
+    try:
+        recognized_input_expenses = list_recognized_input_expenses(
+            db,
+            tenant_code=tenant_code,
+            date_from=month_start,
+            date_to=month_end,
+        )
+    except UnsupportedInputExpenseRecognitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    input_expense = sum(
+        (expense.amount for expense in recognized_input_expenses if expense.is_tax_deductible),
+        Decimal("0.00"),
     )
-    input_row = db.execute(stmt_input_invoices).one()
-    input_expense = input_row.input_expense or Decimal("0.00")
 
     total_income = invoice_income + cash_income
     total_expense = cash_expense + input_expense
@@ -586,7 +594,7 @@ def _get_monthly_summary_any(
     """
     Vraća summary za mjesec:
       - ako postoji finalizovan zapis u tax_monthly_results → vrati ga
-      - inače izračunaj iz invoices + cash + input_invoices koristeći cfg za taj mjesec (as_of = 1. dan mjeseca)
+      - inače izračunaj iz invoices + cash + priznatih input_invoices koristeći cfg za taj mjesec (as_of = 1. dan mjeseca)
     """
     existing = db.execute(
         select(TaxMonthlyResult).where(
