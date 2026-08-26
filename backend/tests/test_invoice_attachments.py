@@ -956,3 +956,96 @@ def test_invoice_attachment_input_invoice_link_is_tenant_isolated() -> None:
         headers=owner_headers,
     )
     assert delete_response.status_code == 204, delete_response.text
+
+def test_invoice_attachment_relink_keeps_invoice_links_mutually_exclusive() -> None:
+    tenant_code = f"att-exclusive-link-{time.time_ns()}"
+    headers = {"X-Tenant-Code": tenant_code}
+    save_complete_profile(client, headers)
+
+    invoice_response = client.post(
+        "/invoices/",
+        headers=headers,
+        json={
+            "invoice_number": "EXCLUSIVE-OUT-001",
+            "issue_date": "2026-08-20",
+            "due_date": "2026-08-25",
+            "buyer_name": "Exclusive Buyer d.o.o.",
+            "buyer_address": "Banja Luka",
+            "items": [
+                {
+                    "description": "Test usluga",
+                    "quantity": "1.00",
+                    "unit_price": "100.00",
+                    "vat_rate": "0.17",
+                }
+            ],
+        },
+    )
+    assert invoice_response.status_code == 201, invoice_response.text
+    invoice_id = invoice_response.json()["id"]
+
+    input_invoice_response = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": "Exclusive Dobavljač",
+            "invoice_number": "EXCLUSIVE-IN-001",
+            "issue_date": "2026-08-20",
+            "due_date": "2026-08-25",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "117.00",
+        },
+    )
+    assert input_invoice_response.status_code == 201, input_invoice_response.text
+    input_invoice_id = input_invoice_response.json()["id"]
+
+    upload_response = client.post(
+        "/invoice-attachments",
+        headers=headers,
+        files={
+            "file": (
+                "exclusive-link.pdf",
+                b"%PDF-1.4\nEXCLUSIVE LINK TEST",
+                "application/pdf",
+            )
+        },
+    )
+    assert upload_response.status_code == 201, upload_response.text
+    attachment_id = upload_response.json()["id"]
+
+    link_input_response = client.post(
+        f"/invoice-attachments/{attachment_id}/link-to-input-invoice",
+        headers=headers,
+        json={"input_invoice_id": input_invoice_id},
+    )
+    assert link_input_response.status_code == 200, link_input_response.text
+    linked_input = link_input_response.json()
+    assert linked_input["input_invoice_id"] == input_invoice_id
+    assert linked_input["invoice_id"] is None
+
+    link_output_response = client.post(
+        f"/invoice-attachments/{attachment_id}/link-to-invoice",
+        headers=headers,
+        json={"invoice_id": invoice_id},
+    )
+    assert link_output_response.status_code == 200, link_output_response.text
+    linked_output = link_output_response.json()
+    assert linked_output["invoice_id"] == invoice_id
+    assert linked_output["input_invoice_id"] is None
+
+    relink_input_response = client.post(
+        f"/invoice-attachments/{attachment_id}/link-to-input-invoice",
+        headers=headers,
+        json={"input_invoice_id": input_invoice_id},
+    )
+    assert relink_input_response.status_code == 200, relink_input_response.text
+    relinked_input = relink_input_response.json()
+    assert relinked_input["input_invoice_id"] == input_invoice_id
+    assert relinked_input["invoice_id"] is None
+
+    delete_response = client.delete(
+        f"/invoice-attachments/{attachment_id}",
+        headers=headers,
+    )
+    assert delete_response.status_code == 204, delete_response.text

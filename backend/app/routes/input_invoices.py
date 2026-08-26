@@ -605,10 +605,10 @@ def get_input_invoice(
     description=(
         "Ažurira postojeću ulaznu fakturu za zadatog tenanta.\n\n"
         "Podržava djelimične izmjene preko `InputInvoiceUpdate` šeme:\n"
-        "- moguće je promijeniti dobavljača, broj, iznose, datume i napomenu;\n"
-        "- moguće je promijeniti kategoriju troška, priznat rashod i status plaćanja;\n"
-        "- business lock na nivou modela **blokira izmjene** za finalizovane mjesece "
-        "(po `issue_date`)."
+        "- moguće je promijeniti dobavljača, broj, datume, kategoriju, poresku priznatost i napomenu;\n"
+        "- finansijska polja moguće je mijenjati dok faktura nema povezano plaćanje;\n"
+        "- status plaćanja je server-authoritative i mijenja se isključivo kroz payment lifecycle;\n"
+        "- polja relevantna za priznavanje provjeravaju finalizaciju prema periodu integriteta fakture."
     ),
     responses={  # type: ignore[assignment]
         200: {
@@ -616,8 +616,8 @@ def get_input_invoice(
         },
         400: {
             "description": (
-                "Poslovna greška – najčešće pokušaj izmjene ulazne fakture "
-                "u već finalizovanom poreznom mjesecu."
+                "Poslovna greška – pokušaj izmjene podataka relevantnih za priznavanje "
+                "u već finalizovanom periodu integriteta."
             ),
             "content": {
                 "application/json": {
@@ -655,7 +655,8 @@ def update_input_invoice(
     Djelimično ažurira postojeću ulaznu fakturu.
 
     - Ako faktura ne postoji ili ne pripada tenantu → 404.
-    - Ako je mjesec fakture finalizovan → 400 (FinalizedPeriodModificationError).
+    - Izmjene polja relevantnih za priznavanje provjeravaju period integriteta fakture.
+    - Finansijska polja plaćene fakture ne mogu se mijenjati dok se plaćanje ne poništi.
     - Ako dođe do unique konflikta → 409.
     """
     tenant = _require_tenant(x_tenant_code)
@@ -986,7 +987,8 @@ def delete_input_invoice_payment(
     description=(
         "Briše ulaznu fakturu za zadatog tenanta.\n\n"
         "Ako faktura ne postoji ili ne pripada tenantu → 404.\n"
-        "Ako faktura pripada finalizovanom poreznom mjesecu → 400 (business lock)."
+        "Ako faktura ima povezano plaćanje → 409.\n"
+        "Ako je period integriteta fakture finalizovan → 400."
     ),
     responses={  # type: ignore[assignment]
         204: {
@@ -994,7 +996,7 @@ def delete_input_invoice_payment(
         },
         400: {
             "description": (
-                "Poslovna greška – pokušaj brisanja ulazne fakture za finalizovan mjesec."
+                "Poslovna greška – pokušaj brisanja ulazne fakture za finalizovan period integriteta."
             ),
             "content": {
                 "application/json": {
@@ -1009,6 +1011,12 @@ def delete_input_invoice_payment(
         },
         404: {
             "description": "Ulazna faktura nije pronađena za dati ID/tenant.",
+        },
+        409: {
+            "description": (
+                "Ulazna faktura ima povezano plaćanje i ne može biti obrisana "
+                "dok se plaćanje ne poništi."
+            ),
         },
     },
 )
@@ -1025,7 +1033,8 @@ def delete_input_invoice(
     Briše jednu ulaznu fakturu.
 
     - 404 ako faktura ne postoji ili ne pripada tenantu.
-    - 400 ako je mjesec već finalizovan (business lock).
+    - 409 ako faktura ima povezano plaćanje.
+    - 400 ako je period integriteta fakture finalizovan.
     """
     tenant = _require_tenant(x_tenant_code)
 

@@ -52,12 +52,15 @@ export default function InputInvoiceCreatePage() {
 
   const [expenseCategory, setExpenseCategory] = useState("");
   const [isTaxDeductible, setIsTaxDeductible] = useState(true);
+  const [isPaid, setIsPaid] = useState(false);
 
   const [includeVat, setIncludeVat] = useState(true);
   const [baseStr, setBaseStr] = useState("");
   const [totalStr, setTotalStr] = useState("");
 
   const [note, setNote] = useState("");
+
+  const financialFieldsLocked = isEditMode && isPaid;
 
   const [attachments, setAttachments] = useState<InvoiceAttachmentItem[]>([]);
   const [isUploading, setIsUploading] = useState(false);
@@ -95,6 +98,7 @@ export default function InputInvoiceCreatePage() {
 
         setExpenseCategory(invoice.expense_category ?? "");
         setIsTaxDeductible(invoice.is_tax_deductible);
+        setIsPaid(invoice.is_paid);
 
         setIncludeVat(invoice.total_vat > 0);
         setBaseStr(invoice.total_base.toFixed(2));
@@ -297,7 +301,16 @@ export default function InputInvoiceCreatePage() {
       let savedInvoiceId: number;
 
       if (isEditMode && numericId != null) {
-        await updateInputInvoice(numericId, payload);
+        const updatePayload = financialFieldsLocked
+          ? {
+              ...payload,
+              total_base: undefined,
+              total_vat: undefined,
+              total_amount: undefined,
+            }
+          : payload;
+
+        await updateInputInvoice(numericId, updatePayload);
         savedInvoiceId = numericId;
       } else {
         const created = await createInputInvoice(payload);
@@ -578,10 +591,10 @@ export default function InputInvoiceCreatePage() {
                 />
                 <span>
                   <span className="block text-sm font-semibold text-slate-900">
-                    Priznat rashod
+                    Poreski priznat rashod
                   </span>
                   <span className="mt-1 block text-xs leading-5 text-slate-500">
-                    Trošak ulazi u KPR / poresku osnovicu.
+                    Označava da se rashod može poreski priznati kada ispuni uslove priznavanja.
                   </span>
                 </span>
               </label>
@@ -596,6 +609,12 @@ export default function InputInvoiceCreatePage() {
               <p className="mt-1 text-sm text-slate-500">
                 Unesi osnovicu ili ukupno — drugo polje se računa automatski.
               </p>
+              {financialFieldsLocked && (
+                <p className="mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-700">
+                  Finansijski iznosi su zaključani jer je faktura plaćena.
+                  Poništi evidentirano plaćanje prije izmjene iznosa.
+                </p>
+              )}
             </div>
 
             <div className="grid gap-4 md:grid-cols-3">
@@ -609,7 +628,8 @@ export default function InputInvoiceCreatePage() {
                   step="0.01"
                   value={baseStr}
                   onChange={handleBaseChange}
-                  className="input"
+                  disabled={financialFieldsLocked}
+                  className="input disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
                   placeholder="npr. 100.00"
                 />
               </div>
@@ -627,9 +647,10 @@ export default function InputInvoiceCreatePage() {
                   <input
                     id="include-vat"
                     type="checkbox"
-                    className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-900"
+                    className="mt-1 h-4 w-4 rounded border-slate-300 text-slate-900 disabled:cursor-not-allowed disabled:opacity-60"
                     checked={includeVat}
                     onChange={handleToggleVat}
+                    disabled={financialFieldsLocked}
                   />
                   <span className="text-xs leading-5 text-slate-600">
                     Uključi PDV u obračun. Stopa je fiksna 17%.
@@ -647,7 +668,8 @@ export default function InputInvoiceCreatePage() {
                   step="0.01"
                   value={totalStr}
                   onChange={handleTotalChange}
-                  className="input text-right"
+                  disabled={financialFieldsLocked}
+                  className="input text-right disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500"
                   placeholder="npr. 117.00"
                 />
               </div>

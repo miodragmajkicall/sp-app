@@ -381,8 +381,7 @@ export default function InputInvoiceDetailPage() {
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
                   Pregled dobavljača, datuma, finansijskih iznosa, tehničkih
-                  podataka i povezanih dokumenata za tenant{" "}
-                  <span className="font-mono text-white">t-demo</span>.
+                  podataka i povezanih dokumenata.
                 </p>
               </div>
             </div>

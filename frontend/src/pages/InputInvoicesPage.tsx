@@ -158,7 +158,9 @@ export default function InputInvoicesPage() {
   });
 
   const hasUnmatchedAttachments =
-    attachments?.some((att) => att.input_invoice_id == null) ?? false;
+    attachments?.some(
+      (att) => att.invoice_id == null && att.input_invoice_id == null,
+    ) ?? false;
 
   const {
     data: attachmentInvoiceCandidates,
@@ -243,7 +245,9 @@ export default function InputInvoicesPage() {
     attachmentInvoiceCandidates ?? [];
 
   const unmatchedAttachments: InvoiceAttachmentItem[] =
-    attachments?.filter((att) => att.input_invoice_id == null) ?? [];
+    attachments?.filter(
+      (att) => att.invoice_id == null && att.input_invoice_id == null,
+    ) ?? [];
 
   const totalAmount = items.reduce(
     (sum, inv) => sum + (inv.total_amount ?? 0),
@@ -285,8 +289,7 @@ export default function InputInvoicesPage() {
                 </h1>
                 <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
                   Pregled troškova, statusa plaćanja, poreske priznatosti i
-                  nepovezanih dokumenata za tenant{" "}
-                  <span className="font-mono text-white">t-demo</span>.
+                  nepovezanih dokumenata dobavljača.
                 </p>
               </div>
             </div>

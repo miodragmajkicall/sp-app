@@ -538,10 +538,10 @@ def link_attachment_to_invoice(
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    # 3) Linkovanje
+    # 3) Attachment može pripadati samo jednoj vrsti fakture.
+    attachment.input_invoice_id = None
     attachment.invoice_id = invoice.id
     attachment.status = "linked_to_invoice"
-
     db.add(attachment)
     db.commit()
     db.refresh(attachment)
@@ -616,7 +616,8 @@ def link_attachment_to_input_invoice(
     if not input_invoice:
         raise HTTPException(status_code=404, detail="Input invoice not found")
 
-    # 3) Linkovanje
+    # 3) Attachment može pripadati samo jednoj vrsti fakture.
+    attachment.invoice_id = None
     attachment.input_invoice_id = input_invoice.id
     attachment.status = "matched_to_invoice"
 
