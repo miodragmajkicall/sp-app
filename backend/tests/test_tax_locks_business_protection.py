@@ -117,3 +117,159 @@ def test_cannot_delete_cash_entry_in_finalized_month():
     body = r.json()
     assert "detail" in body
     assert "Cannot modify data for finalized tax period 2025-04" in body["detail"]
+
+def test_cannot_create_cash_entry_in_finalized_month():
+    """
+    Scenario:
+    - finalizujemo mjesec
+    - pokušamo kreirati novi cash entry u tom mjesecu
+    -> očekujemo 400
+    """
+    tenant_code = f"lock-cash-create-{int(time.time())}"
+    headers = _headers_for_tenant(tenant_code)
+    save_complete_profile_http(BASE_URL, headers)
+
+    _finalize_month(tenant_code=tenant_code, year=2025, month=5)
+
+    payload = {
+        "entry_date": "2025-05-10",
+        "kind": "income",
+        "amount": "100.00",
+        "note": "Create in finalized month",
+    }
+
+    r = httpx.post(
+        f"{BASE_URL}/cash/",
+        json=payload,
+        headers=headers,
+        timeout=5,
+    )
+
+    assert r.status_code == 400, r.text
+    assert (
+        "Cannot modify data for finalized tax period 2025-05"
+        in r.json()["detail"]
+    )
+
+
+def test_cannot_patch_cash_entry_inside_finalized_month():
+    """
+    Scenario:
+    - kreiramo cash entry
+    - finalizujemo njegov mjesec
+    - pokušamo izmijeniti amount
+    -> očekujemo 400
+    """
+    tenant_code = f"lock-cash-patch-{int(time.time())}"
+    headers = _headers_for_tenant(tenant_code)
+
+    created = httpx.post(
+        f"{BASE_URL}/cash/",
+        json={
+            "entry_date": "2025-06-10",
+            "kind": "income",
+            "amount": "100.00",
+            "note": "Before finalize",
+        },
+        headers=headers,
+        timeout=5,
+    )
+    assert created.status_code == 201, created.text
+    cash_id = created.json()["id"]
+
+    _finalize_month(tenant_code=tenant_code, year=2025, month=6)
+
+    r = httpx.patch(
+        f"{BASE_URL}/cash/{cash_id}",
+        json={"amount": "150.00"},
+        headers=headers,
+        timeout=5,
+    )
+
+    assert r.status_code == 400, r.text
+    assert (
+        "Cannot modify data for finalized tax period 2025-06"
+        in r.json()["detail"]
+    )
+
+
+def test_cannot_move_cash_entry_from_finalized_to_open_month():
+    """
+    Scenario:
+    - cash entry pripada mjesecu koji zatim finalizujemo
+    - pokušamo promijeniti entry_date u otvoreni mjesec
+    -> stari finalizovani period mora blokirati izmjenu
+    """
+    tenant_code = f"lock-cash-move-out-{int(time.time())}"
+    headers = _headers_for_tenant(tenant_code)
+
+    created = httpx.post(
+        f"{BASE_URL}/cash/",
+        json={
+            "entry_date": "2025-07-10",
+            "kind": "income",
+            "amount": "100.00",
+            "note": "Move from finalized",
+        },
+        headers=headers,
+        timeout=5,
+    )
+    assert created.status_code == 201, created.text
+    cash_id = created.json()["id"]
+
+    _finalize_month(tenant_code=tenant_code, year=2025, month=7)
+
+    r = httpx.patch(
+        f"{BASE_URL}/cash/{cash_id}",
+        json={"entry_date": "2025-08-10"},
+        headers=headers,
+        timeout=5,
+    )
+
+    assert r.status_code == 400, r.text
+    assert (
+        "Cannot modify data for finalized tax period 2025-07"
+        in r.json()["detail"]
+    )
+
+
+def test_cannot_move_cash_entry_from_open_to_finalized_month():
+    """
+    Scenario:
+    - finalizujemo ciljni mjesec
+    - kreiramo cash entry u otvorenom mjesecu
+    - pokušamo promijeniti entry_date u finalizovani mjesec
+    -> novi finalizovani period mora blokirati izmjenu
+    """
+    tenant_code = f"lock-cash-move-in-{int(time.time())}"
+    headers = _headers_for_tenant(tenant_code)
+    save_complete_profile_http(BASE_URL, headers)
+
+    _finalize_month(tenant_code=tenant_code, year=2025, month=9)
+
+    created = httpx.post(
+        f"{BASE_URL}/cash/",
+        json={
+            "entry_date": "2025-10-10",
+            "kind": "income",
+            "amount": "100.00",
+            "note": "Move into finalized",
+        },
+        headers=headers,
+        timeout=5,
+    )
+    assert created.status_code == 201, created.text
+    cash_id = created.json()["id"]
+
+    r = httpx.patch(
+        f"{BASE_URL}/cash/{cash_id}",
+        json={"entry_date": "2025-09-10"},
+        headers=headers,
+        timeout=5,
+    )
+
+    assert r.status_code == 400, r.text
+    assert (
+        "Cannot modify data for finalized tax period 2025-09"
+        in r.json()["detail"]
+    )

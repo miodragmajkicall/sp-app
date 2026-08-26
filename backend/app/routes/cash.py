@@ -18,6 +18,7 @@ from app.schemas.cash import (
     CashRowItem,
     CashListResponse,
 )
+from app.services.period_guard import ensure_period_open
 from app.tenant_security import require_tenant_code, ensure_tenant_exists
 
 router = APIRouter(
@@ -548,8 +549,13 @@ def create_cash(
     data.setdefault("tenant_code", tenant)
     data.setdefault("created_at", datetime.now(timezone.utc))
 
-    _validate_invoice_references(db, tenant, data)
+    ensure_period_open(
+        db,
+        tenant_code=tenant,
+        period_date=data["entry_date"],
+    )
 
+    _validate_invoice_references(db, tenant, data)
     obj = CashEntry(**data)
     db.add(obj)
     db.commit()
@@ -646,6 +652,19 @@ def patch_cash(
                 "Input invoice payments must be created through the "
                 "input invoice payment endpoint"
             ),
+        )
+
+    ensure_period_open(
+        db,
+        tenant_code=tenant,
+        period_date=obj.entry_date,
+    )
+
+    if "entry_date" in update_data:
+        ensure_period_open(
+            db,
+            tenant_code=tenant,
+            period_date=update_data["entry_date"],
         )
 
     _validate_invoice_references(db, tenant, update_data)
@@ -749,7 +768,12 @@ def delete_cash(
             ),
         )
 
-    # Samo brisanje – zaštita od finalizovanih perioda je u model event handleru.
+    ensure_period_open(
+        db,
+        tenant_code=tenant,
+        period_date=obj.entry_date,
+    )
+
     db.delete(obj)
     db.commit()
 
