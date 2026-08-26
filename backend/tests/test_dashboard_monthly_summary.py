@@ -3,12 +3,13 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 
 from app.main import app
 from app.db import get_session as _get_session_dep
-from app.models import CashEntry, Invoice, TaxMonthlyResult
+from app.models import CashEntry, InputInvoice, Invoice, TaxMonthlyResult
 from app.tenant_security import ensure_tenant_exists
 
 client = TestClient(app)
@@ -195,3 +196,82 @@ def test_dashboard_monthly_requires_tenant_header() -> None:
     assert resp.status_code == 400
     body = resp.json()
     assert body.get("detail") == "Missing X-Tenant-Code header"
+
+
+def test_dashboard_cash_expense_uses_linked_payment_date_and_tenant() -> None:
+    tenant = f"dash-linked-{uuid4().hex[:12]}"
+    other_tenant = f"dash-other-{uuid4().hex[:12]}"
+    invoice_number = f"DASH-LINK-{uuid4().hex[:8]}"
+
+    with _db_session_for_test() as db:
+        ensure_tenant_exists(db, tenant)
+        ensure_tenant_exists(db, other_tenant)
+
+        input_invoice = InputInvoice(
+            tenant_code=tenant,
+            supplier_name="Dashboard linked supplier",
+            invoice_number=invoice_number,
+            issue_date=date(2087, 4, 20),
+            total_base=Decimal("100.00"),
+            total_vat=Decimal("17.00"),
+            total_amount=Decimal("117.00"),
+            currency="BAM",
+        )
+        db.add(input_invoice)
+        db.flush()
+
+        db.add_all(
+            [
+                CashEntry(
+                    tenant_code=tenant,
+                    entry_date=date(2087, 5, 3),
+                    kind="expense",
+                    amount=Decimal("117.00"),
+                    account="bank",
+                    input_invoice_id=input_invoice.id,
+                    description="Linked input-invoice payment",
+                ),
+                CashEntry(
+                    tenant_code=other_tenant,
+                    entry_date=date(2087, 5, 3),
+                    kind="expense",
+                    amount=Decimal("999.00"),
+                    account="bank",
+                    description="Other tenant expense",
+                ),
+            ]
+        )
+        db.commit()
+
+    issue_month = client.get(
+        "/dashboard/monthly/2087/4",
+        headers={"X-Tenant-Code": tenant},
+    )
+    assert issue_month.status_code == 200, issue_month.text
+    assert Decimal(str(issue_month.json()["cash"]["expense_total"])) == Decimal("0.00")
+
+    payment_month = client.get(
+        "/dashboard/monthly/2087/5",
+        headers={"X-Tenant-Code": tenant},
+    )
+    assert payment_month.status_code == 200, payment_month.text
+
+    data = payment_month.json()
+    assert set(data) == {
+        "tenant_code",
+        "year",
+        "month",
+        "cash",
+        "invoices",
+        "tax",
+        "sam",
+    }
+    assert set(data["cash"]) == {
+        "year",
+        "month",
+        "income_total",
+        "expense_total",
+        "net_cashflow",
+    }
+    assert Decimal(str(data["cash"]["expense_total"])) == Decimal("117.00")
+    assert Decimal(str(data["cash"]["net_cashflow"])) == Decimal("-117.00")

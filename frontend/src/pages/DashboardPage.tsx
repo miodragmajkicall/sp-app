@@ -648,7 +648,7 @@ export default function DashboardPage() {
   const entityLabel = getEntityLabel(taxProfileQuery.data?.entity);
   const scenarioLabel = getScenarioLabel(taxProfileQuery.data?.scenario_key);
 
-    const rawCashIncome = toNumber(data?.cash?.income_total);
+  const rawCashIncome = toNumber(data?.cash?.income_total);
   const rawCashExpense = toNumber(data?.cash?.expense_total);
   const rawCashNet = toNumber(data?.cash?.net_cashflow);
 
@@ -661,30 +661,21 @@ export default function DashboardPage() {
       return acc + toNumber(inv?.total_amount);
     }, 0) ?? 0;
 
-  const hasInvoiceFallbackData = invoicesTotal > 0 || inputInvoicesTotal > 0;
-
-  const cashIncome =
-    rawCashIncome > 0 || !hasInvoiceFallbackData ? rawCashIncome : invoicesTotal;
-
-  const cashExpense =
-    rawCashExpense > 0 || !hasInvoiceFallbackData
-      ? rawCashExpense
-      : inputInvoicesTotal;
-
-  const cashNet =
-    rawCashIncome > 0 || rawCashExpense > 0 || !hasInvoiceFallbackData
-      ? rawCashNet
-      : invoicesTotal - inputInvoicesTotal;
+  const cashIncome = rawCashIncome;
+  const cashExpense = rawCashExpense;
+  const cashNet = rawCashNet;
 
   const taxDue = toNumber(data?.tax?.total_due);
   const samDue = toNumber(data?.sam?.total_due);
+  const recordedTaxDue = data?.tax ? taxDue : samDue;
 
   const totalTaxPlan =
-    taxDue ||
-    samDue ||
+    recordedTaxDue ||
     contributionsPlan != null ||
     resolvedMonthlyTax != null
-      ? taxDue + samDue + toNumber(contributionsPlan) + toNumber(resolvedMonthlyTax)
+      ? recordedTaxDue +
+        toNumber(contributionsPlan) +
+        toNumber(resolvedMonthlyTax)
       : null;
 
   const netClass =
@@ -708,36 +699,16 @@ export default function DashboardPage() {
       return diffDays > 30;
     }).length ?? 0;
 
-    const invoiceIncomeByMonth = new Map<number, number>();
-  if (invoicesListData) {
-    for (const inv of invoicesListData.items) {
-      const issueDate = inv.issue_date ? new Date(inv.issue_date) : null;
-      if (!issueDate || Number.isNaN(issueDate.getTime())) continue;
-
-      const invoiceYear = issueDate.getFullYear();
-      const invoiceMonth = issueDate.getMonth() + 1;
-
-      if (data && invoiceYear !== data.year) continue;
-
-      const amount = toNumber(inv.total_amount);
-      invoiceIncomeByMonth.set(
-        invoiceMonth,
-        (invoiceIncomeByMonth.get(invoiceMonth) ?? 0) + amount,
-      );
-    }
-  }
-
   const incomeSeries = Array.from({ length: 12 }, (_, idx) => {
     const month = idx + 1;
     const cashIncomeForMonth = yearlyCashByMonth?.[idx]
       ? toNumber(yearlyCashByMonth[idx]?.cash?.income_total)
       : 0;
-    const invoiceIncomeForMonth = invoiceIncomeByMonth.get(month) ?? 0;
 
     return {
       month,
       label: getShortMonthLabel(month),
-      value: cashIncomeForMonth > 0 ? cashIncomeForMonth : invoiceIncomeForMonth,
+      value: cashIncomeForMonth,
     };
   });
 
@@ -966,7 +937,7 @@ export default function DashboardPage() {
             <KpiCard
               title="Ukupni rashodi"
               value={`${formatAmount(cashExpense)} KM`}
-              subtitle={`${inputInvoicesCount} ulaznih računa u mjesecu`}
+              subtitle="Stvarni odlivi iz kase i banke"
               icon={<TrendingDown className="h-5 w-5" />}
               tone="rose"
             />
@@ -1345,7 +1316,9 @@ export default function DashboardPage() {
             </Card>
 
             <Card className="p-4">
-              <SectionTitle title={`Rashodi po dobavljačima – ${monthLabel}`} />
+              <SectionTitle
+                title={`Ulazni računi po dobavljačima – ${monthLabel}`}
+              />
 
               <div className="mt-4 h-48 overflow-x-auto rounded-xl border border-slate-100 bg-slate-50 px-4 py-4">
                 {expenseSuppliers.length === 0 || maxExpenseSupplier === 0 ? (
