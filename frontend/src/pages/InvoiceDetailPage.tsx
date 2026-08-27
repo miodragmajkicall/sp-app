@@ -1,8 +1,8 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/InvoiceDetailPage.tsx
 import { useState } from "react";
-import type { ChangeEvent, ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -15,9 +15,19 @@ import {
   Wallet,
 } from "lucide-react";
 
-import type { InvoiceRowItem, InvoiceDetail } from "../types/invoice";
+import type {
+  InvoiceDetail,
+  InvoicePaymentCreatePayload,
+  InvoicePaymentDetail,
+  InvoiceRowItem,
+} from "../types/invoice";
 import { apiClient } from "../services/apiClient";
-import { fetchInvoiceById, markInvoicePaid } from "../services/invoicesApi";
+import {
+  createInvoicePayment,
+  deleteInvoicePayment,
+  fetchInvoiceById,
+  getInvoicePayment,
+} from "../services/invoicesApi";
 
 function cx(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(" ");
@@ -172,6 +182,25 @@ function InfoLine({
   );
 }
 
+function getApiErrorDetail(
+  error: unknown,
+  fallback: string,
+): string {
+  const detail = (
+    error as {
+      response?: {
+        data?: {
+          detail?: unknown;
+        };
+      };
+    }
+  )?.response?.data?.detail;
+
+  return typeof detail === "string" && detail.trim()
+    ? detail
+    : fallback;
+}
+
 export default function InvoiceDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -196,9 +225,71 @@ export default function InvoiceDetailPage() {
 
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfError, setPdfError] = useState("");
-  const [statusSaving, setStatusSaving] = useState(false);
-  const [statusError, setStatusError] = useState("");
 
+  const [paymentDate, setPaymentDate] = useState(() => {
+    const now = new Date();
+    const localTime = new Date(
+      now.getTime() - now.getTimezoneOffset() * 60_000,
+    );
+    return localTime.toISOString().slice(0, 10);
+  });
+  const [paymentAccount, setPaymentAccount] = useState<"cash" | "bank">(
+    "bank",
+  );
+  const [paymentNote, setPaymentNote] = useState("");
+
+  const {
+    data: payment,
+    isLoading: isPaymentLoading,
+    isError: isPaymentError,
+    error: paymentError,
+  } = useQuery<InvoicePaymentDetail, Error>({
+    queryKey: ["invoice-payment", numericId],
+    enabled:
+      numericId != null &&
+      Number.isFinite(numericId) &&
+      invoice?.is_paid === true,
+    queryFn: () => getInvoicePayment(numericId as number),
+    retry: false,
+  });
+
+  const invalidatePaymentRelatedQueries = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: ["invoice-detail", numericId],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["invoice-payment", numericId],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["invoices"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["cash"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["dashboard"],
+      }),
+      queryClient.invalidateQueries({
+        queryKey: ["reports"],
+      }),
+    ]);
+  };
+
+  const createPaymentMutation = useMutation({
+    mutationFn: (payload: InvoicePaymentCreatePayload) =>
+      createInvoicePayment(numericId as number, payload),
+    onSuccess: async () => {
+      await invalidatePaymentRelatedQueries();
+    },
+  });
+
+  const deletePaymentMutation = useMutation({
+    mutationFn: () => deleteInvoicePayment(numericId as number),
+    onSuccess: async () => {
+      await invalidatePaymentRelatedQueries();
+    },
+  });
   async function handleOpenPdf() {
     if (numericId == null || !Number.isFinite(numericId)) return;
 
@@ -222,33 +313,44 @@ export default function InvoiceDetailPage() {
     }
   }
 
-  async function handleStatusChange(e: ChangeEvent<HTMLSelectElement>) {
-    if (!invoice || numericId == null || !Number.isFinite(numericId)) return;
-
-    const value = e.target.value;
-    setStatusError("");
-
-    if (value === "PAID" && !invoice.is_paid) {
-      try {
-        setStatusSaving(true);
-        await markInvoicePaid(numericId);
-        await queryClient.invalidateQueries({
-          queryKey: ["invoice-detail", numericId],
-        });
-        await queryClient.invalidateQueries({
-          queryKey: ["invoices"],
-        });
-        await queryClient.invalidateQueries({
-          queryKey: ["dashboard"],
-        });
-      } catch (err) {
-        console.error(err);
-        setStatusError("Greška pri ažuriranju statusa plaćanja.");
-      } finally {
-        setStatusSaving(false);
-      }
+  const handleCreatePayment = () => {
+    if (
+      !invoice ||
+      invoice.is_paid ||
+      numericId == null ||
+      !Number.isFinite(numericId) ||
+      paymentDate.trim() === "" ||
+      createPaymentMutation.isPending
+    ) {
+      return;
     }
-  }
+
+    createPaymentMutation.mutate({
+      payment_date: paymentDate,
+      account: paymentAccount,
+      note: paymentNote.trim() || null,
+    });
+  };
+
+  const handleUndoPayment = () => {
+    if (
+      !invoice ||
+      !invoice.is_paid ||
+      deletePaymentMutation.isPending
+    ) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Da li želite poništiti evidentiranu naplatu fakture ${invoice.invoice_number}?`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    deletePaymentMutation.mutate();
+  };
 
   if (numericId == null || !Number.isFinite(numericId)) {
     return (
@@ -533,73 +635,204 @@ export default function InvoiceDetailPage() {
               </Card>
             )}
 
-            <Card className="p-4">
-              <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
-                <Wallet className="h-3.5 w-3.5" />
-                Naplata
-              </p>
-              <p className="mt-1 text-xs text-slate-500">
-                Trenutni status i brzo označavanje plaćanja.
-              </p>
+              <Card className="p-4">
+                <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">
+                  <Wallet className="h-3.5 w-3.5" />
+                  Naplata
+                </p>
+                <p className="mt-1 text-xs text-slate-500">
+                  Evidentiranje i poništavanje pune naplate fakture.
+                </p>
 
-              <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50 p-4">
-                <div className="flex items-center justify-between gap-3">
+                <div className="mt-4 rounded-2xl border border-slate-100 bg-slate-50 p-4">
                   <div>
-                    <p className="text-xs text-slate-500">Status plaćanja</p>
+                    <p className="text-xs text-slate-500">Status naplate</p>
                     <div className="mt-2">
                       <StatusBadge invoice={invoice} />
                     </div>
                   </div>
 
-                  <div className="text-right">
-                    <label className="mb-1 block text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">
-                      Promijeni status
-                    </label>
-                    <select
-                      className="input py-2 text-xs"
-                      value={invoice.is_paid ? "PAID" : "UNPAID"}
-                      onChange={handleStatusChange}
-                      disabled={statusSaving || invoice.is_paid}
-                    >
-                      <option value="UNPAID">NIJE PLAĆENA</option>
-                      <option value="PAID">PLAĆENA</option>
-                    </select>
-                  </div>
+                  {invoice.is_paid ? (
+                    <div className="mt-4 space-y-4">
+                      {isPaymentLoading && (
+                        <p className="text-sm text-slate-600">
+                          Učitavam podatke o naplati...
+                        </p>
+                      )}
+
+                      {isPaymentError && (
+                        <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+                          {getApiErrorDetail(
+                            paymentError,
+                            "Podaci o evidentiranoj naplati nisu dostupni.",
+                          )}
+                        </div>
+                      )}
+
+                      {payment && (
+                        <div className="space-y-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-emerald-700">
+                              Datum naplate
+                            </span>
+                            <span className="font-semibold text-emerald-950">
+                              {formatDate(payment.payment_date)}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-emerald-700">
+                              Način naplate
+                            </span>
+                            <span className="font-semibold text-emerald-950">
+                              {payment.account === "cash"
+                                ? "Gotovina"
+                                : "Banka"}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-emerald-700">Iznos</span>
+                            <span className="font-mono font-semibold text-emerald-950">
+                              {formatAmount(payment.amount)}
+                            </span>
+                          </div>
+
+                          {payment.note && (
+                            <div className="border-t border-emerald-200 pt-3">
+                              <p className="text-xs font-semibold uppercase tracking-wide text-emerald-700">
+                                Napomena
+                              </p>
+                              <p className="mt-1 whitespace-pre-line text-sm text-emerald-950">
+                                {payment.note}
+                              </p>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {deletePaymentMutation.isError && (
+                        <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+                          {getApiErrorDetail(
+                            deletePaymentMutation.error,
+                            "Poništavanje naplate nije uspjelo.",
+                          )}
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={handleUndoPayment}
+                        disabled={deletePaymentMutation.isPending}
+                        className="w-full rounded-xl border border-red-200 bg-red-50 px-4 py-2.5 text-sm font-bold text-red-700 transition hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {deletePaymentMutation.isPending
+                          ? "Poništavam..."
+                          : "Poništi naplatu"}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="mt-4 space-y-4">
+                      <div>
+                        <label
+                          htmlFor="invoice-payment-date"
+                          className="text-xs font-semibold uppercase tracking-wide text-slate-500"
+                        >
+                          Datum naplate
+                        </label>
+                        <input
+                          id="invoice-payment-date"
+                          type="date"
+                          value={paymentDate}
+                          onChange={(event) =>
+                            setPaymentDate(event.target.value)
+                          }
+                          className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                        />
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="invoice-payment-account"
+                          className="text-xs font-semibold uppercase tracking-wide text-slate-500"
+                        >
+                          Način naplate
+                        </label>
+                        <select
+                          id="invoice-payment-account"
+                          value={paymentAccount}
+                          onChange={(event) =>
+                            setPaymentAccount(
+                              event.target.value as "cash" | "bank",
+                            )
+                          }
+                          className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                        >
+                          <option value="bank">Banka</option>
+                          <option value="cash">Gotovina</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label
+                          htmlFor="invoice-payment-note"
+                          className="text-xs font-semibold uppercase tracking-wide text-slate-500"
+                        >
+                          Napomena
+                        </label>
+                        <textarea
+                          id="invoice-payment-note"
+                          rows={3}
+                          value={paymentNote}
+                          onChange={(event) =>
+                            setPaymentNote(event.target.value)
+                          }
+                          placeholder="Opcionalna napomena o naplati"
+                          className="mt-2 w-full resize-y rounded-xl border border-slate-300 bg-white px-3 py-2.5 text-sm text-slate-900 outline-none transition focus:border-slate-500"
+                        />
+                      </div>
+
+                      {createPaymentMutation.isError && (
+                        <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+                          {getApiErrorDetail(
+                            createPaymentMutation.error,
+                            "Evidentiranje naplate nije uspjelo.",
+                          )}
+                        </div>
+                      )}
+
+                      <button
+                        type="button"
+                        onClick={handleCreatePayment}
+                        disabled={
+                          createPaymentMutation.isPending ||
+                          paymentDate.trim() === ""
+                        }
+                        className="w-full rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-bold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {createPaymentMutation.isPending
+                          ? "Evidentiram..."
+                          : "Evidentiraj naplatu"}
+                      </button>
+                    </div>
+                  )}
                 </div>
 
-                {invoice.is_paid ? (
-                  <p className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-800">
-                    Faktura je označena kao plaćena.
+                <div className="mt-4 space-y-2 text-xs text-slate-500">
+                  <p>
+                    Ruta:{" "}
+                    <span className="font-mono text-slate-700">
+                      /invoices/{invoice.id}
+                    </span>
                   </p>
-                ) : (
-                  <p className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                    Backend trenutno podržava promjenu samo iz neplaćena u
-                    plaćena.
+                  <p>
+                    Tenant:{" "}
+                    <span className="font-mono text-slate-700">
+                      {invoice.tenant_code}
+                    </span>
                   </p>
-                )}
-
-                {statusError && (
-                  <p className="mt-3 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                    {statusError}
-                  </p>
-                )}
-              </div>
-
-              <div className="mt-4 space-y-2 text-xs text-slate-500">
-                <p>
-                  Ruta:{" "}
-                  <span className="font-mono text-slate-700">
-                    /invoices/{invoice.id}
-                  </span>
-                </p>
-                <p>
-                  Tenant:{" "}
-                  <span className="font-mono text-slate-700">
-                    {invoice.tenant_code}
-                  </span>
-                </p>
-              </div>
-            </Card>
+                </div>
+              </Card>
           </div>
 
           {invoice.note && (

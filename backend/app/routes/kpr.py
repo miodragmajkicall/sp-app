@@ -172,6 +172,7 @@ def _collect_kpr_rows(
     # ---------------------------
     cash_filters = [
         CashEntry.tenant_code == tenant_code,
+        CashEntry.invoice_id.is_(None),
         CashEntry.input_invoice_id.is_(None),
     ]
     if year is not None:

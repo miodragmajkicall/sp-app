@@ -274,10 +274,21 @@ def test_legacy_null_snapshot_remains_readable_and_markable_paid() -> None:
     for field in ISSUER_FIELDS:
         assert detail.json()[field] is None
 
-    marked = client.post(
-        f"/invoices/{created.json()['id']}/mark-paid",
+    payment = client.post(
+        f"/invoices/{created.json()['id']}/payment",
+        headers=headers,
+        json={
+            "payment_date": created.json()["issue_date"],
+            "account": "bank",
+        },
+    )
+    assert payment.status_code == 201, payment.text
+
+    detail_after_payment = client.get(
+        f"/invoices/{created.json()['id']}",
         headers=headers,
     )
-    assert marked.status_code == 200
+    assert detail_after_payment.status_code == 200
+    assert detail_after_payment.json()["is_paid"] is True
     for field in ISSUER_FIELDS:
-        assert marked.json()[field] is None
+        assert detail_after_payment.json()[field] is None

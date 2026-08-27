@@ -516,11 +516,18 @@ def test_invoice_requests_do_not_execute_runtime_ddl() -> None:
 
         listed = client.get("/invoices/list", headers=headers)
         exported = client.get("/invoices/export", headers=headers)
-        marked = client.post(f"/invoices/{invoice_id}/mark-paid", headers=headers)
+        payment = client.post(
+            f"/invoices/{invoice_id}/payment",
+            headers=headers,
+            json={
+                "payment_date": created.json()["issue_date"],
+                "account": "bank",
+            },
+        )
 
         assert listed.status_code == 200, listed.text
         assert exported.status_code == 200, exported.text
-        assert marked.status_code == 200, marked.text
+        assert payment.status_code == 201, payment.text
     finally:
         event.remove(engine, "before_cursor_execute", record_statement)
 

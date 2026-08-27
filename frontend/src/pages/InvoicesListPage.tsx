@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import {
   AlertTriangle,
   ArrowRight,
@@ -18,7 +18,6 @@ import {
 
 import {
   fetchInvoicesList,
-  markInvoicePaid,
   exportInvoicesExcel,
   type InvoicesListParams,
 } from "../services/invoicesApi";
@@ -155,7 +154,6 @@ function StatusBadge({ invoice }: { invoice: InvoiceRowItem }) {
 
 export default function InvoicesListPage() {
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
 
   const [year, setYear] = useState<number | undefined>(CURRENT_YEAR);
   const [month, setMonth] = useState<number | undefined>(undefined);
@@ -176,7 +174,7 @@ export default function InvoicesListPage() {
     [year, month, buyerQuery, unpaidOnly, page, pageSize],
   );
 
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery<
+  const { data, isLoading, isError, error, isFetching } = useQuery<
     InvoiceListResponse,
     Error
   >({
@@ -239,27 +237,6 @@ export default function InvoicesListPage() {
     setPage(1);
   }
 
-  async function handleMarkPaid(invoice: InvoiceRowItem) {
-    if (
-      !window.confirm(
-        `Označiti fakturu ${invoice.number ?? `#${invoice.id}`} kao plaćenu?`,
-      )
-    ) {
-      return;
-    }
-
-    try {
-      await markInvoicePaid(invoice.id);
-      await refetch();
-      queryClient.invalidateQueries({
-        queryKey: ["invoice-detail", invoice.id],
-      });
-      queryClient.invalidateQueries({ queryKey: ["dashboard"] });
-    } catch (err) {
-      console.error(err);
-      alert("Greška pri označavanju fakture kao plaćene.");
-    }
-  }
 
   async function handleExport() {
     try {
@@ -653,18 +630,8 @@ export default function InvoicesListPage() {
                           state={{ invoice }}
                           className="rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
                         >
-                          Detalji
+                          {invoice.is_paid ? "Detalji" : "Detalji / naplata"}
                         </Link>
-
-                        {!invoice.is_paid && (
-                          <button
-                            type="button"
-                            onClick={() => handleMarkPaid(invoice)}
-                            className="rounded-lg bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-100 hover:bg-emerald-100"
-                          >
-                            Označi plaćenu
-                          </button>
-                        )}
                       </div>
                     </td>
                   </tr>

@@ -539,6 +539,7 @@ def _aggregate_monthly_income_and_expense(
 
     stmt_cash = select(income_expr.label("cash_income"), expense_expr.label("cash_expense")).where(
         CashEntry.tenant_code == tenant_code,
+        CashEntry.invoice_id.is_(None),
         CashEntry.input_invoice_id.is_(None),
         CashEntry.entry_date >= month_start,
         CashEntry.entry_date < month_end,

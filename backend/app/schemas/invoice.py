@@ -208,6 +208,47 @@ class InvoiceCreate(InvoiceBase):
             raise ValueError("due_date must be on or after issue_date")
         return self
 
+# ============================================================
+#  INVOICE PAYMENT
+# ============================================================
+
+
+class InvoicePaymentCreate(BaseModel):
+    """
+    Payload za evidentiranje punog plaćanja izlazne fakture.
+
+    Iznos se ne prima od klijenta nego ga backend uzima sa fakture.
+    """
+
+    model_config = BaseConfig
+
+    payment_date: date = Field(
+        ...,
+        description="Datum naplate izlazne fakture (YYYY-MM-DD).",
+    )
+    account: Literal["cash", "bank"] = Field(
+        ...,
+        description="Način naplate: cash = kasa, bank = banka.",
+    )
+    note: Optional[str] = Field(
+        None,
+        description="Opcionalna napomena uz naplatu.",
+    )
+
+
+class InvoicePaymentRead(BaseModel):
+    """
+    Evidentirano puno plaćanje izlazne fakture.
+    """
+
+    model_config = BaseConfig
+
+    id: int = Field(..., description="ID povezanog CashEntry zapisa.")
+    payment_date: date = Field(..., description="Datum naplate.")
+    account: Literal["cash", "bank"] = Field(..., description="Kasa ili banka.")
+    amount: Decimal = Field(..., description="Naplaćeni iznos.")
+    note: Optional[str] = Field(None, description="Napomena uz naplatu.")
+
 
 class InvoiceRead(InvoiceBase):
     """Model koji se vraća prema klijentu."""

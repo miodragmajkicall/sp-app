@@ -23,14 +23,24 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import Invoice, InvoiceItem, TenantAsset, TenantProfileSettings
+from app.models import (
+    CashEntry,
+    FinalizedPeriodModificationError,
+    Invoice,
+    InvoiceItem,
+    TenantAsset,
+    TenantProfileSettings,
+)
 from app.routes.settings import MAX_LOGO_BYTES, TENANT_ASSETS_ROOT
 from app.schemas.invoice import (
     InvoiceCreate,
+    InvoicePaymentCreate,
+    InvoicePaymentRead,
     InvoiceRead,
     InvoiceRowItem,
     InvoiceListResponse,
 )
+from app.services.period_guard import ensure_period_open
 from app.tenant_security import require_tenant_code, ensure_tenant_exists
 from app.services.pdf_invoice import (
     UnsupportedPdfGlyphError,
@@ -722,61 +732,207 @@ def export_invoices(
 
 
 # ======================================================
-#  MARK PAID
+#  PAYMENT
+# ======================================================
+
+
+@router.post(
+    "/invoices/{invoice_id}/payment",
+    response_model=InvoicePaymentRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Evidentiraj puno plaćanje izlazne fakture",
+)
+def create_invoice_payment(
+    invoice_id: int,
+    payload: InvoicePaymentCreate,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem izlazna faktura mora pripadati.",
+    ),
+) -> InvoicePaymentRead:
+    tenant = _require_tenant(x_tenant_code)
+
+    invoice = db.execute(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.tenant_code == tenant,
+        )
+    ).scalars().first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    existing_payment_id = db.execute(
+        select(CashEntry.id).where(
+            CashEntry.tenant_code == tenant,
+            CashEntry.invoice_id == invoice_id,
+        )
+    ).scalar_one_or_none()
+    if existing_payment_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail="Invoice payment already exists",
+        )
+
+    try:
+        ensure_period_open(
+            db,
+            tenant_code=tenant,
+            period_date=payload.payment_date,
+        )
+    except FinalizedPeriodModificationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    payment = CashEntry(
+        tenant_code=tenant,
+        entry_date=payload.payment_date,
+        kind="income",
+        amount=invoice.total_amount,
+        account=payload.account,
+        invoice_id=invoice.id,
+        input_invoice_id=None,
+        description=payload.note,
+    )
+
+    db.add(payment)
+    invoice.is_paid = True
+    db.add(invoice)
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Invoice payment already exists",
+        )
+
+    db.refresh(payment)
+
+    return InvoicePaymentRead(
+        id=payment.id,
+        payment_date=payment.entry_date,
+        account=payment.account,
+        amount=payment.amount,
+        note=payment.description,
+    )
+
+
+@router.get(
+    "/invoices/{invoice_id}/payment",
+    response_model=InvoicePaymentRead,
+    summary="Dohvati evidentirano plaćanje izlazne fakture",
+)
+def get_invoice_payment(
+    invoice_id: int,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem izlazna faktura mora pripadati.",
+    ),
+) -> InvoicePaymentRead:
+    tenant = _require_tenant(x_tenant_code)
+
+    invoice = db.execute(
+        select(Invoice.id).where(
+            Invoice.id == invoice_id,
+            Invoice.tenant_code == tenant,
+        )
+    ).scalar_one_or_none()
+    if invoice is None:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    payment = db.execute(
+        select(CashEntry).where(
+            CashEntry.tenant_code == tenant,
+            CashEntry.invoice_id == invoice_id,
+        )
+    ).scalars().first()
+    if not payment:
+        raise HTTPException(
+            status_code=404,
+            detail="Invoice payment not found",
+        )
+
+    return InvoicePaymentRead(
+        id=payment.id,
+        payment_date=payment.entry_date,
+        account=payment.account,
+        amount=payment.amount,
+        note=payment.description,
+    )
+
+
+@router.delete(
+    "/invoices/{invoice_id}/payment",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Poništi evidentirano plaćanje izlazne fakture",
+)
+def delete_invoice_payment(
+    invoice_id: int,
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+        description="Šifra tenanta kojem izlazna faktura mora pripadati.",
+    ),
+) -> Response:
+    tenant = _require_tenant(x_tenant_code)
+
+    invoice = db.execute(
+        select(Invoice).where(
+            Invoice.id == invoice_id,
+            Invoice.tenant_code == tenant,
+        )
+    ).scalars().first()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+
+    payment = db.execute(
+        select(CashEntry).where(
+            CashEntry.tenant_code == tenant,
+            CashEntry.invoice_id == invoice_id,
+        )
+    ).scalars().first()
+    if not payment:
+        raise HTTPException(
+            status_code=404,
+            detail="Invoice payment not found",
+        )
+
+    try:
+        ensure_period_open(
+            db,
+            tenant_code=tenant,
+            period_date=payment.entry_date,
+        )
+    except FinalizedPeriodModificationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    db.delete(payment)
+    invoice.is_paid = False
+    db.add(invoice)
+
+    try:
+        db.commit()
+    except FinalizedPeriodModificationError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ======================================================
+#  LEGACY MARK PAID
 # ======================================================
 
 
 @router.post(
     "/invoices/{invoice_id}/mark-paid",
-    response_model=InvoiceRead,
-    summary="Označi fakturu kao plaćenu",
-    description=(
-        "Postavlja polje `is_paid` na `true` za fakturu određenog tenanta.\n\n"
-        "Ako je faktura već plaćena, endpoint je idempotentan – samo vraća postojeće stanje.\n"
-        "Ako faktura ne postoji ili ne pripada tenant-u, vraća se 404."
-    ),
-    responses={
-        200: {
-            "description": "Faktura je označena kao plaćena (ili je već bila plaćena).",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "id": 1,
-                        "tenant_code": "t-demo",
-                        "invoice_number": "2025-001",
-                        "issue_date": "2025-11-21",
-                        "due_date": "2025-12-21",
-                        "buyer_name": "Frizer Salon Milica",
-                        "buyer_address": "Kralja Petra I 12, Banja Luka",
-                        "total_base": "25.00",
-                        "total_vat": "4.25",
-                        "total_amount": "29.25",
-                        "is_paid": True,
-                        "items": [
-                            {
-                                "id": 10,
-                                "description": "Muško šišanje",
-                                "quantity": "1",
-                                "unit_price": "10.00",
-                                "vat_rate": "0.17",
-                                "base_amount": "10.00",
-                                "vat_amount": "1.70",
-                                "total_amount": "11.70",
-                            }
-                        ],
-                    }
-                }
-            },
-        },
-        404: {
-            "description": "Faktura ne postoji ili ne pripada datom tenant-u.",
-            "content": {
-                "application/json": {
-                    "example": {"detail": "Invoice not found"}
-                }
-            },
-        },
-    },
+    status_code=status.HTTP_409_CONFLICT,
+    summary="Legacy endpoint za status plaćanja",
 )
 def mark_invoice_paid(
     invoice_id: int,
@@ -785,24 +941,22 @@ def mark_invoice_paid(
         None,
         alias="X-Tenant-Code",
     ),
-) -> Invoice:
+) -> None:
     tenant = _require_tenant(x_tenant_code)
 
-    stmt = select(Invoice).where(
-        Invoice.id == invoice_id,
-        Invoice.tenant_code == tenant,
-    )
-    invoice = db.execute(stmt).scalars().first()
-    if not invoice:
+    invoice_id_found = db.execute(
+        select(Invoice.id).where(
+            Invoice.id == invoice_id,
+            Invoice.tenant_code == tenant,
+        )
+    ).scalar_one_or_none()
+    if invoice_id_found is None:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    if not invoice.is_paid:
-        invoice.is_paid = True
-        db.add(invoice)
-        db.commit()
-        db.refresh(invoice)
-
-    return invoice
+    raise HTTPException(
+        status_code=409,
+        detail="Invoice payments must be created through the invoice payment endpoint",
+    )
 
 
 # ======================================================
@@ -910,6 +1064,21 @@ def delete_invoice(
     obj = db.execute(stmt).scalars().first()
     if not obj:
         raise HTTPException(status_code=404, detail="Invoice not found")
+
+    linked_payment_id = db.execute(
+        select(CashEntry.id).where(
+            CashEntry.tenant_code == tenant,
+            CashEntry.invoice_id == invoice_id,
+        )
+    ).scalar_one_or_none()
+    if linked_payment_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice with an existing payment cannot be deleted; "
+                "remove the payment first"
+            ),
+        )
 
     db.delete(obj)
     db.commit()

@@ -55,6 +55,27 @@ export interface InvoiceItemDetail {
   discount_percent: number; // 0–100, ako BE ne šalje, mapiramo na 0
 }
 
+/**
+ * Payload za evidentiranje punog plaćanja izlazne fakture.
+ * Iznos se ne šalje jer ga backend uzima sa fakture.
+ */
+export interface InvoicePaymentCreatePayload {
+  payment_date: string; // YYYY-MM-DD
+  account: "cash" | "bank";
+  note?: string | null;
+}
+
+/**
+ * Evidentirano puno plaćanje izlazne fakture.
+ */
+export interface InvoicePaymentDetail {
+  id: number;
+  payment_date: string; // YYYY-MM-DD
+  account: "cash" | "bank";
+  amount: number;
+  note: string | null;
+}
+
 // Detaljna faktura (GET /invoices/{id})
 export interface InvoiceDetail {
   id: number;

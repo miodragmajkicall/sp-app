@@ -546,6 +546,15 @@ def create_cash(
             ),
         )
 
+    if data.get("invoice_id") is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice payments must be created through the "
+                "invoice payment endpoint"
+            ),
+        )
+
     data.setdefault("tenant_code", tenant)
     data.setdefault("created_at", datetime.now(timezone.utc))
 
@@ -645,12 +654,30 @@ def patch_cash(
             ),
         )
 
+    if obj.invoice_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice payments must be changed through the "
+                "invoice payment endpoint"
+            ),
+        )
+
     if "input_invoice_id" in update_data:
         raise HTTPException(
             status_code=409,
             detail=(
                 "Input invoice payments must be created through the "
                 "input invoice payment endpoint"
+            ),
+        )
+
+    if "invoice_id" in update_data:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice payments must be created through the "
+                "invoice payment endpoint"
             ),
         )
 
@@ -765,6 +792,15 @@ def delete_cash(
             detail=(
                 "Input invoice payments must be removed through the "
                 "input invoice payment endpoint"
+            ),
+        )
+
+    if obj.invoice_id is not None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Invoice payments must be removed through the "
+                "invoice payment endpoint"
             ),
         )
 

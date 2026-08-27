@@ -20,6 +20,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
     event,
+    inspect,
 )
 
 from sqlalchemy.dialects.postgresql import JSONB
@@ -123,6 +124,10 @@ class CashEntry(Base):
         UniqueConstraint(
             "input_invoice_id",
             name="uq_cash_entries_input_invoice_id",
+        ),
+        UniqueConstraint(
+            "invoice_id",
+            name="uq_cash_entries_invoice_id",
         ),
     )
 
@@ -633,6 +638,16 @@ def _ensure_month_not_finalized(obj: object, date_value: date | None) -> None:
 
 @event.listens_for(Invoice, "before_update")
 def _invoice_before_update(mapper, connection, target: Invoice) -> None:
+    state = inspect(target)
+    changed_columns = {
+        attr.key
+        for attr in state.mapper.column_attrs
+        if state.attrs[attr.key].history.has_changes()
+    }
+
+    if changed_columns == {"is_paid"}:
+        return
+
     if target.issue_date:
         _ensure_month_not_finalized(target, target.issue_date)
 

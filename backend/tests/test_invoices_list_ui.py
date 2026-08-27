@@ -133,16 +133,25 @@ def test_invoices_list_ui_unpaid_only_filter():
     inv_2 = _create_invoice(tenant_code, "002", "2025-01-15")
     inv_3 = _create_invoice(tenant_code, "003", "2025-01-20")
 
-    # označimo jednu fakturu kao plaćenu preko dedicated endpoint-a
+    # evidentiramo naplatu jedne fakture preko payment lifecycle-a
     r = httpx.post(
-        f"{BASE_URL}/invoices/{inv_2['id']}/mark-paid",
+        f"{BASE_URL}/invoices/{inv_2['id']}/payment",
+        headers=headers,
+        json={
+            "payment_date": inv_2["issue_date"],
+            "account": "bank",
+        },
+        timeout=5,
+    )
+    assert r.status_code == 201, r.text
+
+    detail = httpx.get(
+        f"{BASE_URL}/invoices/{inv_2['id']}",
         headers=headers,
         timeout=5,
     )
-    assert r.status_code == 200, r.text
-    updated = r.json()
-    assert updated["id"] == inv_2["id"]
-    assert updated["is_paid"] is True
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["is_paid"] is True
 
     # --- UNPAID ONLY ---
     r = httpx.get(

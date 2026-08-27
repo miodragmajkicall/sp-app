@@ -74,21 +74,29 @@ def _create_cash(
     return response.json()
 
 
-def test_create_accepts_same_tenant_outgoing_invoice_link(
+def test_create_rejects_same_tenant_outgoing_invoice_link(
     client: TestClient,
 ) -> None:
     headers = _headers("cash-link-valid")
     invoice_id, _ = _create_invoice_pair(headers["X-Tenant-Code"])
 
-    created = _create_cash(
-        client,
-        headers,
-        invoice_id=invoice_id,
+    response = client.post(
+        "/cash/",
+        headers=headers,
+        json=_cash_payload(invoice_id=invoice_id),
     )
 
-    assert created["invoice_id"] == invoice_id
-    assert created["input_invoice_id"] is None
+    assert response.status_code == 409, response.text
+    assert response.json() == {
+        "detail": (
+            "Invoice payments must be created through the "
+            "invoice payment endpoint"
+        )
+    }
 
+    listed = client.get("/cash/", headers=headers)
+    assert listed.status_code == 200, listed.text
+    assert listed.json() == []
 
 def test_create_rejects_input_invoice_link(client: TestClient) -> None:
     headers = _headers("cash-input-link-rejected")
@@ -126,8 +134,13 @@ def test_create_rejects_cross_tenant_outgoing_invoice_link(
         json=_cash_payload(invoice_id=invoice_id),
     )
 
-    assert response.status_code == 404, response.text
-    assert response.json() == {"detail": "Invoice not found"}
+    assert response.status_code == 409, response.text
+    assert response.json() == {
+        "detail": (
+            "Invoice payments must be created through the "
+            "invoice payment endpoint"
+        )
+    }
 
     listed = client.get("/cash/", headers=requester_headers)
     assert listed.status_code == 200, listed.text
@@ -145,11 +158,16 @@ def test_create_rejects_missing_outgoing_invoice_link(
         json=_cash_payload(invoice_id=9_999_999_999),
     )
 
-    assert response.status_code == 404, response.text
-    assert response.json() == {"detail": "Invoice not found"}
+    assert response.status_code == 409, response.text
+    assert response.json() == {
+        "detail": (
+            "Invoice payments must be created through the "
+            "invoice payment endpoint"
+        )
+    }
 
 
-def test_patch_preserves_and_unlinks_outgoing_invoice_reference(
+def test_patch_rejects_outgoing_invoice_link_and_unlink_fields(
     client: TestClient,
 ) -> None:
     headers = _headers("cash-link-patch")
@@ -162,41 +180,41 @@ def test_patch_preserves_and_unlinks_outgoing_invoice_reference(
         headers=headers,
         json={"invoice_id": invoice_id},
     )
-    assert linked.status_code == 200, linked.text
-    assert linked.json()["invoice_id"] == invoice_id
-    assert linked.json()["input_invoice_id"] is None
-
-    preserved = client.patch(
-        f"/cash/{cash_id}",
-        headers=headers,
-        json={"amount": "22.22"},
-    )
-    assert preserved.status_code == 200, preserved.text
-    assert preserved.json()["invoice_id"] == invoice_id
-    assert preserved.json()["input_invoice_id"] is None
+    assert linked.status_code == 409, linked.text
+    assert linked.json() == {
+        "detail": (
+            "Invoice payments must be created through the "
+            "invoice payment endpoint"
+        )
+    }
 
     unlinked = client.patch(
         f"/cash/{cash_id}",
         headers=headers,
         json={"invoice_id": None},
     )
-    assert unlinked.status_code == 200, unlinked.text
-    assert unlinked.json()["invoice_id"] is None
-    assert unlinked.json()["input_invoice_id"] is None
+    assert unlinked.status_code == 409, unlinked.text
+    assert unlinked.json() == {
+        "detail": (
+            "Invoice payments must be created through the "
+            "invoice payment endpoint"
+        )
+    }
+
+    stored = client.get(f"/cash/{cash_id}", headers=headers)
+    assert stored.status_code == 200, stored.text
+    assert stored.json()["invoice_id"] is None
+    assert stored.json()["input_invoice_id"] is None
 
 
 def test_patch_rejects_input_invoice_link_and_preserves_existing_data(
     client: TestClient,
 ) -> None:
     headers = _headers("cash-input-link-patch")
-    invoice_id, input_invoice_id = _create_invoice_pair(
+    _, input_invoice_id = _create_invoice_pair(
         headers["X-Tenant-Code"]
     )
-    created = _create_cash(
-        client,
-        headers,
-        invoice_id=invoice_id,
-    )
+    created = _create_cash(client, headers)
     cash_id = created["id"]
 
     rejected = client.patch(
@@ -215,7 +233,7 @@ def test_patch_rejects_input_invoice_link_and_preserves_existing_data(
 
     stored = client.get(f"/cash/{cash_id}", headers=headers)
     assert stored.status_code == 200, stored.text
-    assert stored.json()["invoice_id"] == invoice_id
+    assert stored.json()["invoice_id"] is None
     assert stored.json()["input_invoice_id"] is None
 
 
@@ -223,23 +241,19 @@ def test_patch_rejects_input_invoice_link_and_preserves_existing_data(
     "use_missing",
     [False, True],
 )
-def test_rejected_outgoing_invoice_patch_preserves_existing_link(
+def test_generic_cash_patch_rejects_outgoing_invoice_reference(
     client: TestClient,
     use_missing: bool,
 ) -> None:
     headers = _headers("cash-link-safe")
     other_headers = _headers("cash-link-other")
 
-    invoice_id, _ = _create_invoice_pair(headers["X-Tenant-Code"])
+    _, _ = _create_invoice_pair(headers["X-Tenant-Code"])
     other_invoice_id, _ = _create_invoice_pair(
         other_headers["X-Tenant-Code"]
     )
 
-    created = _create_cash(
-        client,
-        headers,
-        invoice_id=invoice_id,
-    )
+    created = _create_cash(client, headers)
     cash_id = created["id"]
 
     invalid_id = 9_999_999_999 if use_missing else other_invoice_id
@@ -250,10 +264,88 @@ def test_rejected_outgoing_invoice_patch_preserves_existing_link(
         json={"invoice_id": invalid_id},
     )
 
-    assert rejected.status_code == 404, rejected.text
-    assert rejected.json() == {"detail": "Invoice not found"}
+    assert rejected.status_code == 409, rejected.text
+    assert rejected.json() == {
+        "detail": (
+            "Invoice payments must be created through the "
+            "invoice payment endpoint"
+        )
+    }
 
     stored = client.get(f"/cash/{cash_id}", headers=headers)
     assert stored.status_code == 200, stored.text
-    assert stored.json()["invoice_id"] == invoice_id
+    assert stored.json()["invoice_id"] is None
     assert stored.json()["input_invoice_id"] is None
+
+def _create_output_payment(
+    client: TestClient,
+    headers: dict[str, str],
+    invoice_id: int,
+) -> dict:
+    response = client.post(
+        f"/invoices/{invoice_id}/payment",
+        headers=headers,
+        json={
+            "payment_date": "2025-11-07",
+            "account": "bank",
+            "note": "Protected output payment",
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_output_payment_cannot_be_patched_through_generic_cash(
+    client: TestClient,
+) -> None:
+    headers = _headers("cash-output-payment-patch")
+    invoice_id, _ = _create_invoice_pair(headers["X-Tenant-Code"])
+    payment = _create_output_payment(client, headers, invoice_id)
+
+    response = client.patch(
+        f"/cash/{payment['id']}",
+        headers=headers,
+        json={"amount": "999.99"},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json() == {
+        "detail": (
+            "Invoice payments must be changed through the "
+            "invoice payment endpoint"
+        )
+    }
+
+    stored = client.get(
+        f"/invoices/{invoice_id}/payment",
+        headers=headers,
+    )
+    assert stored.status_code == 200, stored.text
+    assert Decimal(stored.json()["amount"]) == Decimal("10.00")
+
+
+def test_output_payment_cannot_be_deleted_through_generic_cash(
+    client: TestClient,
+) -> None:
+    headers = _headers("cash-output-payment-delete")
+    invoice_id, _ = _create_invoice_pair(headers["X-Tenant-Code"])
+    payment = _create_output_payment(client, headers, invoice_id)
+
+    response = client.delete(
+        f"/cash/{payment['id']}",
+        headers=headers,
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json() == {
+        "detail": (
+            "Invoice payments must be removed through the "
+            "invoice payment endpoint"
+        )
+    }
+
+    stored = client.get(
+        f"/invoices/{invoice_id}/payment",
+        headers=headers,
+    )
+    assert stored.status_code == 200, stored.text

@@ -106,11 +106,15 @@ def test_invoice_export_quotes_business_text_and_formats_values() -> None:
             issue_date="2091-02-11",
         ),
     )
-    marked = client.post(
-        f"/invoices/{paid['id']}/mark-paid",
+    payment = client.post(
+        f"/invoices/{paid['id']}/payment",
         headers=headers,
+        json={
+            "payment_date": paid["issue_date"],
+            "account": "bank",
+        },
     )
-    assert marked.status_code == 200, marked.text
+    assert payment.status_code == 201, payment.text
 
     response = client.get("/invoices/export", headers=headers)
     parsed = _parse_export(response)

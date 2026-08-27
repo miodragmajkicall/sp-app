@@ -5,6 +5,8 @@ import type {
   InvoiceRowItem,
   InvoiceDetail,
   InvoiceCreatePayload,
+  InvoicePaymentCreatePayload,
+  InvoicePaymentDetail,
 } from "../types/invoice";
 
 export interface InvoicesListParams {
@@ -177,14 +179,56 @@ export async function createInvoice(
   return mapInvoiceDetail(response.data);
 }
 
+function mapInvoicePaymentDetail(raw: any): InvoicePaymentDetail {
+  return {
+    id: raw.id,
+    payment_date: raw.payment_date,
+    account: raw.account,
+    amount: toNumberOrZero(raw.amount),
+    note: raw.note ?? null,
+  };
+}
+
 /**
- * Označavanje fakture kao plaćene – POST /invoices/{id}/mark-paid
+ * Dohvat evidentirane naplate izlazne fakture.
+ * Backend endpoint: GET /invoices/{id}/payment
  */
-export async function markInvoicePaid(
+export async function getInvoicePayment(
   id: number,
-): Promise<InvoiceDetail> {
-  const response = await apiClient.post(`/invoices/${id}/mark-paid`);
-  return mapInvoiceDetail(response.data);
+): Promise<InvoicePaymentDetail> {
+  const response = await apiClient.get<any>(`/invoices/${id}/payment`);
+  return mapInvoicePaymentDetail(response.data);
+}
+
+/**
+ * Evidentiranje pune naplate izlazne fakture.
+ * Backend endpoint: POST /invoices/{id}/payment
+ * Iznos određuje backend iz ukupnog iznosa fakture.
+ */
+export async function createInvoicePayment(
+  id: number,
+  payload: InvoicePaymentCreatePayload,
+): Promise<InvoicePaymentDetail> {
+  const response = await apiClient.post<any>(
+    `/invoices/${id}/payment`,
+    {
+      payment_date: payload.payment_date,
+      account: payload.account,
+      note: payload.note ?? null,
+    },
+  );
+
+  return mapInvoicePaymentDetail(response.data);
+}
+
+/**
+ * Poništavanje evidentirane naplate izlazne fakture.
+ * Backend endpoint: DELETE /invoices/{id}/payment
+ */
+export async function deleteInvoicePayment(
+  id: number,
+): Promise<void> {
+  await apiClient.delete(`/invoices/${id}/payment`);
 }
 
 /**

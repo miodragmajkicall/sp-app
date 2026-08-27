@@ -142,11 +142,15 @@ def test_list_filters_and_totals_share_the_filtered_set() -> None:
         issue_date="2091-01-20",
         buyer_name="Beta Services",
     )
-    marked = client.post(
-        f"/invoices/{beta_january['id']}/mark-paid",
+    payment = client.post(
+        f"/invoices/{beta_january['id']}/payment",
         headers=headers,
+        json={
+            "payment_date": beta_january["issue_date"],
+            "account": "bank",
+        },
     )
-    assert marked.status_code == 200, marked.text
+    assert payment.status_code == 201, payment.text
 
     january = client.get(
         "/invoices/list",
@@ -227,28 +231,47 @@ def test_detail_contract_and_tenant_isolation() -> None:
     assert missing_header.status_code == 400
 
 
-def test_mark_paid_is_visible_idempotent_and_tenant_scoped() -> None:
+def test_payment_is_visible_duplicate_rejected_and_tenant_scoped() -> None:
     owner = _headers("paid-owner")
     other = _headers("paid-other")
     created = _create_invoice(owner)
     invoice_id = created["id"]
     missing_id = invoice_id + 1_000_000_000
+    payload = {
+        "payment_date": created["issue_date"],
+        "account": "bank",
+    }
 
-    first = client.post(f"/invoices/{invoice_id}/mark-paid", headers=owner)
-    second = client.post(f"/invoices/{invoice_id}/mark-paid", headers=owner)
+    first = client.post(
+        f"/invoices/{invoice_id}/payment",
+        headers=owner,
+        json=payload,
+    )
+    second = client.post(
+        f"/invoices/{invoice_id}/payment",
+        headers=owner,
+        json=payload,
+    )
     detail = client.get(f"/invoices/{invoice_id}", headers=owner)
     listed = client.get("/invoices/list", headers=owner)
     cross_tenant = client.post(
-        f"/invoices/{invoice_id}/mark-paid",
+        f"/invoices/{invoice_id}/payment",
         headers=other,
+        json=payload,
     )
-    missing = client.post(f"/invoices/{missing_id}/mark-paid", headers=owner)
-    missing_header = client.post(f"/invoices/{invoice_id}/mark-paid")
+    missing = client.post(
+        f"/invoices/{missing_id}/payment",
+        headers=owner,
+        json=payload,
+    )
+    missing_header = client.post(
+        f"/invoices/{invoice_id}/payment",
+        json=payload,
+    )
 
-    assert first.status_code == 200, first.text
-    assert second.status_code == 200, second.text
-    assert first.json()["is_paid"] is True
-    assert second.json()["is_paid"] is True
+    assert first.status_code == 201, first.text
+    assert second.status_code == 409, second.text
+    assert second.json() == {"detail": "Invoice payment already exists"}
     assert detail.status_code == 200
     assert detail.json()["is_paid"] is True
     listed_row = next(
