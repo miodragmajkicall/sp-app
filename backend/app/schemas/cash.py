@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal, Optional, List
 
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 from pydantic.config import ConfigDict
 
 
@@ -16,13 +16,17 @@ BaseConfig = ConfigDict(from_attributes=True, populate_by_name=True)
 
 class CashEntryCreate(BaseModel):
     """
-    Ulazni model za kreiranje pojedinačnog cash unosa (/cash, POST).
+    Ulazni model za kreiranje pojedinačnog ručnog cash unosa (/cash, POST).
 
-    Ovaj model predstavlja jedan finansijski događaj (prihod ili rashod).
-    Tenant se određuje preko X-Tenant-Code headera i zato se ne pojavljuje u tijelu zahtjeva.
+    Tenant se određuje preko X-Tenant-Code headera.
+    Invoice payment zapisima ne upravlja generic Cash CRUD.
     """
 
-    model_config = BaseConfig
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+        extra="forbid",
+    )
 
     entry_date: date = Field(
         ...,
@@ -55,19 +59,6 @@ class CashEntryCreate(BaseModel):
         examples=["cash"],
     )
 
-    # Opcionalna veza na izlaznu/ulaznu fakturu
-    invoice_id: Optional[int] = Field(
-        default=None,
-        description="ID izlazne fakture (invoices.id) ako je unos vezan za izlaznu fakturu.",
-        examples=[101],
-    )
-    input_invoice_id: Optional[int] = Field(
-        default=None,
-        description="ID ulazne fakture (input_invoices.id) ako je unos vezan za ulaznu fakturu.",
-        examples=[55],
-    )
-
-    # Klijentu izlažemo 'note', ali u bazi je 'description'.
     description: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("note", "description"),
@@ -82,12 +73,18 @@ class CashEntryCreate(BaseModel):
 
 class CashEntryUpdate(BaseModel):
     """
-    Ulazni model za djelimično ažuriranje postojećeg cash unosa (/cash/{id}, PATCH).
+    Ulazni model za djelimično ažuriranje postojećeg ručnog cash unosa
+    (/cash/{id}, PATCH).
 
     Sva polja su opcionalna – šalju se samo ona koja treba izmijeniti.
+    Invoice linkovima ne upravlja generic Cash CRUD.
     """
 
-    model_config = BaseConfig
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+        extra="forbid",
+    )
 
     entry_date: Optional[date] = Field(
         None,
@@ -120,17 +117,6 @@ class CashEntryUpdate(BaseModel):
         examples=["bank"],
     )
 
-    invoice_id: Optional[int] = Field(
-        default=None,
-        description="Ažurirani ID izlazne fakture (ako se mijenja).",
-        examples=[101],
-    )
-    input_invoice_id: Optional[int] = Field(
-        default=None,
-        description="Ažurirani ID ulazne fakture (ako se mijenja).",
-        examples=[55],
-    )
-
     description: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("note", "description"),
@@ -141,6 +127,13 @@ class CashEntryUpdate(BaseModel):
         ),
         examples=["Ispravka prethodnog zapisa"],
     )
+
+    @field_validator("entry_date", "kind", "amount", "account", mode="before")
+    @classmethod
+    def reject_null_for_required_fields(cls, value):
+        if value is None:
+            raise ValueError("Field cannot be null")
+        return value
 
 
 class CashEntryRead(BaseModel):

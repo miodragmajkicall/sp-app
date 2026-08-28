@@ -74,6 +74,17 @@ def _create_cash(
     return response.json()
 
 
+def _assert_extra_forbidden(response, field_name: str) -> None:
+    assert response.status_code == 422, response.text
+
+    details = response.json()["detail"]
+    assert any(
+        item.get("type") == "extra_forbidden"
+        and item.get("loc") == ["body", field_name]
+        for item in details
+    ), response.text
+
+
 def test_create_rejects_same_tenant_outgoing_invoice_link(
     client: TestClient,
 ) -> None:
@@ -86,13 +97,7 @@ def test_create_rejects_same_tenant_outgoing_invoice_link(
         json=_cash_payload(invoice_id=invoice_id),
     )
 
-    assert response.status_code == 409, response.text
-    assert response.json() == {
-        "detail": (
-            "Invoice payments must be created through the "
-            "invoice payment endpoint"
-        )
-    }
+    _assert_extra_forbidden(response, "invoice_id")
 
     listed = client.get("/cash/", headers=headers)
     assert listed.status_code == 200, listed.text
@@ -108,13 +113,7 @@ def test_create_rejects_input_invoice_link(client: TestClient) -> None:
         json=_cash_payload(input_invoice_id=input_invoice_id),
     )
 
-    assert response.status_code == 409, response.text
-    assert response.json() == {
-        "detail": (
-            "Input invoice payments must be created through the "
-            "input invoice payment endpoint"
-        )
-    }
+    _assert_extra_forbidden(response, "input_invoice_id")
 
     listed = client.get("/cash/", headers=headers)
     assert listed.status_code == 200, listed.text
@@ -134,13 +133,7 @@ def test_create_rejects_cross_tenant_outgoing_invoice_link(
         json=_cash_payload(invoice_id=invoice_id),
     )
 
-    assert response.status_code == 409, response.text
-    assert response.json() == {
-        "detail": (
-            "Invoice payments must be created through the "
-            "invoice payment endpoint"
-        )
-    }
+    _assert_extra_forbidden(response, "invoice_id")
 
     listed = client.get("/cash/", headers=requester_headers)
     assert listed.status_code == 200, listed.text
@@ -158,13 +151,7 @@ def test_create_rejects_missing_outgoing_invoice_link(
         json=_cash_payload(invoice_id=9_999_999_999),
     )
 
-    assert response.status_code == 409, response.text
-    assert response.json() == {
-        "detail": (
-            "Invoice payments must be created through the "
-            "invoice payment endpoint"
-        )
-    }
+    _assert_extra_forbidden(response, "invoice_id")
 
 
 def test_patch_rejects_outgoing_invoice_link_and_unlink_fields(
@@ -180,26 +167,14 @@ def test_patch_rejects_outgoing_invoice_link_and_unlink_fields(
         headers=headers,
         json={"invoice_id": invoice_id},
     )
-    assert linked.status_code == 409, linked.text
-    assert linked.json() == {
-        "detail": (
-            "Invoice payments must be created through the "
-            "invoice payment endpoint"
-        )
-    }
+    _assert_extra_forbidden(linked, "invoice_id")
 
     unlinked = client.patch(
         f"/cash/{cash_id}",
         headers=headers,
         json={"invoice_id": None},
     )
-    assert unlinked.status_code == 409, unlinked.text
-    assert unlinked.json() == {
-        "detail": (
-            "Invoice payments must be created through the "
-            "invoice payment endpoint"
-        )
-    }
+    _assert_extra_forbidden(unlinked, "invoice_id")
 
     stored = client.get(f"/cash/{cash_id}", headers=headers)
     assert stored.status_code == 200, stored.text
@@ -223,13 +198,7 @@ def test_patch_rejects_input_invoice_link_and_preserves_existing_data(
         json={"input_invoice_id": input_invoice_id},
     )
 
-    assert rejected.status_code == 409, rejected.text
-    assert rejected.json() == {
-        "detail": (
-            "Input invoice payments must be created through the "
-            "input invoice payment endpoint"
-        )
-    }
+    _assert_extra_forbidden(rejected, "input_invoice_id")
 
     stored = client.get(f"/cash/{cash_id}", headers=headers)
     assert stored.status_code == 200, stored.text
@@ -264,13 +233,7 @@ def test_generic_cash_patch_rejects_outgoing_invoice_reference(
         json={"invoice_id": invalid_id},
     )
 
-    assert rejected.status_code == 409, rejected.text
-    assert rejected.json() == {
-        "detail": (
-            "Invoice payments must be created through the "
-            "invoice payment endpoint"
-        )
-    }
+    _assert_extra_forbidden(rejected, "invoice_id")
 
     stored = client.get(f"/cash/{cash_id}", headers=headers)
     assert stored.status_code == 200, stored.text

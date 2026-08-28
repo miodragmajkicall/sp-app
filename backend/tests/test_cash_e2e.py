@@ -327,3 +327,49 @@ def test_cash_list_tenant_isolation():
     ids_b = {row["id"] for row in rows_b}
     assert id_b in ids_b
     assert id_a not in ids_b
+
+
+def test_cash_patch_null_contract():
+    """
+    PATCH contract:
+    - obavezna DB polja ne smiju biti eksplicitno null;
+    - note smije biti null i time se postojeća napomena briše.
+    """
+    tenant_code = "t-cash-patch-null"
+    headers = {"X-Tenant-Code": tenant_code}
+
+    _clear_tenant_cash(tenant_code)
+
+    r = client.post(
+        "/cash/",
+        json={
+            "entry_date": "2025-11-17",
+            "kind": "income",
+            "amount": "75.00",
+            "account": "bank",
+            "note": "note to clear",
+        },
+        headers=headers,
+    )
+    assert r.status_code == 201, r.text
+    cash_id = r.json()["id"]
+
+    for field_name in ("entry_date", "kind", "amount", "account"):
+        r = client.patch(
+            f"/cash/{cash_id}",
+            json={field_name: None},
+            headers=headers,
+        )
+
+        assert r.status_code == 422, (
+            f"{field_name} unexpectedly accepted null: {r.text}"
+        )
+
+    r = client.patch(
+        f"/cash/{cash_id}",
+        json={"note": None},
+        headers=headers,
+    )
+
+    assert r.status_code == 200, r.text
+    assert r.json()["note"] is None
