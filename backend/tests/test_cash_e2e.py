@@ -373,3 +373,107 @@ def test_cash_patch_null_contract():
 
     assert r.status_code == 200, r.text
     assert r.json()["note"] is None
+
+def test_cash_list_canonical_contract_and_filters():
+    tenant_code = "t-cash-canonical-list"
+    headers = {"X-Tenant-Code": tenant_code}
+
+    _clear_tenant_cash(tenant_code)
+
+    payloads = [
+        {
+            "entry_date": "2025-11-01",
+            "kind": "income",
+            "amount": "100.00",
+            "account": "cash",
+            "note": "cash-income",
+        },
+        {
+            "entry_date": "2025-11-02",
+            "kind": "expense",
+            "amount": "40.00",
+            "account": "bank",
+            "note": "bank-expense",
+        },
+        {
+            "entry_date": "2025-11-03",
+            "kind": "income",
+            "amount": "60.00",
+            "account": "bank",
+            "note": "bank-income",
+        },
+    ]
+
+    created = []
+    for payload in payloads:
+        r = client.post("/cash/", json=payload, headers=headers)
+        assert r.status_code == 201, r.text
+        created.append(r.json())
+
+    r = client.get(
+        "/cash/list",
+        params={"limit": 2, "offset": 0},
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+
+    data = r.json()
+    assert data["total"] == 3
+    assert data["limit"] == 2
+    assert data["offset"] == 0
+    assert len(data["items"]) == 2
+
+    assert [row["id"] for row in data["items"]] == [
+        created[2]["id"],
+        created[1]["id"],
+    ]
+
+    manual = data["items"][0]
+    assert manual["source_type"] == "manual"
+    assert manual["source_document_id"] is None
+    assert manual["source_document_number"] is None
+    assert manual["source_party_name"] is None
+
+    r = client.get(
+        "/cash/list",
+        params={
+            "date_from": "2025-11-02",
+            "date_to": "2025-11-03",
+            "account": "bank",
+            "kind": "income",
+            "source_type": "manual",
+        },
+        headers=headers,
+    )
+    assert r.status_code == 200, r.text
+
+    data = r.json()
+    assert data["total"] == 1
+    assert len(data["items"]) == 1
+    assert data["items"][0]["id"] == created[2]["id"]
+
+
+def test_cash_list_canonical_validation():
+    headers = {"X-Tenant-Code": "t-cash-list-validation"}
+
+    invalid_queries = [
+        {"kind": "invalid"},
+        {"account": "invalid"},
+        {"source_type": "invalid"},
+        {"month": 11},
+        {
+            "date_from": "2025-11-30",
+            "date_to": "2025-11-01",
+        },
+    ]
+
+    for params in invalid_queries:
+        r = client.get(
+            "/cash/list",
+            params=params,
+            headers=headers,
+        )
+
+        assert r.status_code == 422, (
+            f"Query unexpectedly accepted: {params!r}: {r.text}"
+        )

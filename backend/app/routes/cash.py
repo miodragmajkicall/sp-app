@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
-from sqlalchemy import case, func, select
+from sqlalchemy import and_, case, func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -308,14 +308,11 @@ def list_cash(
 @router.get(
     "/list",
     response_model=CashListResponse,
-    summary="Lista cash unosa za UI tabelu",
+    summary="Kanonska paginirana Cash/Bank lista",
     description=(
-        "Vraća objekt sa poljima:\n"
-        "- `total`: ukupan broj zapisa koji zadovoljavaju filtere,\n"
-        "- `items`: lista redova za UI tabelu.\n\n"
-        "Podržava filtere po godini/mjesecu (`year`, `month`) i vrsti unosa "
-        "(`kind` = `income` ili `expense`), kao i paginaciju putem `limit`/`offset`.\n\n"
-        "Ovo je specijalizovan endpoint za frontend (tabela u UI-ju)."
+        "Vraća stvarna novčana kretanja za tenanta uz server-side filtere, "
+        "paginaciju i poslovni izvor zapisa. "
+        "`year`/`month` ostaju podržani radi kompatibilnosti."
     ),
 )
 def list_cash_ui(
@@ -325,71 +322,196 @@ def list_cash_ui(
         alias="X-Tenant-Code",
         description="Šifra tenanta čije unose vraćamo.",
     ),
+    date_from: Optional[date] = Query(
+        None,
+        description="Početni datum filtera, uključivo.",
+    ),
+    date_to: Optional[date] = Query(
+        None,
+        description="Završni datum filtera, uključivo.",
+    ),
     year: Optional[int] = Query(
         None,
         ge=1900,
         le=2100,
-        description="Filter po godini (na osnovu `entry_date`).",
-        examples=[2025],
+        description="Kompatibilni filter po godini.",
     ),
     month: Optional[int] = Query(
         None,
         ge=1,
         le=12,
-        description="Filter po mjesecu (1–12, na osnovu `entry_date`).",
-        examples=[1],
+        description="Kompatibilni filter po mjesecu; zahtijeva `year`.",
     ),
-    kind: Optional[str] = Query(
+    kind: Optional[Literal["income", "expense"]] = Query(
         None,
-        description="Filter po vrsti unosa: `income` ili `expense`.",
-        examples=["income"],
+        description="Filter po vrsti novčanog kretanja.",
+    ),
+    account: Optional[Literal["cash", "bank"]] = Query(
+        None,
+        description="Filter po kasi ili banci.",
+    ),
+    source_type: Optional[
+        Literal[
+            "manual",
+            "output_invoice_payment",
+            "input_invoice_payment",
+        ]
+    ] = Query(
+        None,
+        description="Filter po poslovnom izvoru CashEntry zapisa.",
     ),
     limit: int = Query(
         20,
         ge=1,
         le=200,
-        description="Maksimalan broj zapisa u jednoj stranici rezultata.",
+        description="Maksimalan broj zapisa na stranici.",
     ),
     offset: int = Query(
         0,
         ge=0,
-        description="Broj zapisa koje preskačemo prije vraćanja rezultata.",
+        description="Broj zapisa koje preskačemo.",
     ),
 ) -> CashListResponse:
-    """
-    Lista cash unosa za UI tabelu sa totalom i paginacijom.
-    """
     tenant = _require_tenant(x_tenant_code)
 
-    base_stmt = select(CashEntry).where(CashEntry.tenant_code == tenant)
-
-    if year is not None:
-        base_stmt = base_stmt.where(func.extract("year", CashEntry.entry_date) == year)
-    if month is not None:
-        base_stmt = base_stmt.where(
-            func.extract("month", CashEntry.entry_date) == month
+    if month is not None and year is None:
+        raise HTTPException(
+            status_code=422,
+            detail="month requires year",
         )
-    if kind is not None:
-        base_stmt = base_stmt.where(CashEntry.kind == kind)
 
-    # total
-    count_stmt = select(func.count()).select_from(base_stmt.subquery())
+    if (
+        date_from is not None
+        and date_to is not None
+        and date_from > date_to
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="date_from must be less than or equal to date_to",
+        )
+
+    filters = [CashEntry.tenant_code == tenant]
+
+    if date_from is not None:
+        filters.append(CashEntry.entry_date >= date_from)
+    if date_to is not None:
+        filters.append(CashEntry.entry_date <= date_to)
+    if year is not None:
+        filters.append(func.extract("year", CashEntry.entry_date) == year)
+    if month is not None:
+        filters.append(func.extract("month", CashEntry.entry_date) == month)
+    if kind is not None:
+        filters.append(CashEntry.kind == kind)
+    if account is not None:
+        filters.append(CashEntry.account == account)
+
+    if source_type == "manual":
+        filters.extend(
+            [
+                CashEntry.invoice_id.is_(None),
+                CashEntry.input_invoice_id.is_(None),
+            ]
+        )
+    elif source_type == "output_invoice_payment":
+        filters.extend(
+            [
+                CashEntry.invoice_id.is_not(None),
+                CashEntry.input_invoice_id.is_(None),
+            ]
+        )
+    elif source_type == "input_invoice_payment":
+        filters.extend(
+            [
+                CashEntry.invoice_id.is_(None),
+                CashEntry.input_invoice_id.is_not(None),
+            ]
+        )
+
+    count_stmt = (
+        select(func.count())
+        .select_from(CashEntry)
+        .where(*filters)
+    )
     total: int = db.execute(count_stmt).scalar_one()
 
-    # items
     items_stmt = (
-        base_stmt.order_by(CashEntry.entry_date.desc(), CashEntry.id.desc())
+        select(
+            CashEntry,
+            Invoice.invoice_number.label("output_invoice_number"),
+            Invoice.buyer_name.label("output_party_name"),
+            InputInvoice.invoice_number.label("input_invoice_number"),
+            InputInvoice.supplier_name.label("input_party_name"),
+        )
+        .outerjoin(
+            Invoice,
+            and_(
+                Invoice.id == CashEntry.invoice_id,
+                Invoice.tenant_code == tenant,
+            ),
+        )
+        .outerjoin(
+            InputInvoice,
+            and_(
+                InputInvoice.id == CashEntry.input_invoice_id,
+                InputInvoice.tenant_code == tenant,
+            ),
+        )
+        .where(*filters)
+        .order_by(CashEntry.entry_date.desc(), CashEntry.id.desc())
         .limit(limit)
         .offset(offset)
     )
-    rows = db.execute(items_stmt).scalars().all()
 
-    # Mapiramo direktno u CashRowItem (from_attributes=True)
-    items: List[CashRowItem] = [
-        CashRowItem.model_validate(row) for row in rows
-    ]
+    rows = db.execute(items_stmt).all()
 
-    return CashListResponse(total=total, items=items)
+    items: List[CashRowItem] = []
+    for (
+        cash_entry,
+        output_invoice_number,
+        output_party_name,
+        input_invoice_number,
+        input_party_name,
+    ) in rows:
+        if cash_entry.invoice_id is not None:
+            source = "output_invoice_payment"
+            source_document_id = cash_entry.invoice_id
+            source_document_number = output_invoice_number
+            source_party_name = output_party_name
+        elif cash_entry.input_invoice_id is not None:
+            source = "input_invoice_payment"
+            source_document_id = cash_entry.input_invoice_id
+            source_document_number = input_invoice_number
+            source_party_name = input_party_name
+        else:
+            source = "manual"
+            source_document_id = None
+            source_document_number = None
+            source_party_name = None
+
+        items.append(
+            CashRowItem(
+                id=cash_entry.id,
+                entry_date=cash_entry.entry_date,
+                kind=cash_entry.kind,
+                amount=cash_entry.amount,
+                account=cash_entry.account,
+                invoice_id=cash_entry.invoice_id,
+                input_invoice_id=cash_entry.input_invoice_id,
+                source_type=source,
+                source_document_id=source_document_id,
+                source_document_number=source_document_number,
+                source_party_name=source_party_name,
+                description=cash_entry.description,
+                created_at=cash_entry.created_at,
+            )
+        )
+
+    return CashListResponse(
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=items,
+    )
 
 
 # ======================================================

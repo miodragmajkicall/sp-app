@@ -312,3 +312,99 @@ def test_output_payment_cannot_be_deleted_through_generic_cash(
         headers=headers,
     )
     assert stored.status_code == 200, stored.text
+
+def _create_input_payment(
+    client: TestClient,
+    headers: dict[str, str],
+    input_invoice_id: int,
+) -> dict:
+    response = client.post(
+        f"/input-invoices/{input_invoice_id}/payment",
+        headers=headers,
+        json={
+            "payment_date": "2025-11-08",
+            "account": "cash",
+            "note": "Protected input payment",
+        },
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_cash_list_exposes_invoice_payment_sources(
+    client: TestClient,
+) -> None:
+    headers = _headers("cash-source-metadata")
+    tenant_code = headers["X-Tenant-Code"]
+
+    invoice_id, input_invoice_id = _create_invoice_pair(tenant_code)
+
+    output_payment = _create_output_payment(
+        client,
+        headers,
+        invoice_id,
+    )
+    input_payment = _create_input_payment(
+        client,
+        headers,
+        input_invoice_id,
+    )
+
+    manual = _create_cash(
+        client,
+        headers,
+        entry_date="2025-11-09",
+        kind="income",
+        account="cash",
+        note="Manual source",
+    )
+
+    response = client.get(
+        "/cash/list",
+        headers=headers,
+        params={"limit": 20, "offset": 0},
+    )
+    assert response.status_code == 200, response.text
+
+    data = response.json()
+    assert data["total"] == 3
+    assert data["limit"] == 20
+    assert data["offset"] == 0
+
+    rows = {row["id"]: row for row in data["items"]}
+
+    output_row = rows[output_payment["id"]]
+    assert output_row["source_type"] == "output_invoice_payment"
+    assert output_row["source_document_id"] == invoice_id
+    assert output_row["source_document_number"].startswith("OUT-")
+    assert output_row["source_party_name"] == "Cash link buyer"
+
+    input_row = rows[input_payment["id"]]
+    assert input_row["source_type"] == "input_invoice_payment"
+    assert input_row["source_document_id"] == input_invoice_id
+    assert input_row["source_document_number"].startswith("IN-")
+    assert input_row["source_party_name"] == "Cash link supplier"
+
+    manual_row = rows[manual["id"]]
+    assert manual_row["source_type"] == "manual"
+    assert manual_row["source_document_id"] is None
+    assert manual_row["source_document_number"] is None
+    assert manual_row["source_party_name"] is None
+
+    for source_type, expected_id in [
+        ("manual", manual["id"]),
+        ("output_invoice_payment", output_payment["id"]),
+        ("input_invoice_payment", input_payment["id"]),
+    ]:
+        filtered = client.get(
+            "/cash/list",
+            headers=headers,
+            params={"source_type": source_type},
+        )
+        assert filtered.status_code == 200, filtered.text
+
+        filtered_data = filtered.json()
+        assert filtered_data["total"] == 1
+        assert [row["id"] for row in filtered_data["items"]] == [
+            expected_id
+        ]

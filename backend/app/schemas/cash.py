@@ -234,7 +234,7 @@ class CashSummaryRead(BaseModel):
 
 class CashRowItem(BaseModel):
     """
-    Pojedinačni red za tabelarni prikaz u UI-ju (lista cash unosa).
+    Pojedinačni red kanonske Cash/Bank liste.
     """
 
     model_config = BaseConfig
@@ -246,7 +246,7 @@ class CashRowItem(BaseModel):
     )
     entry_date: date = Field(
         ...,
-        description="Datum knjiženja (YYYY-MM-DD).",
+        description="Datum stvarnog novčanog kretanja (YYYY-MM-DD).",
         examples=["2025-01-15"],
     )
     kind: Literal["income", "expense"] = Field(
@@ -259,24 +259,42 @@ class CashRowItem(BaseModel):
         description="Iznos unosa (pozitivan decimalni broj).",
         examples=["100.00"],
     )
-
     account: Literal["cash", "bank"] = Field(
         ...,
-        description="Vrsta računa: `cash` (kasa) ili `bank` (tekući račun).",
+        description="Račun: `cash` (kasa) ili `bank` (banka).",
         examples=["cash"],
     )
+
     invoice_id: Optional[int] = Field(
         default=None,
-        description="ID izlazne fakture (ako postoji veza).",
-        examples=[101],
+        description="ID povezane izlazne fakture, radi kompatibilnosti read contracta.",
     )
     input_invoice_id: Optional[int] = Field(
         default=None,
-        description="ID ulazne fakture (ako postoji veza).",
-        examples=[55],
+        description="ID povezane ulazne fakture, radi kompatibilnosti read contracta.",
     )
 
-    # prema klijentu vraćamo 'note', interno je 'description'
+    source_type: Literal[
+        "manual",
+        "output_invoice_payment",
+        "input_invoice_payment",
+    ] = Field(
+        ...,
+        description="Poslovni izvor CashEntry zapisa.",
+    )
+    source_document_id: Optional[int] = Field(
+        default=None,
+        description="ID izvornog dokumenta ako je zapis nastao kroz payment lifecycle.",
+    )
+    source_document_number: Optional[str] = Field(
+        default=None,
+        description="Broj povezane izlazne ili ulazne fakture.",
+    )
+    source_party_name: Optional[str] = Field(
+        default=None,
+        description="Kupac ili dobavljač povezanog dokumenta.",
+    )
+
     description: Optional[str] = Field(
         default=None,
         serialization_alias="note",
@@ -292,20 +310,27 @@ class CashRowItem(BaseModel):
 
 class CashListResponse(BaseModel):
     """
-    Response model za UI listanje:
-
-    - total: ukupan broj zapisa koji zadovoljavaju filtere
-    - items: lista redova za tabelarni prikaz
+    Kanonski paginirani response za Cash/Bank listu.
     """
 
     model_config = BaseConfig
 
     total: int = Field(
         ...,
-        description="Ukupan broj cash unosa koji zadovoljavaju aktivne filtere.",
+        description="Ukupan broj zapisa koji zadovoljavaju aktivne filtere.",
         examples=[3],
+    )
+    limit: int = Field(
+        ...,
+        description="Maksimalan broj zapisa na trenutnoj stranici.",
+        examples=[20],
+    )
+    offset: int = Field(
+        ...,
+        description="Broj zapisa preskočenih prije trenutne stranice.",
+        examples=[0],
     )
     items: List[CashRowItem] = Field(
         ...,
-        description="Lista cash unosa u formatu pogodnom za UI tabelu.",
+        description="Lista Cash/Bank zapisa za trenutnu stranicu.",
     )
