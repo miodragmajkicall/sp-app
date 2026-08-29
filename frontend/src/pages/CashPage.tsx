@@ -7,8 +7,18 @@ import {
   fetchCashEntries,
   createCashEntry,
   type CashEntryCreatePayload,
+  type CashListParams,
 } from "../services/cashApi";
-import type { CashEntry } from "../types/cash";
+import type {
+  CashAccount,
+  CashEntry,
+  CashKind,
+  CashListItem,
+  CashListResponse,
+  CashSourceType,
+} from "../types/cash";
+
+const PAGE_SIZE = 20;
 
 function toNumber(value: number | string | undefined | null): number {
   if (value === undefined || value === null) return 0;
@@ -17,9 +27,6 @@ function toNumber(value: number | string | undefined | null): number {
   return Number.isNaN(parsed) ? 0 : parsed;
 }
 
-function pickDate(entry: CashEntry): string | undefined {
-  return entry.entry_date ?? entry.occurred_at;
-}
 
 function formatDate(value?: string): string {
   if (!value) return "-";
@@ -74,26 +81,64 @@ function accountBadgeClass(account?: string): string {
   return "inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-medium text-slate-600 ring-1 ring-slate-200";
 }
 
-function linkedInvoiceCell(entry: CashEntry): React.ReactNode {
-  if (entry.invoice_id) {
+function sourceLabel(source: CashSourceType): string {
+  if (source === "manual") return "RUČNI";
+  if (source === "output_invoice_payment") return "NAPLATA";
+  return "PLAĆANJE";
+}
+
+function sourceBadgeClass(source: CashSourceType): string {
+  if (source === "manual") {
+    return "inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-[11px] font-semibold text-slate-600 ring-1 ring-slate-200";
+  }
+
+  if (source === "output_invoice_payment") {
+    return "inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-1 text-[11px] font-semibold text-emerald-700 ring-1 ring-emerald-100";
+  }
+
+  return "inline-flex items-center rounded-full bg-rose-50 px-2.5 py-1 text-[11px] font-semibold text-rose-700 ring-1 ring-rose-100";
+}
+
+function sourceDocumentCell(entry: CashListItem): React.ReactNode {
+  if (
+    entry.source_type === "output_invoice_payment" &&
+    entry.source_document_id
+  ) {
     return (
-      <Link
-        to={`/invoices/${entry.invoice_id}`}
-        className="text-xs font-semibold text-slate-700 underline-offset-2 hover:text-slate-950 hover:underline"
-      >
-        Izlazna #{entry.invoice_id}
-      </Link>
+      <div className="min-w-[150px]">
+        <Link
+          to={`/invoices/${entry.source_document_id}`}
+          className="text-xs font-semibold text-slate-800 underline-offset-2 hover:text-slate-950 hover:underline"
+        >
+          {entry.source_document_number ?? `#${entry.source_document_id}`}
+        </Link>
+        {entry.source_party_name && (
+          <p className="mt-0.5 text-[11px] text-slate-500">
+            {entry.source_party_name}
+          </p>
+        )}
+      </div>
     );
   }
 
-  if (entry.input_invoice_id) {
+  if (
+    entry.source_type === "input_invoice_payment" &&
+    entry.source_document_id
+  ) {
     return (
-      <Link
-        to={`/input-invoices/${entry.input_invoice_id}`}
-        className="text-xs font-semibold text-slate-700 underline-offset-2 hover:text-slate-950 hover:underline"
-      >
-        Ulazna #{entry.input_invoice_id}
-      </Link>
+      <div className="min-w-[150px]">
+        <Link
+          to={`/input-invoices/${entry.source_document_id}`}
+          className="text-xs font-semibold text-slate-800 underline-offset-2 hover:text-slate-950 hover:underline"
+        >
+          {entry.source_document_number ?? `#${entry.source_document_id}`}
+        </Link>
+        {entry.source_party_name && (
+          <p className="mt-0.5 text-[11px] text-slate-500">
+            {entry.source_party_name}
+          </p>
+        )}
+      </div>
     );
   }
 
@@ -107,20 +152,40 @@ function todayIso(): string {
 export default function CashPage() {
   const queryClient = useQueryClient();
 
-  const { data, isLoading, isError, error, refetch, isRefetching } = useQuery<
-    CashEntry[],
-    Error
-  >({
-    queryKey: ["cash"],
-    queryFn: fetchCashEntries,
-  });
+const [dateFrom, setDateFrom] = useState("");
+const [dateTo, setDateTo] = useState("");
+const [kindFilter, setKindFilter] = useState<"" | CashKind>("");
+const [accountFilter, setAccountFilter] = useState<"" | CashAccount>("");
+const [sourceFilter, setSourceFilter] = useState<"" | CashSourceType>("");
+const [page, setPage] = useState(0);
 
-  const [entryDate, setEntryDate] = useState<string>(todayIso());
-  const [kind, setKind] = useState<"income" | "expense">("income");
-  const [account, setAccount] = useState<"cash" | "bank">("cash");
-  const [amount, setAmount] = useState<string>("");
-  const [description, setDescription] = useState<string>("");
-  const [formError, setFormError] = useState<string>("");
+const listParams = useMemo<CashListParams>(
+  () => ({
+    ...(dateFrom ? { date_from: dateFrom } : {}),
+    ...(dateTo ? { date_to: dateTo } : {}),
+    ...(kindFilter ? { kind: kindFilter } : {}),
+    ...(accountFilter ? { account: accountFilter } : {}),
+    ...(sourceFilter ? { source_type: sourceFilter } : {}),
+    limit: PAGE_SIZE,
+    offset: page * PAGE_SIZE,
+  }),
+  [dateFrom, dateTo, kindFilter, accountFilter, sourceFilter, page]
+);
+
+const { data, isLoading, isError, error, refetch, isRefetching } = useQuery<
+  CashListResponse,
+  Error
+>({
+  queryKey: ["cash", "list", listParams],
+  queryFn: () => fetchCashEntries(listParams),
+});
+
+const [entryDate, setEntryDate] = useState<string>(todayIso());
+const [kind, setKind] = useState<CashKind>("income");
+const [account, setAccount] = useState<CashAccount>("cash");
+const [amount, setAmount] = useState<string>("");
+const [description, setDescription] = useState<string>("");
+const [formError, setFormError] = useState<string>("");
 
   const { mutateAsync: createEntry, isPending: isSaving } = useMutation({
     mutationFn: async (payload: CashEntryCreatePayload) =>
@@ -165,40 +230,44 @@ export default function CashPage() {
     }
   }
 
-  const stats = useMemo(() => {
-    const entries = data ?? [];
+const pageEntries = useMemo(() => data?.items ?? [], [data]);
 
-    const totalIncome = entries
-      .filter((e) => e.kind === "income")
-      .reduce((sum, e) => sum + toNumber(e.amount), 0);
+const stats = useMemo(() => {
+  const totalIncome = pageEntries
+    .filter((entry) => entry.kind === "income")
+    .reduce((sum, entry) => sum + toNumber(entry.amount), 0);
 
-    const totalExpense = entries
-      .filter((e) => e.kind === "expense")
-      .reduce((sum, e) => sum + toNumber(e.amount), 0);
+  const totalExpense = pageEntries
+    .filter((entry) => entry.kind === "expense")
+    .reduce((sum, entry) => sum + toNumber(entry.amount), 0);
 
-    const cashTotal = entries
-      .filter((e) => e.account === "cash")
-      .reduce((sum, e) => {
-        const amountValue = toNumber(e.amount);
-        return e.kind === "expense" ? sum - amountValue : sum + amountValue;
-      }, 0);
+  const cashTotal = pageEntries
+    .filter((entry) => entry.account === "cash")
+    .reduce((sum, entry) => {
+      const value = toNumber(entry.amount);
+      return entry.kind === "expense" ? sum - value : sum + value;
+    }, 0);
 
-    const bankTotal = entries
-      .filter((e) => e.account === "bank")
-      .reduce((sum, e) => {
-        const amountValue = toNumber(e.amount);
-        return e.kind === "expense" ? sum - amountValue : sum + amountValue;
-      }, 0);
+  const bankTotal = pageEntries
+    .filter((entry) => entry.account === "bank")
+    .reduce((sum, entry) => {
+      const value = toNumber(entry.amount);
+      return entry.kind === "expense" ? sum - value : sum + value;
+    }, 0);
 
-    return {
-      totalCount: entries.length,
-      totalIncome,
-      totalExpense,
-      net: totalIncome - totalExpense,
-      cashTotal,
-      bankTotal,
-    };
-  }, [data]);
+  return {
+    totalCount: pageEntries.length,
+    totalIncome,
+    totalExpense,
+    net: totalIncome - totalExpense,
+    cashTotal,
+    bankTotal,
+  };
+}, [pageEntries]);
+
+const currentPage = Math.floor((data?.offset ?? 0) / PAGE_SIZE) + 1;
+const hasPrevious = page > 0;
+const hasNext = data ? data.offset + data.items.length < data.total : false;
 
   return (
     <div className="space-y-6">
@@ -237,55 +306,55 @@ export default function CashPage() {
           </div>
         </div>
 
-        <div className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-4">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Neto stanje
-            </p>
-            <p className="mt-2 text-2xl font-semibold text-slate-950">
-              {formatMoney(stats.net)}
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              Prihodi minus rashodi
-            </p>
-          </div>
+<div className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-4">
+  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+    <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+      Neto tok — stranica
+    </p>
+    <p className="mt-2 text-2xl font-semibold text-slate-950">
+      {formatMoney(stats.net)}
+    </p>
+    <p className="mt-1 text-xs text-slate-500">
+      Prikazani prihodi minus rashodi
+    </p>
+  </div>
 
-          <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">
-              Ukupni prihodi
-            </p>
-            <p className="mt-2 text-2xl font-semibold text-emerald-800">
-              {formatMoney(stats.totalIncome)}
-            </p>
-            <p className="mt-1 text-xs text-emerald-700/80">
-              Svi evidentirani prilivi
-            </p>
-          </div>
+  <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+    <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">
+      Prihodi — stranica
+    </p>
+    <p className="mt-2 text-2xl font-semibold text-emerald-800">
+      {formatMoney(stats.totalIncome)}
+    </p>
+    <p className="mt-1 text-xs text-emerald-700/80">
+      Samo trenutno prikazani zapisi
+    </p>
+  </div>
 
-          <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-rose-700">
-              Ukupni rashodi
-            </p>
-            <p className="mt-2 text-2xl font-semibold text-rose-800">
-              {formatMoney(stats.totalExpense)}
-            </p>
-            <p className="mt-1 text-xs text-rose-700/80">
-              Svi evidentirani odlivi
-            </p>
-          </div>
+  <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
+    <p className="text-xs font-medium uppercase tracking-wide text-rose-700">
+      Rashodi — stranica
+    </p>
+    <p className="mt-2 text-2xl font-semibold text-rose-800">
+      {formatMoney(stats.totalExpense)}
+    </p>
+    <p className="mt-1 text-xs text-rose-700/80">
+      Samo trenutno prikazani zapisi
+    </p>
+  </div>
 
-          <div className="rounded-2xl border border-slate-200 bg-white p-4">
-            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Broj unosa
-            </p>
-            <p className="mt-2 text-2xl font-semibold text-slate-950">
-              {stats.totalCount}
-            </p>
-            <p className="mt-1 text-xs text-slate-500">
-              Ručni i povezani zapisi
-            </p>
-          </div>
-        </div>
+  <div className="rounded-2xl border border-slate-200 bg-white p-4">
+    <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+      Zapisi
+    </p>
+    <p className="mt-2 text-2xl font-semibold text-slate-950">
+      {stats.totalCount} / {data?.total ?? 0}
+    </p>
+    <p className="mt-1 text-xs text-slate-500">
+      Prikazano / ukupno po filterima
+    </p>
+  </div>
+</div>
       </section>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
@@ -301,16 +370,112 @@ export default function CashPage() {
                 </p>
               </div>
 
-              <div className="flex flex-wrap gap-2">
-                <span className="inline-flex items-center rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-100">
-                  Kasa: {formatMoney(stats.cashTotal)}
-                </span>
-                <span className="inline-flex items-center rounded-full bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 ring-1 ring-sky-100">
-                  Banka: {formatMoney(stats.bankTotal)}
-                </span>
-              </div>
+<div className="flex flex-wrap gap-2">
+  <span className="inline-flex items-center rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-100">
+    Neto tok kase — stranica: {formatMoney(stats.cashTotal)}
+  </span>
+  <span className="inline-flex items-center rounded-full bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 ring-1 ring-sky-100">
+    Neto tok banke — stranica: {formatMoney(stats.bankTotal)}
+  </span>
+</div>
             </div>
           </div>
+
+<div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <label className="space-y-1 text-xs font-medium text-slate-600">
+      Od datuma
+      <input
+        type="date"
+        value={dateFrom}
+        onChange={(e) => {
+          setDateFrom(e.target.value);
+          setPage(0);
+        }}
+        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+      />
+    </label>
+
+    <label className="space-y-1 text-xs font-medium text-slate-600">
+      Do datuma
+      <input
+        type="date"
+        value={dateTo}
+        onChange={(e) => {
+          setDateTo(e.target.value);
+          setPage(0);
+        }}
+        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+      />
+    </label>
+
+    <label className="space-y-1 text-xs font-medium text-slate-600">
+      Tip
+      <select
+        value={kindFilter}
+        onChange={(e) => {
+          setKindFilter(e.target.value as "" | CashKind);
+          setPage(0);
+        }}
+        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+      >
+        <option value="">Svi</option>
+        <option value="income">Prihodi</option>
+        <option value="expense">Rashodi</option>
+      </select>
+    </label>
+
+    <label className="space-y-1 text-xs font-medium text-slate-600">
+      Račun
+      <select
+        value={accountFilter}
+        onChange={(e) => {
+          setAccountFilter(e.target.value as "" | CashAccount);
+          setPage(0);
+        }}
+        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+      >
+        <option value="">Svi</option>
+        <option value="cash">Kasa</option>
+        <option value="bank">Tekući račun</option>
+      </select>
+    </label>
+
+    <label className="space-y-1 text-xs font-medium text-slate-600">
+      Izvor
+      <select
+        value={sourceFilter}
+        onChange={(e) => {
+          setSourceFilter(e.target.value as "" | CashSourceType);
+          setPage(0);
+        }}
+        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+      >
+        <option value="">Svi</option>
+        <option value="manual">Ručni unos</option>
+        <option value="output_invoice_payment">Izlazna faktura</option>
+        <option value="input_invoice_payment">Ulazna faktura</option>
+      </select>
+    </label>
+  </div>
+
+  <div className="mt-3 flex justify-end">
+    <button
+      type="button"
+      onClick={() => {
+        setDateFrom("");
+        setDateTo("");
+        setKindFilter("");
+        setAccountFilter("");
+        setSourceFilter("");
+        setPage(0);
+      }}
+      className="text-xs font-semibold text-slate-600 hover:text-slate-950"
+    >
+      Poništi filtere
+    </button>
+  </div>
+</div>
 
           {isLoading && (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
@@ -324,94 +489,131 @@ export default function CashPage() {
             </div>
           )}
 
-          {!!data && data.length === 0 && !isLoading && !isError && (
-            <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center shadow-sm">
-              <p className="text-sm font-semibold text-slate-800">
-                Trenutno nema unosa u kasi/banci.
-              </p>
-              <p className="mt-1 text-xs text-slate-500">
-                Prvi unos možeš dodati kroz panel sa desne strane.
-              </p>
-            </div>
-          )}
+{!!data && data.items.length === 0 && !isLoading && !isError && (
+  <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center shadow-sm">
+    <p className="text-sm font-semibold text-slate-800">
+      Nema zapisa za aktivne filtere.
+    </p>
+    <p className="mt-1 text-xs text-slate-500">
+      Promijeni filtere ili dodaj novi ručni unos.
+    </p>
+  </div>
+)}
 
-          {!!data && data.length > 0 && (
-            <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
-              <div className="overflow-x-auto">
-                <table className="min-w-full text-sm">
-                  <thead className="bg-slate-50 text-slate-500">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
-                        Datum
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
-                        Račun
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
-                        Tip
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide">
-                        Opis
-                      </th>
-                      <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
-                        Iznos
-                      </th>
-                      <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
-                        Povezana faktura
-                      </th>
-                    </tr>
-                  </thead>
+{!!data && data.items.length > 0 && (
+  <>
+    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-sm">
+          <thead className="bg-slate-50 text-slate-500">
+            <tr>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
+                Datum
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
+                Račun
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
+                Tip
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
+                Izvor
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide">
+                Opis
+              </th>
+              <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
+                Iznos
+              </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide">
+                Dokument
+              </th>
+            </tr>
+          </thead>
 
-                  <tbody className="divide-y divide-slate-100 text-slate-700">
-                    {data.map((entry) => {
-                      const desc = entry.description ?? entry.note;
+          <tbody className="divide-y divide-slate-100 text-slate-700">
+            {data.items.map((entry) => (
+              <tr
+                key={entry.id}
+                className="transition hover:bg-slate-50/80"
+              >
+                <td className="px-4 py-3 text-xs whitespace-nowrap text-slate-600">
+                  {formatDate(entry.entry_date)}
+                </td>
 
-                      return (
-                        <tr
-                          key={entry.id}
-                          className="transition hover:bg-slate-50/80"
-                        >
-                          <td className="px-4 py-3 text-xs whitespace-nowrap text-slate-600">
-                            {formatDate(pickDate(entry))}
-                          </td>
+                <td className="px-4 py-3 text-xs whitespace-nowrap">
+                  <span className={accountBadgeClass(entry.account)}>
+                    {accountLabel(entry.account)}
+                  </span>
+                </td>
 
-                          <td className="px-4 py-3 text-xs whitespace-nowrap">
-                            <span className={accountBadgeClass(entry.account)}>
-                              {accountLabel(entry.account)}
-                            </span>
-                          </td>
+                <td className="px-4 py-3 text-xs whitespace-nowrap">
+                  <span className={kindBadgeClass(entry.kind)}>
+                    {kindLabel(entry.kind)}
+                  </span>
+                </td>
 
-                          <td className="px-4 py-3 text-xs whitespace-nowrap">
-                            <span className={kindBadgeClass(entry.kind)}>
-                              {kindLabel(entry.kind)}
-                            </span>
-                          </td>
+                <td className="px-4 py-3 text-xs whitespace-nowrap">
+                  <span className={sourceBadgeClass(entry.source_type)}>
+                    {sourceLabel(entry.source_type)}
+                  </span>
+                </td>
 
-                          <td className="px-4 py-3">
-                            {desc ? (
-                              <span className="text-xs font-medium text-slate-800">
-                                {desc}
-                              </span>
-                            ) : (
-                              <span className="text-xs text-slate-400">—</span>
-                            )}
-                          </td>
+                <td className="px-4 py-3">
+                  {entry.note ? (
+                    <span className="text-xs font-medium text-slate-800">
+                      {entry.note}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-slate-400">—</span>
+                  )}
+                </td>
 
-                          <td className="px-4 py-3 text-right text-sm font-semibold whitespace-nowrap text-slate-950">
-                            {formatAmount(entry)}
-                          </td>
+                <td className="px-4 py-3 text-right text-sm font-semibold whitespace-nowrap text-slate-950">
+                  {formatAmount(entry)}
+                </td>
 
-                          <td className="px-4 py-3 whitespace-nowrap">
-                            {linkedInvoiceCell(entry)}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+                <td className="px-4 py-3">
+                  {sourceDocumentCell(entry)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+      <p className="text-xs text-slate-500">
+        Prikazano {data.items.length} od {data.total} zapisa
+      </p>
+
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={() => setPage((current) => Math.max(0, current - 1))}
+          disabled={!hasPrevious || isRefetching}
+          className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Prethodna
+        </button>
+
+        <span className="px-2 text-xs font-medium text-slate-600">
+          Stranica {currentPage}
+        </span>
+
+        <button
+          type="button"
+          onClick={() => setPage((current) => current + 1)}
+          disabled={!hasNext || isRefetching}
+          className="rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Sljedeća
+        </button>
+      </div>
+    </div>
+  </>
+)}
         </section>
 
         <aside className="xl:sticky xl:top-6 xl:self-start">
