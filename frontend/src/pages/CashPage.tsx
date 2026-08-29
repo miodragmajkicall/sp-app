@@ -6,7 +6,10 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchCashEntries,
   createCashEntry,
+  updateCashEntry,
+  deleteCashEntry,
   type CashEntryCreatePayload,
+  type CashEntryUpdatePayload,
   type CashListParams,
 } from "../services/cashApi";
 import type {
@@ -152,122 +155,233 @@ function todayIso(): string {
 export default function CashPage() {
   const queryClient = useQueryClient();
 
-const [dateFrom, setDateFrom] = useState("");
-const [dateTo, setDateTo] = useState("");
-const [kindFilter, setKindFilter] = useState<"" | CashKind>("");
-const [accountFilter, setAccountFilter] = useState<"" | CashAccount>("");
-const [sourceFilter, setSourceFilter] = useState<"" | CashSourceType>("");
-const [page, setPage] = useState(0);
+    const [dateFrom, setDateFrom] = useState("");
+    const [dateTo, setDateTo] = useState("");
+    const [kindFilter, setKindFilter] = useState<"" | CashKind>("");
+    const [accountFilter, setAccountFilter] = useState<"" | CashAccount>("");
+    const [sourceFilter, setSourceFilter] = useState<"" | CashSourceType>("");
+    const [page, setPage] = useState(0);
 
-const listParams = useMemo<CashListParams>(
-  () => ({
-    ...(dateFrom ? { date_from: dateFrom } : {}),
-    ...(dateTo ? { date_to: dateTo } : {}),
-    ...(kindFilter ? { kind: kindFilter } : {}),
-    ...(accountFilter ? { account: accountFilter } : {}),
-    ...(sourceFilter ? { source_type: sourceFilter } : {}),
-    limit: PAGE_SIZE,
-    offset: page * PAGE_SIZE,
-  }),
-  [dateFrom, dateTo, kindFilter, accountFilter, sourceFilter, page]
-);
+    const listParams = useMemo<CashListParams>(
+      () => ({
+        ...(dateFrom ? { date_from: dateFrom } : {}),
+        ...(dateTo ? { date_to: dateTo } : {}),
+        ...(kindFilter ? { kind: kindFilter } : {}),
+        ...(accountFilter ? { account: accountFilter } : {}),
+        ...(sourceFilter ? { source_type: sourceFilter } : {}),
+        limit: PAGE_SIZE,
+        offset: page * PAGE_SIZE,
+      }),
+      [dateFrom, dateTo, kindFilter, accountFilter, sourceFilter, page]
+    );
 
-const { data, isLoading, isError, error, refetch, isRefetching } = useQuery<
-  CashListResponse,
-  Error
->({
-  queryKey: ["cash", "list", listParams],
-  queryFn: () => fetchCashEntries(listParams),
-});
+    const {
+      data,
+      isLoading,
+      isError,
+      error,
+      refetch,
+      isRefetching,
+    } = useQuery<CashListResponse, Error>({
+      queryKey: ["cash", "list", listParams],
+      queryFn: () => fetchCashEntries(listParams),
+    });
 
-const [entryDate, setEntryDate] = useState<string>(todayIso());
-const [kind, setKind] = useState<CashKind>("income");
-const [account, setAccount] = useState<CashAccount>("cash");
-const [amount, setAmount] = useState<string>("");
-const [description, setDescription] = useState<string>("");
-const [formError, setFormError] = useState<string>("");
+    const [entryDate, setEntryDate] = useState<string>(todayIso());
+    const [kind, setKind] = useState<CashKind>("income");
+    const [account, setAccount] = useState<CashAccount>("cash");
+    const [amount, setAmount] = useState<string>("");
+    const [description, setDescription] = useState<string>("");
+    const [formError, setFormError] = useState<string>("");
 
-  const { mutateAsync: createEntry, isPending: isSaving } = useMutation({
-    mutationFn: async (payload: CashEntryCreatePayload) =>
-      createCashEntry(payload),
-    onSuccess: () => {
+    const [editingEntryId, setEditingEntryId] = useState<number | null>(null);
+    const [deletingEntryId, setDeletingEntryId] = useState<number | null>(null);
+    const [rowActionError, setRowActionError] = useState("");
+
+    function invalidateCashConsumers() {
       queryClient.invalidateQueries({ queryKey: ["cash"] });
       queryClient.invalidateQueries({
         queryKey: ["dashboard", "monthly", "current"],
       });
-    },
-  });
-
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    setFormError("");
-
-    const parsed = Number(amount);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      setFormError("Iznos mora biti veći od nule.");
-      return;
+      queryClient.invalidateQueries({ queryKey: ["reports"] });
     }
 
-    const payload: CashEntryCreatePayload = {
-      entry_date: entryDate,
-      kind,
-      amount: parsed,
-      note: description.trim() || null,
-      account,
-    };
-
-    try {
-      await createEntry(payload);
+    function resetEntryForm() {
+      setEntryDate(todayIso());
+      setKind("income");
+      setAccount("cash");
       setAmount("");
       setDescription("");
-      await refetch();
-    } catch (err: any) {
-      const msg =
-        err?.response?.data?.detail ||
-        err?.message ||
-        "Greška pri snimanju unosa.";
-      setFormError(String(msg));
+      setFormError("");
     }
-  }
 
-const pageEntries = useMemo(() => data?.items ?? [], [data]);
+    function cancelEdit() {
+      setEditingEntryId(null);
+      resetEntryForm();
+    }
 
-const stats = useMemo(() => {
-  const totalIncome = pageEntries
-    .filter((entry) => entry.kind === "income")
-    .reduce((sum, entry) => sum + toNumber(entry.amount), 0);
+    function startEdit(entry: CashListItem) {
+      if (entry.source_type !== "manual") return;
 
-  const totalExpense = pageEntries
-    .filter((entry) => entry.kind === "expense")
-    .reduce((sum, entry) => sum + toNumber(entry.amount), 0);
+      setEditingEntryId(entry.id);
+      setEntryDate(entry.entry_date);
+      setKind(entry.kind);
+      setAccount(entry.account);
+      setAmount(String(entry.amount));
+      setDescription(entry.note ?? "");
+      setFormError("");
+      setRowActionError("");
+    }
 
-  const cashTotal = pageEntries
-    .filter((entry) => entry.account === "cash")
-    .reduce((sum, entry) => {
-      const value = toNumber(entry.amount);
-      return entry.kind === "expense" ? sum - value : sum + value;
-    }, 0);
+    const { mutateAsync: createEntry, isPending: isSaving } = useMutation({
+      mutationFn: (payload: CashEntryCreatePayload) =>
+        createCashEntry(payload),
+      onSuccess: invalidateCashConsumers,
+    });
 
-  const bankTotal = pageEntries
-    .filter((entry) => entry.account === "bank")
-    .reduce((sum, entry) => {
-      const value = toNumber(entry.amount);
-      return entry.kind === "expense" ? sum - value : sum + value;
-    }, 0);
+    const { mutateAsync: updateEntry, isPending: isUpdating } = useMutation({
+      mutationFn: ({
+        cashId,
+        payload,
+      }: {
+        cashId: number;
+        payload: CashEntryUpdatePayload;
+      }) => updateCashEntry(cashId, payload),
+      onSuccess: invalidateCashConsumers,
+    });
 
-  return {
-    totalCount: pageEntries.length,
-    totalIncome,
-    totalExpense,
-    net: totalIncome - totalExpense,
-    cashTotal,
-    bankTotal,
-  };
-}, [pageEntries]);
+    const { mutateAsync: removeEntry } = useMutation({
+      mutationFn: (cashId: number) => deleteCashEntry(cashId),
+      onSuccess: invalidateCashConsumers,
+    });
 
-const currentPage = Math.floor((data?.offset ?? 0) / PAGE_SIZE) + 1;
-const hasPrevious = page > 0;
-const hasNext = data ? data.offset + data.items.length < data.total : false;
+    const isFormSaving = isSaving || isUpdating;
+
+    async function handleDelete(entry: CashListItem) {
+      if (entry.source_type !== "manual") return;
+
+      const confirmed = window.confirm(
+        "Da li sigurno želiš obrisati ovaj ručni zapis?"
+      );
+      if (!confirmed) return;
+
+      setRowActionError("");
+      setDeletingEntryId(entry.id);
+
+      try {
+        await removeEntry(entry.id);
+
+        if (editingEntryId === entry.id) {
+          cancelEdit();
+        }
+
+        if (data?.items.length === 1 && page > 0) {
+          setPage((current) => Math.max(0, current - 1));
+        }
+      } catch (err: any) {
+        const detail = err?.response?.data?.detail;
+
+        setRowActionError(
+          typeof detail === "string"
+            ? detail
+            : err?.message || "Greška pri brisanju unosa."
+        );
+      } finally {
+        setDeletingEntryId(null);
+      }
+    }
+
+    async function handleSubmit(e: FormEvent) {
+      e.preventDefault();
+      setFormError("");
+
+      const parsed = Number(amount);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setFormError("Iznos mora biti veći od nule.");
+        return;
+      }
+
+      try {
+        if (editingEntryId !== null) {
+          const payload: CashEntryUpdatePayload = {
+            entry_date: entryDate,
+            kind,
+            amount: parsed,
+            account,
+            note: description.trim() || null,
+          };
+
+          await updateEntry({
+            cashId: editingEntryId,
+            payload,
+          });
+
+          setEditingEntryId(null);
+          resetEntryForm();
+          return;
+        }
+
+        const payload: CashEntryCreatePayload = {
+          entry_date: entryDate,
+          kind,
+          amount: parsed,
+          account,
+          note: description.trim() || null,
+        };
+
+        await createEntry(payload);
+        resetEntryForm();
+      } catch (err: any) {
+        const detail = err?.response?.data?.detail;
+
+        setFormError(
+          typeof detail === "string"
+            ? detail
+            : err?.message || "Greška pri snimanju unosa."
+        );
+      }
+    }
+
+    const pageEntries = useMemo(() => data?.items ?? [], [data]);
+
+    const stats = useMemo(() => {
+      const totalIncome = pageEntries
+        .filter((entry) => entry.kind === "income")
+        .reduce((sum, entry) => sum + toNumber(entry.amount), 0);
+
+      const totalExpense = pageEntries
+        .filter((entry) => entry.kind === "expense")
+        .reduce((sum, entry) => sum + toNumber(entry.amount), 0);
+
+      const cashTotal = pageEntries
+        .filter((entry) => entry.account === "cash")
+        .reduce((sum, entry) => {
+          const value = toNumber(entry.amount);
+          return entry.kind === "expense" ? sum - value : sum + value;
+        }, 0);
+
+      const bankTotal = pageEntries
+        .filter((entry) => entry.account === "bank")
+        .reduce((sum, entry) => {
+          const value = toNumber(entry.amount);
+          return entry.kind === "expense" ? sum - value : sum + value;
+        }, 0);
+
+      return {
+        totalCount: pageEntries.length,
+        totalIncome,
+        totalExpense,
+        net: totalIncome - totalExpense,
+        cashTotal,
+        bankTotal,
+      };
+    }, [pageEntries]);
+
+    const currentPage = Math.floor((data?.offset ?? 0) / PAGE_SIZE) + 1;
+    const hasPrevious = page > 0;
+    const hasNext = data
+      ? data.offset + data.items.length < data.total
+      : false;
 
   return (
     <div className="space-y-6">
@@ -306,55 +420,55 @@ const hasNext = data ? data.offset + data.items.length < data.total : false;
           </div>
         </div>
 
-<div className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-4">
-  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-    <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-      Neto tok — stranica
-    </p>
-    <p className="mt-2 text-2xl font-semibold text-slate-950">
-      {formatMoney(stats.net)}
-    </p>
-    <p className="mt-1 text-xs text-slate-500">
-      Prikazani prihodi minus rashodi
-    </p>
-  </div>
+        <div className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              Neto tok — stranica
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-slate-950">
+              {formatMoney(stats.net)}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Prikazani prihodi minus rashodi
+            </p>
+          </div>
 
-  <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
-    <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">
-      Prihodi — stranica
-    </p>
-    <p className="mt-2 text-2xl font-semibold text-emerald-800">
-      {formatMoney(stats.totalIncome)}
-    </p>
-    <p className="mt-1 text-xs text-emerald-700/80">
-      Samo trenutno prikazani zapisi
-    </p>
-  </div>
+          <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">
+              Prihodi — stranica
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-emerald-800">
+              {formatMoney(stats.totalIncome)}
+            </p>
+            <p className="mt-1 text-xs text-emerald-700/80">
+              Samo trenutno prikazani zapisi
+            </p>
+          </div>
 
-  <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
-    <p className="text-xs font-medium uppercase tracking-wide text-rose-700">
-      Rashodi — stranica
-    </p>
-    <p className="mt-2 text-2xl font-semibold text-rose-800">
-      {formatMoney(stats.totalExpense)}
-    </p>
-    <p className="mt-1 text-xs text-rose-700/80">
-      Samo trenutno prikazani zapisi
-    </p>
-  </div>
+          <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-rose-700">
+              Rashodi — stranica
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-rose-800">
+              {formatMoney(stats.totalExpense)}
+            </p>
+            <p className="mt-1 text-xs text-rose-700/80">
+              Samo trenutno prikazani zapisi
+            </p>
+          </div>
 
-  <div className="rounded-2xl border border-slate-200 bg-white p-4">
-    <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-      Zapisi
-    </p>
-    <p className="mt-2 text-2xl font-semibold text-slate-950">
-      {stats.totalCount} / {data?.total ?? 0}
-    </p>
-    <p className="mt-1 text-xs text-slate-500">
-      Prikazano / ukupno po filterima
-    </p>
-  </div>
-</div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
+              Zapisi
+            </p>
+            <p className="mt-2 text-2xl font-semibold text-slate-950">
+              {stats.totalCount} / {data?.total ?? 0}
+            </p>
+            <p className="mt-1 text-xs text-slate-500">
+              Prikazano / ukupno po filterima
+            </p>
+          </div>
+        </div>
       </section>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_420px]">
@@ -370,112 +484,112 @@ const hasNext = data ? data.offset + data.items.length < data.total : false;
                 </p>
               </div>
 
-<div className="flex flex-wrap gap-2">
-  <span className="inline-flex items-center rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-100">
-    Neto tok kase — stranica: {formatMoney(stats.cashTotal)}
-  </span>
-  <span className="inline-flex items-center rounded-full bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 ring-1 ring-sky-100">
-    Neto tok banke — stranica: {formatMoney(stats.bankTotal)}
-  </span>
-</div>
+                <div className="flex flex-wrap gap-2">
+                  <span className="inline-flex items-center rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-100">
+                    Neto tok kase — stranica: {formatMoney(stats.cashTotal)}
+                  </span>
+                  <span className="inline-flex items-center rounded-full bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 ring-1 ring-sky-100">
+                    Neto tok banke — stranica: {formatMoney(stats.bankTotal)}
+                  </span>
+                </div>
             </div>
           </div>
 
-<div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
-    <label className="space-y-1 text-xs font-medium text-slate-600">
-      Od datuma
-      <input
-        type="date"
-        value={dateFrom}
-        onChange={(e) => {
-          setDateFrom(e.target.value);
-          setPage(0);
-        }}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
-      />
-    </label>
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                <label className="space-y-1 text-xs font-medium text-slate-600">
+                  Od datuma
+                  <input
+                    type="date"
+                    value={dateFrom}
+                    onChange={(e) => {
+                      setDateFrom(e.target.value);
+                      setPage(0);
+                    }}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                  />
+                </label>
 
-    <label className="space-y-1 text-xs font-medium text-slate-600">
-      Do datuma
-      <input
-        type="date"
-        value={dateTo}
-        onChange={(e) => {
-          setDateTo(e.target.value);
-          setPage(0);
-        }}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
-      />
-    </label>
+                <label className="space-y-1 text-xs font-medium text-slate-600">
+                  Do datuma
+                  <input
+                    type="date"
+                    value={dateTo}
+                    onChange={(e) => {
+                      setDateTo(e.target.value);
+                      setPage(0);
+                    }}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                  />
+                </label>
 
-    <label className="space-y-1 text-xs font-medium text-slate-600">
-      Tip
-      <select
-        value={kindFilter}
-        onChange={(e) => {
-          setKindFilter(e.target.value as "" | CashKind);
-          setPage(0);
-        }}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
-      >
-        <option value="">Svi</option>
-        <option value="income">Prihodi</option>
-        <option value="expense">Rashodi</option>
-      </select>
-    </label>
+                <label className="space-y-1 text-xs font-medium text-slate-600">
+                  Tip
+                  <select
+                    value={kindFilter}
+                    onChange={(e) => {
+                      setKindFilter(e.target.value as "" | CashKind);
+                      setPage(0);
+                    }}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                  >
+                    <option value="">Svi</option>
+                    <option value="income">Prihodi</option>
+                    <option value="expense">Rashodi</option>
+                  </select>
+                </label>
 
-    <label className="space-y-1 text-xs font-medium text-slate-600">
-      Račun
-      <select
-        value={accountFilter}
-        onChange={(e) => {
-          setAccountFilter(e.target.value as "" | CashAccount);
-          setPage(0);
-        }}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
-      >
-        <option value="">Svi</option>
-        <option value="cash">Kasa</option>
-        <option value="bank">Tekući račun</option>
-      </select>
-    </label>
+                <label className="space-y-1 text-xs font-medium text-slate-600">
+                  Račun
+                  <select
+                    value={accountFilter}
+                    onChange={(e) => {
+                      setAccountFilter(e.target.value as "" | CashAccount);
+                      setPage(0);
+                    }}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                  >
+                    <option value="">Svi</option>
+                    <option value="cash">Kasa</option>
+                    <option value="bank">Tekući račun</option>
+                  </select>
+                </label>
 
-    <label className="space-y-1 text-xs font-medium text-slate-600">
-      Izvor
-      <select
-        value={sourceFilter}
-        onChange={(e) => {
-          setSourceFilter(e.target.value as "" | CashSourceType);
-          setPage(0);
-        }}
-        className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
-      >
-        <option value="">Svi</option>
-        <option value="manual">Ručni unos</option>
-        <option value="output_invoice_payment">Izlazna faktura</option>
-        <option value="input_invoice_payment">Ulazna faktura</option>
-      </select>
-    </label>
-  </div>
+                <label className="space-y-1 text-xs font-medium text-slate-600">
+                  Izvor
+                  <select
+                    value={sourceFilter}
+                    onChange={(e) => {
+                      setSourceFilter(e.target.value as "" | CashSourceType);
+                      setPage(0);
+                    }}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                  >
+                    <option value="">Svi</option>
+                    <option value="manual">Ručni unos</option>
+                    <option value="output_invoice_payment">Izlazna faktura</option>
+                    <option value="input_invoice_payment">Ulazna faktura</option>
+                  </select>
+                </label>
+              </div>
 
-  <div className="mt-3 flex justify-end">
-    <button
-      type="button"
-      onClick={() => {
-        setDateFrom("");
-        setDateTo("");
-        setKindFilter("");
-        setAccountFilter("");
-        setSourceFilter("");
-        setPage(0);
-      }}
-      className="text-xs font-semibold text-slate-600 hover:text-slate-950"
-    >
-      Poništi filtere
-    </button>
-  </div>
-</div>
+              <div className="mt-3 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDateFrom("");
+                    setDateTo("");
+                    setKindFilter("");
+                    setAccountFilter("");
+                    setSourceFilter("");
+                    setPage(0);
+                  }}
+                  className="text-xs font-semibold text-slate-600 hover:text-slate-950"
+                >
+                  Poništi filtere
+                </button>
+              </div>
+            </div>
 
           {isLoading && (
             <div className="rounded-2xl border border-slate-200 bg-white p-6 text-sm text-slate-600 shadow-sm">
@@ -483,11 +597,17 @@ const hasNext = data ? data.offset + data.items.length < data.total : false;
             </div>
           )}
 
-          {isError && (
-            <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700 shadow-sm">
-              Greška pri učitavanju kase: {error.message}
-            </div>
-          )}
+            {isError && (
+              <div className="rounded-2xl border border-red-200 bg-red-50 p-6 text-sm text-red-700 shadow-sm">
+                Greška pri učitavanju kase: {error.message}
+              </div>
+            )}
+
+            {rowActionError && (
+              <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-700 shadow-sm">
+                {rowActionError}
+              </div>
+            )}
 
 {!!data && data.items.length === 0 && !isLoading && !isError && (
   <div className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center shadow-sm">
@@ -525,9 +645,12 @@ const hasNext = data ? data.offset + data.items.length < data.total : false;
               <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
                 Iznos
               </th>
-              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide">
-                Dokument
-              </th>
+                <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide">
+                  Dokument
+                </th>
+                <th className="px-4 py-3 text-right text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
+                  Akcije
+                </th>
             </tr>
           </thead>
 
@@ -573,9 +696,35 @@ const hasNext = data ? data.offset + data.items.length < data.total : false;
                   {formatAmount(entry)}
                 </td>
 
-                <td className="px-4 py-3">
-                  {sourceDocumentCell(entry)}
-                </td>
+                  <td className="px-4 py-3">
+                    {sourceDocumentCell(entry)}
+                  </td>
+
+                  <td className="px-4 py-3 text-right whitespace-nowrap">
+                    {entry.source_type === "manual" ? (
+                      <div className="inline-flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => startEdit(entry)}
+                          disabled={isFormSaving || deletingEntryId === entry.id}
+                          className="text-xs font-semibold text-slate-600 hover:text-slate-950 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Izmijeni
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(entry)}
+                          disabled={isFormSaving || deletingEntryId === entry.id}
+                          className="text-xs font-semibold text-rose-600 hover:text-rose-800 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {deletingEntryId === entry.id ? "Brišem..." : "Obriši"}
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="text-xs text-slate-400">—</span>
+                    )}
+                  </td>
               </tr>
             ))}
           </tbody>
@@ -621,17 +770,21 @@ const hasNext = data ? data.offset + data.items.length < data.total : false;
             onSubmit={handleSubmit}
             className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm"
           >
-            <div className="border-b border-slate-100 bg-slate-50 px-5 py-4">
-              <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-                Quick Entry
-              </p>
-              <h2 className="mt-1 text-lg font-semibold text-slate-950">
-                Novi unos prometa
-              </h2>
-              <p className="mt-1 text-xs leading-5 text-slate-500">
-                Ručno evidentiraj prihod ili rashod po kasi ili tekućem računu.
-              </p>
-            </div>
+              <div className="border-b border-slate-100 bg-slate-50 px-5 py-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  {editingEntryId === null ? "Quick Entry" : "Izmjena"}
+                </p>
+                <h2 className="mt-1 text-lg font-semibold text-slate-950">
+                  {editingEntryId === null
+                    ? "Novi unos prometa"
+                    : "Izmjena ručnog unosa"}
+                </h2>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  {editingEntryId === null
+                    ? "Ručno evidentiraj prihod ili rashod po kasi ili tekućem računu."
+                    : "Izmijeni datum, tip, račun, iznos ili napomenu ručnog zapisa."}
+                </p>
+              </div>
 
             <div className="space-y-4 p-5">
               <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-2">
@@ -706,13 +859,30 @@ const hasNext = data ? data.offset + data.items.length < data.total : false;
                 </div>
               )}
 
-              <button
-                type="submit"
-                disabled={isSaving}
-                className="inline-flex w-full items-center justify-center rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {isSaving ? "Spašavam..." : "Snimi unos"}
-              </button>
+                <div className="flex gap-2">
+                  {editingEntryId !== null && (
+                    <button
+                      type="button"
+                      onClick={cancelEdit}
+                      disabled={isFormSaving}
+                      className="inline-flex flex-1 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      Odustani
+                    </button>
+                  )}
+
+                  <button
+                    type="submit"
+                    disabled={isFormSaving}
+                    className="inline-flex flex-1 items-center justify-center rounded-xl bg-slate-950 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {isFormSaving
+                      ? "Spašavam..."
+                      : editingEntryId === null
+                        ? "Snimi unos"
+                        : "Sačuvaj izmjene"}
+                  </button>
+                </div>
 
               <div className="rounded-2xl bg-slate-50 p-4 text-xs leading-5 text-slate-500">
                 <p className="font-semibold text-slate-700">Napomena</p>
