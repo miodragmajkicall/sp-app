@@ -51,6 +51,18 @@ def _ensure_sample_data() -> None:
         return
     save_complete_profile(client, HEADERS)
 
+    tax_profile = client.put(
+        "/settings/tax",
+        headers=HEADERS,
+        json={
+            "entity": "RS",
+            "regime": "pausal",
+            "scenario_key": "rs_primary",
+            "has_additional_activity": False,
+        },
+    )
+    assert tax_profile.status_code == 200, tax_profile.text
+
     # 1) Izlazna faktura (prihod)
     invoice_payload = {
         "invoice_number": "KPR-INV-001",
@@ -291,9 +303,11 @@ def test_kpr_cash_basis_invoice_is_recognized_only_in_payment_month():
     assert invoice_rows[0]["date"] == "2026-08-18"
 
 
-def test_kpr_nonlinked_cash_expense_remains_visible():
+def test_kpr_business_activity_cash_expense_remains_visible():
     tenant = f"kpr-cash-{uuid4().hex[:12]}"
     headers = {"X-Tenant-Code": tenant}
+    _set_cash_profile(tenant)
+
     response = client.post(
         "/cash/",
         headers=headers,
@@ -301,6 +315,7 @@ def test_kpr_nonlinked_cash_expense_remains_visible():
             "entry_date": "2026-08-19",
             "kind": "expense",
             "amount": "30.00",
+            "recognition_class": "business_activity",
             "note": "Independent expense",
         },
     )
@@ -308,9 +323,65 @@ def test_kpr_nonlinked_cash_expense_remains_visible():
 
     kpr = client.get("/kpr?year=2026&month=8", headers=headers)
     assert kpr.status_code == 200, kpr.text
-    assert any(
-        row["source"] == "cash" and Decimal(str(row["amount"])) == Decimal("30.00")
+
+    cash_rows = [
+        row
         for row in kpr.json()["items"]
+        if row["source"] == "cash" and row["source_id"] == response.json()["id"]
+    ]
+    assert len(cash_rows) == 1
+    assert Decimal(str(cash_rows[0]["amount"])) == Decimal("30.00")
+    assert cash_rows[0]["date"] == "2026-08-19"
+    assert cash_rows[0]["tax_deductible"] is False
+
+
+def test_kpr_cash_only_entry_is_not_recognized():
+    tenant = f"kpr-cash-only-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+
+    response = client.post(
+        "/cash/",
+        headers=headers,
+        json={
+            "entry_date": "2026-08-19",
+            "kind": "income",
+            "amount": "45.00",
+            "recognition_class": "cash_only",
+            "note": "Cashflow only",
+        },
+    )
+    assert response.status_code == 201, response.text
+
+    kpr = client.get("/kpr?year=2026&month=8", headers=headers)
+    assert kpr.status_code == 200, kpr.text
+    assert not any(
+        row["source"] == "cash" and row["source_id"] == response.json()["id"]
+        for row in kpr.json()["items"]
+    )
+
+
+def test_kpr_business_activity_cash_with_unresolved_context_fails_closed():
+    tenant = f"kpr-cash-unresolved-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+
+    response = client.post(
+        "/cash/",
+        headers=headers,
+        json={
+            "entry_date": "2026-08-19",
+            "kind": "income",
+            "amount": "45.00",
+            "recognition_class": "business_activity",
+            "note": "Unsupported recognition context",
+        },
+    )
+    assert response.status_code == 201, response.text
+
+    kpr = client.get("/kpr?year=2026&month=8", headers=headers)
+    assert kpr.status_code == 409, kpr.text
+    assert (
+        "Manual cash recognition policy is not configured"
+        in kpr.json()["detail"]
     )
 
 

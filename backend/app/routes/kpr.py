@@ -13,11 +13,15 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import CashEntry, Invoice
+from app.models import Invoice
 from app.schemas.kpr import KprListResponse, KprRowItem
 from app.services.recognized_input_expenses import (
     UnsupportedInputExpenseRecognitionError,
     list_recognized_input_expenses,
+)
+from app.services.recognized_manual_cash import (
+    UnsupportedManualCashRecognitionError,
+    list_recognized_manual_cash,
 )
 from app.tenant_security import ensure_tenant_exists, require_tenant_code
 
@@ -168,39 +172,34 @@ def _collect_kpr_rows(
         )
 
     # ---------------------------
-    # 3) CashEntry – income/expense
+    # 3) Manual cash – recognized business activity
     # ---------------------------
-    cash_filters = [
-        CashEntry.tenant_code == tenant_code,
-        CashEntry.invoice_id.is_(None),
-        CashEntry.input_invoice_id.is_(None),
-    ]
-    if year is not None:
-        cash_filters.append(func.extract("year", CashEntry.entry_date) == year)
-    if month is not None:
-        cash_filters.append(func.extract("month", CashEntry.entry_date) == month)
+    try:
+        recognized_manual_cash = list_recognized_manual_cash(
+            db,
+            tenant_code=tenant_code,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except UnsupportedManualCashRecognitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
-    cash_stmt = (
-        select(CashEntry)
-        .where(*cash_filters)
-        .order_by(CashEntry.entry_date.asc(), CashEntry.id.asc())
-    )
-    for ce in db.execute(cash_stmt).scalars().all():
-        amount = _as_decimal(getattr(ce, "amount", 0))
-        kind = getattr(ce, "kind", "income")
+    for cash in recognized_manual_cash:
+        if month is not None and year is None and cash.recognition_date.month != month:
+            continue
         rows.append(
             KprRowItem(
-                date=ce.entry_date,
-                kind="income" if kind == "income" else "expense",
+                date=cash.recognition_date,
+                kind=cash.kind,
                 category="cash",
                 counterparty=None,
                 document_number=None,
-                description=getattr(ce, "note", None),
-                amount=amount,
+                description=cash.description,
+                amount=cash.amount,
                 currency="BAM",
-                tax_deductible=(kind == "expense"),
+                tax_deductible=False,
                 source="cash",
-                source_id=ce.id,
+                source_id=cash.cash_entry_id,
             )
         )
 

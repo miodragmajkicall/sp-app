@@ -139,6 +139,8 @@ def _insert_cash_entry_january_2025(
             row[col.name] = kind
         elif col.name == "amount":
             row[col.name] = amount
+        elif col.name == "recognition_class":
+            row[col.name] = "business_activity"
         elif col.name == "description":
             row[col.name] = f"{kind} for auto tax test"
         elif (
@@ -250,18 +252,16 @@ def test_tax_monthly_preview_formula_basic() -> None:
     assert data["is_final"] is False
 
 
-def test_tax_monthly_auto_aggregates_invoices_and_cash() -> None:
+def test_tax_monthly_auto_aggregates_invoices_and_recognized_manual_cash() -> None:
     """
     Test za /tax/monthly/auto:
 
-    - kreira tenanta
+    - kreira tenanta sa podržanim CASH recognition profilom
     - ubaci 1 fakturu u januaru 2025
-    - ubaci 2 cash unosa (income + expense) u januaru 2025
-    - pozove /tax/monthly/auto?year=2025&month=1
+    - ubaci manual business cash income + expense
     - provjeri:
-        * total_income = invoice_income + cash_income
-        * total_expense = cash_expense
-        * ostala polja po DUMMY formuli
+        * recognized manual income ulazi u total_income
+        * manual expense nije automatski poreski odbitan u 3E-2A
     """
     tenant_code = "t-tax-auto"
 
@@ -292,48 +292,25 @@ def test_tax_monthly_auto_aggregates_invoices_and_cash() -> None:
         db.commit()
 
         headers = {"X-Tenant-Code": tenant_code}
+        _set_tax_cash_profile(headers)
         params = {"year": 2025, "month": 1}
 
         resp = client.get("/tax/monthly/auto", params=params, headers=headers)
-        assert resp.status_code == 200
+        assert resp.status_code == 200, resp.text
 
         data = resp.json()
 
-        cfg = TAX_DUMMY_CONFIG
-
         total_income = invoice_income + cash_income
-        total_expense = cash_expense
+        total_expense = Decimal("0.00")
 
-        # DUMMY formula – ista kao u _compute_monthly_summary
-        flat_costs = total_income * cfg.flat_costs_rate
-        taxable_base = total_income - flat_costs - total_expense
-        if taxable_base < Decimal("0"):
-            taxable_base = Decimal("0.00")
-
-        income_tax = taxable_base * cfg.income_tax_rate
-        contrib_rate_sum = (
-            cfg.pension_contribution_rate
-            + cfg.health_contribution_rate
-            + cfg.unemployment_contribution_rate
-        )
-        contributions_total = taxable_base * contrib_rate_sum
-        total_due = income_tax + contributions_total
-
-        # 1) Provjera agregacije izvora
+        # Ovaj test provjerava source aggregation / recognition boundary.
         assert _dec2(data["total_income"]) == _dec2(total_income)
         assert _dec2(data["total_expense"]) == _dec2(total_expense)
 
-        # 2) Provjera izračuna po formuli
-        assert _dec2(data["taxable_base"]) == _dec2(taxable_base)
-        assert _dec2(data["income_tax"]) == _dec2(income_tax)
-        assert _dec2(data["contributions_total"]) == _dec2(contributions_total)
-        assert _dec2(data["total_due"]) == _dec2(total_due)
-
-        # 3) Ostala polja
         assert data["year"] == 2025
         assert data["month"] == 1
         assert data["tenant_code"] == tenant_code
-        assert data["currency"] == cfg.currency
+        assert data["currency"] == "BAM"
         assert data["is_final"] is False
 
     finally:
@@ -594,3 +571,58 @@ def test_tax_yearly_preview_uses_migrated_finalized_month_expense() -> None:
     assert yearly.status_code == 200, yearly.text
     assert yearly.json()["months_included"] == 1
     assert _dec2(yearly.json()["total_expense"]) == Decimal("117.00")
+
+def test_tax_cash_only_entry_is_not_recognized() -> None:
+    tenant = f"tax-cash-only-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+    _set_tax_cash_profile(headers)
+
+    cash = client.post(
+        "/cash/",
+        headers=headers,
+        json={
+            "entry_date": "2026-08-19",
+            "kind": "income",
+            "amount": "75.00",
+            "recognition_class": "cash_only",
+            "note": "Cashflow only TAX test",
+        },
+    )
+    assert cash.status_code == 201, cash.text
+
+    response = client.get(
+        "/tax/monthly/auto",
+        params={"year": 2026, "month": 8},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    assert _dec2(response.json()["total_income"]) == Decimal("0.00")
+
+
+def test_tax_business_activity_cash_with_unresolved_context_fails_closed() -> None:
+    tenant = f"tax-cash-unresolved-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+
+    cash = client.post(
+        "/cash/",
+        headers=headers,
+        json={
+            "entry_date": "2026-08-19",
+            "kind": "income",
+            "amount": "75.00",
+            "recognition_class": "business_activity",
+            "note": "Unsupported TAX recognition context",
+        },
+    )
+    assert cash.status_code == 201, cash.text
+
+    response = client.get(
+        "/tax/monthly/auto",
+        params={"year": 2026, "month": 8},
+        headers=headers,
+    )
+    assert response.status_code == 409, response.text
+    assert (
+        "Manual cash recognition policy is not configured"
+        in response.json()["detail"]
+    )

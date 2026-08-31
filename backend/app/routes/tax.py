@@ -10,12 +10,11 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy import case, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
 from app.models import (
-    CashEntry,
     Invoice,
     TaxMonthlyResult,
     TaxYearlyResult,
@@ -40,6 +39,10 @@ from app.schemas.tax_settings import TaxSettingsRead, TaxSettingsUpsert
 from app.services.recognized_input_expenses import (
     UnsupportedInputExpenseRecognitionError,
     list_recognized_input_expenses,
+)
+from app.services.recognized_manual_cash import (
+    UnsupportedManualCashRecognitionError,
+    list_recognized_manual_cash,
 )
 from app.tenant_security import require_tenant_code
 
@@ -527,27 +530,24 @@ def _aggregate_monthly_income_and_expense(
     invoice_row = db.execute(stmt_invoices).one()
     invoice_income = invoice_row.invoice_income or Decimal("0.00")
 
-    income_expr = func.coalesce(
-        func.sum(case((CashEntry.kind == "income", CashEntry.amount), else_=0)),
-        0,
-    )
+    try:
+        recognized_manual_cash = list_recognized_manual_cash(
+            db,
+            tenant_code=tenant_code,
+            date_from=month_start,
+            date_to=month_end,
+        )
+    except UnsupportedManualCashRecognitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
 
-    expense_expr = func.coalesce(
-        func.sum(case((CashEntry.kind == "expense", CashEntry.amount), else_=0)),
-        0,
+    cash_income = sum(
+        (
+            cash.amount
+            for cash in recognized_manual_cash
+            if cash.kind == "income"
+        ),
+        Decimal("0.00"),
     )
-
-    stmt_cash = select(income_expr.label("cash_income"), expense_expr.label("cash_expense")).where(
-        CashEntry.tenant_code == tenant_code,
-        CashEntry.invoice_id.is_(None),
-        CashEntry.input_invoice_id.is_(None),
-        CashEntry.entry_date >= month_start,
-        CashEntry.entry_date < month_end,
-    )
-
-    cash_row = db.execute(stmt_cash).one()
-    cash_income = cash_row.cash_income or Decimal("0.00")
-    cash_expense = cash_row.cash_expense or Decimal("0.00")
 
     try:
         recognized_input_expenses = list_recognized_input_expenses(
@@ -564,7 +564,7 @@ def _aggregate_monthly_income_and_expense(
     )
 
     total_income = invoice_income + cash_income
-    total_expense = cash_expense + input_expense
+    total_expense = input_expense
 
     return total_income, total_expense
 

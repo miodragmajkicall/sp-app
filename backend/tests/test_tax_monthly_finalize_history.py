@@ -8,7 +8,6 @@ from sqlalchemy import MetaData, Table, select
 
 from app.main import app
 from app.db import SessionLocal
-from app.routes.tax import TAX_DUMMY_CONFIG
 
 client = TestClient(app)
 
@@ -128,6 +127,8 @@ def _insert_cash_entry_january_2025(
             row[col.name] = kind
         elif col.name == "amount":
             row[col.name] = amount
+        elif col.name == "recognition_class":
+            row[col.name] = "business_activity"
         elif col.name == "description":
             row[col.name] = f"{kind} for tax finalize history test"
         elif (
@@ -234,6 +235,18 @@ def test_tax_monthly_finalize_creates_history_audit_row() -> None:
         db.commit()
 
         headers = {"X-Tenant-Code": tenant_code}
+        tax_profile = client.put(
+            "/settings/tax",
+            headers=headers,
+            json={
+                "entity": "RS",
+                "regime": "pausal",
+                "scenario_key": "rs_primary",
+                "has_additional_activity": False,
+            },
+        )
+        assert tax_profile.status_code == 200, tax_profile.text
+
         params = {"year": 2025, "month": 1}
 
         # 1) Finalizacija – treba da prođe
@@ -241,24 +254,11 @@ def test_tax_monthly_finalize_creates_history_audit_row() -> None:
         assert resp.status_code == 200
         data = resp.json()
 
-        cfg = TAX_DUMMY_CONFIG
-
         total_income = invoice_income + cash_income
-        total_expense = cash_expense
+        total_expense = Decimal("0.00")
 
-        flat_costs = total_income * cfg.flat_costs_rate
-        taxable_base = total_income - flat_costs - total_expense
-        if taxable_base < Decimal("0"):
-            taxable_base = Decimal("0.00")
-
-        income_tax = taxable_base * cfg.income_tax_rate
-        contrib_rate_sum = (
-            cfg.pension_contribution_rate
-            + cfg.health_contribution_rate
-            + cfg.unemployment_contribution_rate
-        )
-        contributions_total = taxable_base * contrib_rate_sum
-        total_due = income_tax + contributions_total
+        assert _dec2(data["total_income"]) == _dec2(total_income)
+        assert _dec2(data["total_expense"]) == _dec2(total_expense)
 
         # 1a) sanity check response
         assert data["is_final"] is True
@@ -292,14 +292,16 @@ def test_tax_monthly_finalize_creates_history_audit_row() -> None:
         assert row.triggered_by is None
         assert row.note is None
 
-        # Snapshot vrijednosti u history tabeli treba da prati DUMMY obračun
-        assert _dec2(row.total_income) == _dec2(total_income)
-        assert _dec2(row.total_expense) == _dec2(total_expense)
-        assert _dec2(row.taxable_base) == _dec2(taxable_base)
-        assert _dec2(row.income_tax) == _dec2(income_tax)
-        assert _dec2(row.contributions_total) == _dec2(contributions_total)
-        assert _dec2(row.total_due) == _dec2(total_due)
-        assert row.currency == cfg.currency
+        # History snapshot mora odgovarati finalizovanom response-u.
+        assert _dec2(row.total_income) == _dec2(data["total_income"])
+        assert _dec2(row.total_expense) == _dec2(data["total_expense"])
+        assert _dec2(row.taxable_base) == _dec2(data["taxable_base"])
+        assert _dec2(row.income_tax) == _dec2(data["income_tax"])
+        assert _dec2(row.contributions_total) == _dec2(
+            data["contributions_total"]
+        )
+        assert _dec2(row.total_due) == _dec2(data["total_due"])
+        assert row.currency == data["currency"]
 
     finally:
         _cleanup_tax_history_test_data(db, tenant_code)
