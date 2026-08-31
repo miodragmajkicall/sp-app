@@ -69,6 +69,12 @@ class CashEntryCreate(BaseModel):
             "`cash_only` označava samo novčani tok."
         ),
     )
+    tax_treatment: Optional[
+        Literal["deductible", "nondeductible", "unresolved"]
+    ] = Field(
+        default=None,
+        description="Poreski tretman ručnog poslovnog rashoda.",
+    )
 
 
     description: Optional[str] = Field(
@@ -133,6 +139,12 @@ class CashEntryUpdate(BaseModel):
     ] = Field(
         default=None,
         description="Ažurirana klasifikacija ručnog novčanog događaja.",
+    )
+    tax_treatment: Optional[
+        Literal["deductible", "nondeductible", "unresolved"]
+    ] = Field(
+        default=None,
+        description="Ažurirani poreski tretman ručnog poslovnog rashoda.",
     )
 
 
@@ -212,6 +224,12 @@ class CashEntryRead(BaseModel):
             "Klasifikacija ručnog novčanog događaja. "
             "Linked invoice payment zapisima vrijednost može biti null."
         ),
+    )
+    tax_treatment: Optional[
+        Literal["deductible", "nondeductible", "unresolved"]
+    ] = Field(
+        default=None,
+        description="Poreski tretman ručnog poslovnog rashoda.",
     )
     invoice_id: Optional[int] = Field(
         default=None,
@@ -325,6 +343,12 @@ class CashRowItem(BaseModel):
             "evidentiranje, a `cash_only` samo novčani tok. "
             "Linked invoice payment zapisima vrijednost može biti null."
         ),
+    )
+    tax_treatment: Optional[
+        Literal["deductible", "nondeductible", "unresolved"]
+    ] = Field(
+        default=None,
+        description="Poreski tretman ručnog poslovnog rashoda.",
     )
 
 

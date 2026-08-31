@@ -790,6 +790,8 @@ def create_invoice_payment(
         kind="income",
         amount=invoice.total_amount,
         account=payload.account,
+        recognition_class=None,
+        tax_treatment=None,
         invoice_id=invoice.id,
         input_invoice_id=None,
         description=payload.note,

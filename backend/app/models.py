@@ -94,6 +94,7 @@ class CashEntry(Base):
 
     account = Column(String(16), nullable=False, default="cash")
     recognition_class = Column(String(32), nullable=True)
+    tax_treatment = Column(String(32), nullable=True)
 
     invoice_id = Column(
         BigInteger,
@@ -126,6 +127,11 @@ class CashEntry(Base):
             "recognition_class IS NULL OR "
             "recognition_class in ('business_activity','cash_only')",
             name="ck_cash_entries_recognition_class",
+        ),
+        CheckConstraint(
+            "tax_treatment IS NULL OR "
+            "tax_treatment in ('deductible','nondeductible','unresolved')",
+            name="ck_cash_entries_tax_treatment",
         ),
         UniqueConstraint(
             "input_invoice_id",

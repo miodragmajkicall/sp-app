@@ -87,6 +87,47 @@ def _validate_invoice_references(
             raise HTTPException(status_code=404, detail="Input invoice not found")
 
 
+def _apply_tax_treatment_contract(
+    data: dict,
+    *,
+    current: CashEntry | None = None,
+    tax_treatment_provided: bool,
+) -> None:
+    """Keep tax treatment limited to manual business-activity expenses."""
+    kind = data.get("kind", current.kind if current is not None else None)
+    recognition_class = data.get(
+        "recognition_class",
+        current.recognition_class if current is not None else None,
+    )
+    eligible = kind == "expense" and recognition_class == "business_activity"
+
+    if eligible:
+        if tax_treatment_provided and data.get("tax_treatment") is None:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    "tax_treatment cannot be null for manual "
+                    "business_activity expense entries"
+                ),
+            )
+
+        if data.get("tax_treatment") is None:
+            existing = current.tax_treatment if current is not None else None
+            data["tax_treatment"] = existing or "unresolved"
+        return
+
+    if data.get("tax_treatment") is not None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "tax_treatment is only allowed for manual "
+                "business_activity expense entries"
+            ),
+        )
+
+    data["tax_treatment"] = None
+
+
 # ======================================================
 #  SUMMARY (income / expense / net)
 # ======================================================
@@ -573,6 +614,7 @@ def list_cash_ui(
                 amount=cash_entry.amount,
                 account=cash_entry.account,
                 recognition_class=cash_entry.recognition_class,
+                tax_treatment=cash_entry.tax_treatment,
                 invoice_id=cash_entry.invoice_id,
                 input_invoice_id=cash_entry.input_invoice_id,
                 source_type=source,
@@ -755,6 +797,11 @@ def create_cash(
             ),
         )
 
+    _apply_tax_treatment_contract(
+        data,
+        tax_treatment_provided="tax_treatment" in payload.model_fields_set,
+    )
+
     data.setdefault("tenant_code", tenant)
     data.setdefault("created_at", datetime.now(timezone.utc))
 
@@ -895,6 +942,11 @@ def patch_cash(
         )
 
     _validate_invoice_references(db, tenant, update_data)
+    _apply_tax_treatment_contract(
+        update_data,
+        current=obj,
+        tax_treatment_provided="tax_treatment" in payload.model_fields_set,
+    )
 
     for k, v in update_data.items():
         setattr(obj, k, v)

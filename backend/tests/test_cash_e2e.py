@@ -535,6 +535,23 @@ def test_manual_cash_recognition_class_contract():
     assert default_response.status_code == 201, default_response.text
     default_row = default_response.json()
     assert default_row["recognition_class"] == "business_activity"
+    assert default_row["tax_treatment"] is None
+
+    expense_response = client.post(
+        "/cash/",
+        json={
+            "entry_date": "2025-11-20",
+            "kind": "expense",
+            "amount": "40.00",
+            "account": "cash",
+            "note": "default tax treatment",
+        },
+        headers=headers,
+    )
+    assert expense_response.status_code == 201, expense_response.text
+    expense_row = expense_response.json()
+    assert expense_row["recognition_class"] == "business_activity"
+    assert expense_row["tax_treatment"] == "unresolved"
 
     cash_only_response = client.post(
         "/cash/",
@@ -551,6 +568,7 @@ def test_manual_cash_recognition_class_contract():
     assert cash_only_response.status_code == 201, cash_only_response.text
     cash_only_row = cash_only_response.json()
     assert cash_only_row["recognition_class"] == "cash_only"
+    assert cash_only_row["tax_treatment"] is None
 
     cash_id = cash_only_row["id"]
 
@@ -561,15 +579,166 @@ def test_manual_cash_recognition_class_contract():
     )
     assert patch_response.status_code == 200, patch_response.text
     assert patch_response.json()["recognition_class"] == "business_activity"
+    assert patch_response.json()["tax_treatment"] == "unresolved"
 
-    null_response = client.patch(
+    deductible_response = client.patch(
+        f"/cash/{cash_id}",
+        json={"tax_treatment": "deductible"},
+        headers=headers,
+    )
+    assert deductible_response.status_code == 200, deductible_response.text
+    assert deductible_response.json()["tax_treatment"] == "deductible"
+
+    income_response = client.patch(
+        f"/cash/{cash_id}",
+        json={"kind": "income"},
+        headers=headers,
+    )
+    assert income_response.status_code == 200, income_response.text
+    assert income_response.json()["kind"] == "income"
+    assert income_response.json()["tax_treatment"] is None
+
+    expense_again_response = client.patch(
+        f"/cash/{cash_id}",
+        json={"kind": "expense"},
+        headers=headers,
+    )
+    assert expense_again_response.status_code == 200, expense_again_response.text
+    assert expense_again_response.json()["kind"] == "expense"
+    assert expense_again_response.json()["recognition_class"] == "business_activity"
+    assert expense_again_response.json()["tax_treatment"] == "unresolved"
+
+    null_treatment_response = client.patch(
+        f"/cash/{cash_id}",
+        json={"tax_treatment": None},
+        headers=headers,
+    )
+    assert (
+        null_treatment_response.status_code == 422
+    ), null_treatment_response.text
+
+    cash_only_again_response = client.patch(
+        f"/cash/{cash_id}",
+        json={"recognition_class": "cash_only"},
+        headers=headers,
+    )
+    assert (
+        cash_only_again_response.status_code == 200
+    ), cash_only_again_response.text
+    assert cash_only_again_response.json()["recognition_class"] == "cash_only"
+    assert cash_only_again_response.json()["tax_treatment"] is None
+
+    business_again_response = client.patch(
+        f"/cash/{cash_id}",
+        json={"recognition_class": "business_activity"},
+        headers=headers,
+    )
+    assert business_again_response.status_code == 200, business_again_response.text
+    assert business_again_response.json()["recognition_class"] == "business_activity"
+    assert business_again_response.json()["tax_treatment"] == "unresolved"
+
+    null_recognition_response = client.patch(
         f"/cash/{cash_id}",
         json={"recognition_class": None},
         headers=headers,
     )
-    assert null_response.status_code == 422, null_response.text
+    assert (
+        null_recognition_response.status_code == 422
+    ), null_recognition_response.text
+    explicit_deductible_response = client.post(
+        "/cash/",
+        json={
+            "entry_date": "2025-11-22",
+            "kind": "expense",
+            "amount": "11.00",
+            "account": "cash",
+            "tax_treatment": "deductible",
+        },
+        headers=headers,
+    )
+    assert (
+        explicit_deductible_response.status_code == 201
+    ), explicit_deductible_response.text
+    assert explicit_deductible_response.json()["tax_treatment"] == "deductible"
 
-    invalid_create = client.post(
+    explicit_nondeductible_response = client.post(
+        "/cash/",
+        json={
+            "entry_date": "2025-11-22",
+            "kind": "expense",
+            "amount": "12.00",
+            "account": "cash",
+            "tax_treatment": "nondeductible",
+        },
+        headers=headers,
+    )
+    assert (
+        explicit_nondeductible_response.status_code == 201
+    ), explicit_nondeductible_response.text
+    assert (
+        explicit_nondeductible_response.json()["tax_treatment"]
+        == "nondeductible"
+    )
+
+    explicit_unresolved_response = client.post(
+        "/cash/",
+        json={
+            "entry_date": "2025-11-22",
+            "kind": "expense",
+            "amount": "13.00",
+            "account": "cash",
+            "tax_treatment": "unresolved",
+        },
+        headers=headers,
+    )
+    assert (
+        explicit_unresolved_response.status_code == 201
+    ), explicit_unresolved_response.text
+    assert explicit_unresolved_response.json()["tax_treatment"] == "unresolved"
+
+    explicit_null_treatment = client.post(
+        "/cash/",
+        json={
+            "entry_date": "2025-11-22",
+            "kind": "expense",
+            "amount": "14.00",
+            "account": "cash",
+            "tax_treatment": None,
+        },
+        headers=headers,
+    )
+    assert explicit_null_treatment.status_code == 422, explicit_null_treatment.text
+
+    invalid_income_treatment = client.post(
+        "/cash/",
+        json={
+            "entry_date": "2025-11-22",
+            "kind": "income",
+            "amount": "10.00",
+            "account": "cash",
+            "tax_treatment": "nondeductible",
+        },
+        headers=headers,
+    )
+    assert invalid_income_treatment.status_code == 422, invalid_income_treatment.text
+
+    invalid_cash_only_treatment = client.post(
+        "/cash/",
+        json={
+            "entry_date": "2025-11-22",
+            "kind": "expense",
+            "amount": "15.00",
+            "account": "cash",
+            "recognition_class": "cash_only",
+            "tax_treatment": "deductible",
+        },
+        headers=headers,
+    )
+    assert (
+        invalid_cash_only_treatment.status_code == 422
+    ), invalid_cash_only_treatment.text
+
+    invalid_recognition_class = client.post(
         "/cash/",
         json={
             "entry_date": "2025-11-22",
@@ -580,7 +749,22 @@ def test_manual_cash_recognition_class_contract():
         },
         headers=headers,
     )
-    assert invalid_create.status_code == 422, invalid_create.text
+    assert (
+        invalid_recognition_class.status_code == 422
+    ), invalid_recognition_class.text
+
+    invalid_tax_treatment = client.post(
+        "/cash/",
+        json={
+            "entry_date": "2025-11-22",
+            "kind": "expense",
+            "amount": "10.00",
+            "account": "cash",
+            "tax_treatment": "invalid",
+        },
+        headers=headers,
+    )
+    assert invalid_tax_treatment.status_code == 422, invalid_tax_treatment.text
 
     list_response = client.get(
         "/cash/list",
@@ -594,3 +778,5 @@ def test_manual_cash_recognition_class_contract():
     }
     assert listed_by_id[default_row["id"]]["recognition_class"] == "business_activity"
     assert listed_by_id[cash_id]["recognition_class"] == "business_activity"
+    assert listed_by_id[default_row["id"]]["tax_treatment"] is None
+    assert listed_by_id[expense_row["id"]]["tax_treatment"] == "unresolved"

@@ -143,6 +143,7 @@ def test_create_payment_creates_income_cash_entry_and_marks_invoice_paid(
         assert payment.invoice_id == invoice_id
         assert payment.input_invoice_id is None
         assert payment.recognition_class is None
+        assert payment.tax_treatment is None
         assert payment.description == "Naplata kupca"
 
 
