@@ -1,13 +1,8 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/KprPage.tsx
-import { useMemo, useState, type FormEvent } from "react";
-import {
-  useMutation,
-  useQuery,
-  useQueryClient,
-} from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { Link } from "react-router-dom";
+import { useQuery } from "@tanstack/react-query";
 import { fetchKprList, exportKprPdf, exportKprExcel } from "../services/kprApi";
-import { createCashEntry } from "../services/cashApi";
-import type { CashEntryCreatePayload } from "../services/cashApi";
 import type { KprListResponse, KprRowItem } from "../types/kpr";
 
 const CURRENT_YEAR = new Date().getFullYear();
@@ -71,28 +66,11 @@ function formatReference(row: KprRowItem): string {
   return "Ostalo";
 }
 
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
 
 export default function KprPage() {
   const [year, setYear] = useState<number | undefined>(CURRENT_YEAR);
   const [month, setMonth] = useState<number | undefined>(CURRENT_MONTH);
   const [kindFilter, setKindFilter] = useState<KindFilter>("ALL");
-
-  const [isManualModalOpen, setIsManualModalOpen] = useState(false);
-  const [manualDate, setManualDate] = useState<string>(todayIso());
-  const [manualKind, setManualKind] = useState<"income" | "expense">(
-    "expense",
-  );
-  const [manualAccount, setManualAccount] = useState<"cash" | "bank">(
-    "cash",
-  );
-  const [manualAmount, setManualAmount] = useState<string>("");
-  const [manualDescription, setManualDescription] = useState<string>("");
-  const [manualError, setManualError] = useState<string>("");
-
-  const queryClient = useQueryClient();
 
   const {
     data,
@@ -108,21 +86,6 @@ export default function KprPage() {
         year,
         month,
       }),
-  });
-
-  const {
-    mutateAsync: createManualEntry,
-    isPending: isSavingManual,
-  } = useMutation({
-    mutationFn: async (payload: CashEntryCreatePayload) =>
-      createCashEntry(payload),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["cash"] });
-      queryClient.invalidateQueries({ queryKey: ["kpr"] });
-      queryClient.invalidateQueries({
-        queryKey: ["dashboard", "monthly", "current"],
-      });
-    },
   });
 
   const allItems: KprRowItem[] = data?.items ?? [];
@@ -198,164 +161,8 @@ export default function KprPage() {
     }
   };
 
-  async function handleManualSubmit(e: FormEvent) {
-    e.preventDefault();
-    setManualError("");
-
-    const parsed = Number(manualAmount);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      setManualError("Iznos mora biti veći od nule.");
-      return;
-    }
-
-    const payload: CashEntryCreatePayload = {
-      entry_date: manualDate,
-      kind: manualKind,
-      amount: parsed,
-      note: manualDescription.trim() || null,
-      account: manualAccount,
-    };
-
-    try {
-      await createManualEntry(payload);
-      setManualAmount("");
-      setManualDescription("");
-      await refetch();
-      setIsManualModalOpen(false);
-    } catch (err: any) {
-      const msg =
-        err?.response?.data?.detail ||
-        err?.message ||
-        "Greška pri snimanju unosa.";
-      setManualError(String(msg));
-    }
-  }
-
   return (
     <div className="relative space-y-6">
-      {isManualModalOpen && (
-        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/40 px-4 backdrop-blur-sm">
-          <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-            <div className="border-b border-slate-100 bg-slate-50 px-5 py-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-                    Ručni unos
-                  </p>
-                  <h3 className="mt-1 text-base font-semibold text-slate-900">
-                    Novi KPR unos
-                  </h3>
-                  <p className="mt-1 text-xs text-slate-500">
-                    Za provizije, naknade i druge prihode/rashode koji se ručno
-                    evidentiraju kroz cash modul.
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => setIsManualModalOpen(false)}
-                  className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 hover:bg-slate-100"
-                >
-                  Zatvori
-                </button>
-              </div>
-            </div>
-
-            <form onSubmit={handleManualSubmit} className="space-y-4 p-5">
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="space-y-1 text-xs font-medium text-slate-600">
-                  Datum
-                  <input
-                    type="date"
-                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
-                    value={manualDate}
-                    onChange={(e) => setManualDate(e.target.value)}
-                    required
-                  />
-                </label>
-
-                <label className="space-y-1 text-xs font-medium text-slate-600">
-                  Tip
-                  <select
-                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
-                    value={manualKind}
-                    onChange={(e) =>
-                      setManualKind(e.target.value as "income" | "expense")
-                    }
-                  >
-                    <option value="income">Prihod</option>
-                    <option value="expense">Rashod</option>
-                  </select>
-                </label>
-              </div>
-
-              <div className="grid gap-3 sm:grid-cols-2">
-                <label className="space-y-1 text-xs font-medium text-slate-600">
-                  Račun
-                  <select
-                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
-                    value={manualAccount}
-                    onChange={(e) =>
-                      setManualAccount(e.target.value as "cash" | "bank")
-                    }
-                  >
-                    <option value="cash">Kasa</option>
-                    <option value="bank">Tekući račun</option>
-                  </select>
-                </label>
-
-                <label className="space-y-1 text-xs font-medium text-slate-600">
-                  Iznos KM
-                  <input
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
-                    value={manualAmount}
-                    onChange={(e) => setManualAmount(e.target.value)}
-                    required
-                  />
-                </label>
-              </div>
-
-              <label className="space-y-1 text-xs font-medium text-slate-600">
-                Opis
-                <input
-                  type="text"
-                  className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
-                  value={manualDescription}
-                  onChange={(e) => setManualDescription(e.target.value)}
-                  placeholder="npr. Bankarska provizija za kartično plaćanje"
-                />
-              </label>
-
-              {manualError && (
-                <div className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                  {manualError}
-                </div>
-              )}
-
-              <div className="flex items-center justify-end gap-2 border-t border-slate-100 pt-4">
-                <button
-                  type="button"
-                  onClick={() => setIsManualModalOpen(false)}
-                  className="rounded-xl border border-slate-200 bg-white px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                >
-                  Otkaži
-                </button>
-
-                <button
-                  type="submit"
-                  disabled={isSavingManual}
-                  className="rounded-xl bg-slate-950 px-4 py-2 text-xs font-semibold text-white shadow-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {isSavingManual ? "Spašavam..." : "Snimi unos"}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
 
       <section className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
         <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-slate-800 px-5 py-6 text-white sm:px-6">
@@ -398,13 +205,12 @@ export default function KprPage() {
             </div>
 
             <div className="flex flex-wrap gap-2">
-              <button
-                type="button"
-                onClick={() => setIsManualModalOpen(true)}
+              <Link
+                to="/cash"
                 className="rounded-2xl bg-emerald-500 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-emerald-400"
               >
-                + Novi KPR unos
-              </button>
+                + Novi novčani unos
+              </Link>
 
               <button
                 type="button"
