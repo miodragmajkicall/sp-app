@@ -512,3 +512,85 @@ def test_cash_list_canonical_validation():
         assert r.status_code == 422, (
             f"Query unexpectedly accepted: {params!r}: {r.text}"
         )
+
+
+
+def test_manual_cash_recognition_class_contract():
+    tenant_code = "t-cash-recognition-class"
+    headers = {"X-Tenant-Code": tenant_code}
+
+    _clear_tenant_cash(tenant_code)
+
+    default_response = client.post(
+        "/cash/",
+        json={
+            "entry_date": "2025-11-20",
+            "kind": "income",
+            "amount": "100.00",
+            "account": "cash",
+            "note": "default classification",
+        },
+        headers=headers,
+    )
+    assert default_response.status_code == 201, default_response.text
+    default_row = default_response.json()
+    assert default_row["recognition_class"] == "business_activity"
+
+    cash_only_response = client.post(
+        "/cash/",
+        json={
+            "entry_date": "2025-11-21",
+            "kind": "expense",
+            "amount": "25.00",
+            "account": "bank",
+            "recognition_class": "cash_only",
+            "note": "cash only",
+        },
+        headers=headers,
+    )
+    assert cash_only_response.status_code == 201, cash_only_response.text
+    cash_only_row = cash_only_response.json()
+    assert cash_only_row["recognition_class"] == "cash_only"
+
+    cash_id = cash_only_row["id"]
+
+    patch_response = client.patch(
+        f"/cash/{cash_id}",
+        json={"recognition_class": "business_activity"},
+        headers=headers,
+    )
+    assert patch_response.status_code == 200, patch_response.text
+    assert patch_response.json()["recognition_class"] == "business_activity"
+
+    null_response = client.patch(
+        f"/cash/{cash_id}",
+        json={"recognition_class": None},
+        headers=headers,
+    )
+    assert null_response.status_code == 422, null_response.text
+
+    invalid_create = client.post(
+        "/cash/",
+        json={
+            "entry_date": "2025-11-22",
+            "kind": "income",
+            "amount": "10.00",
+            "account": "cash",
+            "recognition_class": "invalid",
+        },
+        headers=headers,
+    )
+    assert invalid_create.status_code == 422, invalid_create.text
+
+    list_response = client.get(
+        "/cash/list",
+        headers=headers,
+    )
+    assert list_response.status_code == 200, list_response.text
+
+    listed_by_id = {
+        row["id"]: row
+        for row in list_response.json()["items"]
+    }
+    assert listed_by_id[default_row["id"]]["recognition_class"] == "business_activity"
+    assert listed_by_id[cash_id]["recognition_class"] == "business_activity"

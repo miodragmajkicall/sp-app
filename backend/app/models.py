@@ -93,6 +93,7 @@ class CashEntry(Base):
     amount = Column(Numeric(12, 2), nullable=False)
 
     account = Column(String(16), nullable=False, default="cash")
+    recognition_class = Column(String(32), nullable=True)
 
     invoice_id = Column(
         BigInteger,
@@ -120,6 +121,11 @@ class CashEntry(Base):
         CheckConstraint(
             "account in ('cash','bank')",
             name="ck_cash_entries_account",
+        ),
+        CheckConstraint(
+            "recognition_class IS NULL OR "
+            "recognition_class in ('business_activity','cash_only')",
+            name="ck_cash_entries_recognition_class",
         ),
         UniqueConstraint(
             "input_invoice_id",

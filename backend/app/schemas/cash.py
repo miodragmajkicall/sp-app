@@ -58,6 +58,18 @@ class CashEntryCreate(BaseModel):
         ),
         examples=["cash"],
     )
+    recognition_class: Literal[
+        "business_activity",
+        "cash_only",
+    ] = Field(
+        default="business_activity",
+        description=(
+            "Klasifikacija ručnog novčanog događaja. "
+            "`business_activity` je podrazumijevana radi kompatibilnosti; "
+            "`cash_only` označava samo novčani tok."
+        ),
+    )
+
 
     description: Optional[str] = Field(
         default=None,
@@ -116,6 +128,13 @@ class CashEntryUpdate(BaseModel):
         ),
         examples=["bank"],
     )
+    recognition_class: Optional[
+        Literal["business_activity", "cash_only"]
+    ] = Field(
+        default=None,
+        description="Ažurirana klasifikacija ručnog novčanog događaja.",
+    )
+
 
     description: Optional[str] = Field(
         default=None,
@@ -128,7 +147,14 @@ class CashEntryUpdate(BaseModel):
         examples=["Ispravka prethodnog zapisa"],
     )
 
-    @field_validator("entry_date", "kind", "amount", "account", mode="before")
+    @field_validator(
+        "entry_date",
+        "kind",
+        "amount",
+        "account",
+        "recognition_class",
+        mode="before",
+    )
     @classmethod
     def reject_null_for_required_fields(cls, value):
         if value is None:
@@ -177,6 +203,15 @@ class CashEntryRead(BaseModel):
         ...,
         description="Vrsta računa: `cash` (kasa) ili `bank` (tekući račun).",
         examples=["cash"],
+    )
+    recognition_class: Optional[
+        Literal["business_activity", "cash_only"]
+    ] = Field(
+        default=None,
+        description=(
+            "Klasifikacija ručnog novčanog događaja. "
+            "Linked invoice payment zapisima vrijednost može biti null."
+        ),
     )
     invoice_id: Optional[int] = Field(
         default=None,
@@ -280,6 +315,18 @@ class CashRowItem(BaseModel):
         description="Račun: `cash` (kasa) ili `bank` (banka).",
         examples=["cash"],
     )
+    recognition_class: Optional[
+        Literal["business_activity", "cash_only"]
+    ] = Field(
+        default=None,
+        description=(
+            "Klasifikacija ručnog novčanog događaja. "
+            "`business_activity` označava kandidata za poslovno recognition "
+            "evidentiranje, a `cash_only` samo novčani tok. "
+            "Linked invoice payment zapisima vrijednost može biti null."
+        ),
+    )
+
 
     invoice_id: Optional[int] = Field(
         default=None,

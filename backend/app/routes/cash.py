@@ -572,6 +572,7 @@ def list_cash_ui(
                 kind=cash_entry.kind,
                 amount=cash_entry.amount,
                 account=cash_entry.account,
+                recognition_class=cash_entry.recognition_class,
                 invoice_id=cash_entry.invoice_id,
                 input_invoice_id=cash_entry.input_invoice_id,
                 source_type=source,
