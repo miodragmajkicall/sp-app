@@ -33,3 +33,12 @@ export interface CashListResponse {
   offset: number;
   items: CashListItem[];
 }
+
+export interface CashSummary {
+  income: number | string;
+  expense: number | string;
+  net: number | string;
+  cash_net: number | string;
+  bank_net: number | string;
+  total_count: number;
+}

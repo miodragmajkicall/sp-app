@@ -5,12 +5,14 @@ import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchCashEntries,
+  fetchCashSummary,
   createCashEntry,
   updateCashEntry,
   deleteCashEntry,
   type CashEntryCreatePayload,
   type CashEntryUpdatePayload,
   type CashListParams,
+  type CashSummaryParams,
 } from "../services/cashApi";
 import type {
   CashAccount,
@@ -19,6 +21,7 @@ import type {
   CashListItem,
   CashListResponse,
   CashSourceType,
+  CashSummary,
 } from "../types/cash";
 
 const PAGE_SIZE = 20;
@@ -175,16 +178,34 @@ export default function CashPage() {
       [dateFrom, dateTo, kindFilter, accountFilter, sourceFilter, page]
     );
 
+    const summaryParams = useMemo<CashSummaryParams>(
+      () => ({
+        ...(dateFrom ? { date_from: dateFrom } : {}),
+        ...(dateTo ? { date_to: dateTo } : {}),
+      }),
+      [dateFrom, dateTo]
+    );
+
     const {
       data,
       isLoading,
       isError,
       error,
-      refetch,
+      refetch: refetchList,
       isRefetching,
     } = useQuery<CashListResponse, Error>({
       queryKey: ["cash", "list", listParams],
       queryFn: () => fetchCashEntries(listParams),
+    });
+
+    const {
+      data: summaryData,
+      isLoading: isSummaryLoading,
+      refetch: refetchSummary,
+      isRefetching: isSummaryRefetching,
+    } = useQuery<CashSummary, Error>({
+      queryKey: ["cash", "summary", summaryParams],
+      queryFn: () => fetchCashSummary(summaryParams),
     });
 
     const [entryDate, setEntryDate] = useState<string>(todayIso());
@@ -342,41 +363,6 @@ export default function CashPage() {
       }
     }
 
-    const pageEntries = useMemo(() => data?.items ?? [], [data]);
-
-    const stats = useMemo(() => {
-      const totalIncome = pageEntries
-        .filter((entry) => entry.kind === "income")
-        .reduce((sum, entry) => sum + toNumber(entry.amount), 0);
-
-      const totalExpense = pageEntries
-        .filter((entry) => entry.kind === "expense")
-        .reduce((sum, entry) => sum + toNumber(entry.amount), 0);
-
-      const cashTotal = pageEntries
-        .filter((entry) => entry.account === "cash")
-        .reduce((sum, entry) => {
-          const value = toNumber(entry.amount);
-          return entry.kind === "expense" ? sum - value : sum + value;
-        }, 0);
-
-      const bankTotal = pageEntries
-        .filter((entry) => entry.account === "bank")
-        .reduce((sum, entry) => {
-          const value = toNumber(entry.amount);
-          return entry.kind === "expense" ? sum - value : sum + value;
-        }, 0);
-
-      return {
-        totalCount: pageEntries.length,
-        totalIncome,
-        totalExpense,
-        net: totalIncome - totalExpense,
-        cashTotal,
-        bankTotal,
-      };
-    }, [pageEntries]);
-
     const currentPage = Math.floor((data?.offset ?? 0) / PAGE_SIZE) + 1;
     const hasPrevious = page > 0;
     const hasNext = data
@@ -410,11 +396,24 @@ export default function CashPage() {
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
-                onClick={() => refetch()}
-                disabled={isLoading || isRefetching}
+                onClick={() => {
+                  void refetchList();
+                  void refetchSummary();
+                }}
+                disabled={
+                  isLoading ||
+                  isRefetching ||
+                  isSummaryLoading ||
+                  isSummaryRefetching
+                }
                 className="inline-flex items-center rounded-xl bg-white px-4 py-2 text-xs font-semibold text-slate-900 shadow-sm hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
               >
-                {isRefetching || isLoading ? "Osvježavam..." : "Osvježi podatke"}
+                {isRefetching ||
+                isLoading ||
+                isSummaryLoading ||
+                isSummaryRefetching
+                  ? "Osvježavam..."
+                  : "Osvježi podatke"}
               </button>
             </div>
           </div>
@@ -423,37 +422,37 @@ export default function CashPage() {
         <div className="grid gap-4 p-5 md:grid-cols-2 xl:grid-cols-4">
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-slate-500">
-              Neto tok — stranica
+              Neto tok
             </p>
             <p className="mt-2 text-2xl font-semibold text-slate-950">
-              {formatMoney(stats.net)}
+              {formatMoney(toNumber(summaryData?.net))}
             </p>
             <p className="mt-1 text-xs text-slate-500">
-              Prikazani prihodi minus rashodi
+              Ukupni priliv minus odliv u aktivnom periodu
             </p>
           </div>
 
           <div className="rounded-2xl border border-emerald-100 bg-emerald-50 p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-emerald-700">
-              Prihodi — stranica
+              Prilivi
             </p>
             <p className="mt-2 text-2xl font-semibold text-emerald-800">
-              {formatMoney(stats.totalIncome)}
+              {formatMoney(toNumber(summaryData?.income))}
             </p>
             <p className="mt-1 text-xs text-emerald-700/80">
-              Samo trenutno prikazani zapisi
+              Ukupni prilivi u aktivnom periodu
             </p>
           </div>
 
           <div className="rounded-2xl border border-rose-100 bg-rose-50 p-4">
             <p className="text-xs font-medium uppercase tracking-wide text-rose-700">
-              Rashodi — stranica
+              Odlivi
             </p>
             <p className="mt-2 text-2xl font-semibold text-rose-800">
-              {formatMoney(stats.totalExpense)}
+              {formatMoney(toNumber(summaryData?.expense))}
             </p>
             <p className="mt-1 text-xs text-rose-700/80">
-              Samo trenutno prikazani zapisi
+              Ukupni odlivi u aktivnom periodu
             </p>
           </div>
 
@@ -462,10 +461,10 @@ export default function CashPage() {
               Zapisi
             </p>
             <p className="mt-2 text-2xl font-semibold text-slate-950">
-              {stats.totalCount} / {data?.total ?? 0}
+              {summaryData?.total_count ?? 0}
             </p>
             <p className="mt-1 text-xs text-slate-500">
-              Prikazano / ukupno po filterima
+              Cash/Bank zapisi u aktivnom periodu
             </p>
           </div>
         </div>
@@ -486,10 +485,12 @@ export default function CashPage() {
 
                 <div className="flex flex-wrap gap-2">
                   <span className="inline-flex items-center rounded-full bg-amber-50 px-3 py-1 text-xs font-medium text-amber-700 ring-1 ring-amber-100">
-                    Neto tok kase — stranica: {formatMoney(stats.cashTotal)}
+                    Neto tok kase:{" "}
+                    {formatMoney(toNumber(summaryData?.cash_net))}
                   </span>
                   <span className="inline-flex items-center rounded-full bg-sky-50 px-3 py-1 text-xs font-medium text-sky-700 ring-1 ring-sky-100">
-                    Neto tok banke — stranica: {formatMoney(stats.bankTotal)}
+                    Neto tok banke:{" "}
+                    {formatMoney(toNumber(summaryData?.bank_net))}
                   </span>
                 </div>
             </div>

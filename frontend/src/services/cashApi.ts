@@ -7,6 +7,7 @@ import type {
   CashKind,
   CashListResponse,
   CashSourceType,
+  CashSummary,
 } from "../types/cash";
 
 export interface CashListParams {
@@ -19,6 +20,11 @@ export interface CashListParams {
   source_type?: CashSourceType;
   limit?: number;
   offset?: number;
+}
+
+export interface CashSummaryParams {
+  date_from?: string;
+  date_to?: string;
 }
 
 export interface CashEntryCreatePayload {
@@ -41,6 +47,15 @@ export async function fetchCashEntries(
   params: CashListParams = {}
 ): Promise<CashListResponse> {
   const res = await apiClient.get<CashListResponse>("/cash/list", {
+    params,
+  });
+  return res.data;
+}
+
+export async function fetchCashSummary(
+  params: CashSummaryParams = {}
+): Promise<CashSummary> {
+  const res = await apiClient.get<CashSummary>("/cash/summary", {
     params,
   });
   return res.data;
