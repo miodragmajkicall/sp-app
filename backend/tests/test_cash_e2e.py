@@ -92,63 +92,98 @@ def test_cash_crud_flow():
 
 def test_cash_summary_basic():
     """
-    Osnovni test za /cash/summary:
-    - koristimo poseban tenant 't-summary'
-    - upisujemo 3 unosa (2 income, 1 expense)
-    - provjeravamo da summary vraća ispravne sume.
+    Testira /cash/summary:
+    - ukupni income / expense / net,
+    - neto tok posebno za kasu i banku,
+    - broj zapisa,
+    - datumski filter,
+    - zaštitu od obrnutog datumskog raspona.
     """
     tenant_code = "t-summary"
     tenant_headers = {"X-Tenant-Code": tenant_code}
 
-    # 1) Očistimo sve postojeće unose za ovog tenanta,
-    #    kako bi test bio idempotentan (radi i kada se baza ne resetuje između run-ova).
     _clear_tenant_cash(tenant_code)
 
-    # 2) kreiramo 3 unosa:
-    # income 100.00
     payload1 = {
         "entry_date": "2025-11-01",
         "kind": "income",
         "amount": "100.00",
-        "note": "inc-1",
+        "account": "cash",
+        "note": "inc-cash",
     }
     r = client.post("/cash/", json=payload1, headers=tenant_headers)
     assert r.status_code == 201, r.text
 
-    # expense 40.00
     payload2 = {
         "entry_date": "2025-11-02",
         "kind": "expense",
         "amount": "40.00",
-        "note": "exp-1",
+        "account": "cash",
+        "note": "exp-cash",
     }
     r = client.post("/cash/", json=payload2, headers=tenant_headers)
     assert r.status_code == 201, r.text
 
-    # income 10.00
     payload3 = {
         "entry_date": "2025-11-03",
         "kind": "income",
         "amount": "10.00",
-        "note": "inc-2",
+        "account": "bank",
+        "note": "inc-bank",
     }
     r = client.post("/cash/", json=payload3, headers=tenant_headers)
     assert r.status_code == 201, r.text
 
-    # 3) poziv summary endpointa bez datumske filtracije
     r = client.get("/cash/summary", headers=tenant_headers)
     assert r.status_code == 200, r.text
     data = r.json()
 
-    assert set(data.keys()) == {"income", "expense", "net"}
+    assert set(data.keys()) == {
+        "income",
+        "expense",
+        "net",
+        "cash_net",
+        "bank_net",
+        "total_count",
+    }
 
-    income = Decimal(str(data["income"]))
-    expense = Decimal(str(data["expense"]))
-    net = Decimal(str(data["net"]))
+    assert Decimal(str(data["income"])) == Decimal("110.00")
+    assert Decimal(str(data["expense"])) == Decimal("40.00")
+    assert Decimal(str(data["net"])) == Decimal("70.00")
+    assert Decimal(str(data["cash_net"])) == Decimal("60.00")
+    assert Decimal(str(data["bank_net"])) == Decimal("10.00")
+    assert data["total_count"] == 3
 
-    assert income == Decimal("110.00")
-    assert expense == Decimal("40.00")
-    assert net == Decimal("70.00")
+    r = client.get(
+        "/cash/summary",
+        params={
+            "date_from": "2025-11-02",
+            "date_to": "2025-11-03",
+        },
+        headers=tenant_headers,
+    )
+    assert r.status_code == 200, r.text
+    filtered = r.json()
+
+    assert Decimal(str(filtered["income"])) == Decimal("10.00")
+    assert Decimal(str(filtered["expense"])) == Decimal("40.00")
+    assert Decimal(str(filtered["net"])) == Decimal("-30.00")
+    assert Decimal(str(filtered["cash_net"])) == Decimal("-40.00")
+    assert Decimal(str(filtered["bank_net"])) == Decimal("10.00")
+    assert filtered["total_count"] == 2
+
+    r = client.get(
+        "/cash/summary",
+        params={
+            "date_from": "2025-11-03",
+            "date_to": "2025-11-01",
+        },
+        headers=tenant_headers,
+    )
+    assert r.status_code == 422, r.text
+    assert r.json()["detail"] == (
+        "date_from must be less than or equal to date_to"
+    )
 
 
 def test_cash_list_pagination_and_order():

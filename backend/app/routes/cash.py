@@ -95,15 +95,14 @@ def _validate_invoice_references(
 @router.get(
     "/summary",
     response_model=CashSummaryRead,
-    summary="Suma prihoda, rashoda i neto rezultata",
+    summary="Rezime novčanih tokova kase i banke",
     description=(
-        "Vraća zbir **prihoda**, **rashoda** i **neto rezultata** za zadatog tenanta, "
-        "uz opcioni datumski opseg.\n\n"
+        "Vraća zbir priliva, odliva i neto novčanog toka za zadatog tenanta, "
+        "uz odvojeni neto tok kase i tekućeg računa i broj uključenih zapisa.\n\n"
         "Ako `date_from` i `date_to` nisu zadati, koristi se kompletan raspon "
-        "dostupnih zapisa za datog tenanta.\n\n"
-        "Tipični UI use-case:\n"
-        "- brzi rezime na dashboard-u (ukupno uplaćeno, ukupno isplaćeno, neto),\n"
-        "- filter po datumu za izvještaje (npr. za jedan mjesec ili kvartal)."
+        "dostupnih CashEntry zapisa za datog tenanta.\n\n"
+        "Ove vrijednosti predstavljaju novčani tok, a ne saldo ili stvarno stanje "
+        "računa jer endpoint ne uključuje početna stanja niti usklađivanje računa."
     ),
     responses={
         200: {
@@ -114,18 +113,30 @@ def _validate_invoice_references(
                         "income": "5000.00",
                         "expense": "3200.00",
                         "net": "1800.00",
+                        "cash_net": "600.00",
+                        "bank_net": "1200.00",
+                        "total_count": 25,
                     }
                 }
             },
         },
         400: {
-            "description": (
-                "Greška u zahtjevu – najčešće nedostaje `X-Tenant-Code` header.\n\n"
-                "Primjer poruke: `Missing X-Tenant-Code header`."
-            ),
+            "description": "Nedostaje `X-Tenant-Code` header.",
             "content": {
                 "application/json": {
                     "example": {"detail": "Missing X-Tenant-Code header"}
+                }
+            },
+        },
+        422: {
+            "description": "Neispravan datumski raspon.",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "detail": (
+                            "date_from must be less than or equal to date_to"
+                        )
+                    }
                 }
             },
         },
@@ -136,10 +147,7 @@ def get_cash_summary(
     x_tenant_code: Optional[str] = Header(
         None,
         alias="X-Tenant-Code",
-        description=(
-            "Šifra tenanta za kojeg se obračunava rezime.\n"
-            "Primjer: `frizer-mika`, `tenant-001`."
-        ),
+        description="Šifra tenanta za kojeg se obračunava rezime.",
     ),
     date_from: Optional[date] = Query(
         None,
@@ -152,11 +160,17 @@ def get_cash_summary(
         examples=["2025-01-31"],
     ),
 ) -> CashSummaryRead:
-    """
-    Vraća zbir prihoda, rashoda i neto rezultat za zadatog tenanta
-    i opcioni datumski opseg.
-    """
     tenant = _require_tenant(x_tenant_code)
+
+    if (
+        date_from is not None
+        and date_to is not None
+        and date_from > date_to
+    ):
+        raise HTTPException(
+            status_code=422,
+            detail="date_from must be less than or equal to date_to",
+        )
 
     income_expr = func.coalesce(
         func.sum(
@@ -178,20 +192,83 @@ def get_cash_summary(
         0,
     )
 
-    stmt = select(income_expr.label("income"), expense_expr.label("expense")).where(
+    cash_net_expr = func.coalesce(
+        func.sum(
+            case(
+                (
+                    and_(
+                        CashEntry.account == "cash",
+                        CashEntry.kind == "income",
+                    ),
+                    CashEntry.amount,
+                ),
+                (
+                    and_(
+                        CashEntry.account == "cash",
+                        CashEntry.kind == "expense",
+                    ),
+                    -CashEntry.amount,
+                ),
+                else_=0,
+            )
+        ),
+        0,
+    )
+
+    bank_net_expr = func.coalesce(
+        func.sum(
+            case(
+                (
+                    and_(
+                        CashEntry.account == "bank",
+                        CashEntry.kind == "income",
+                    ),
+                    CashEntry.amount,
+                ),
+                (
+                    and_(
+                        CashEntry.account == "bank",
+                        CashEntry.kind == "expense",
+                    ),
+                    -CashEntry.amount,
+                ),
+                else_=0,
+            )
+        ),
+        0,
+    )
+
+    total_count_expr = func.count(CashEntry.id)
+
+    stmt = select(
+        income_expr.label("income"),
+        expense_expr.label("expense"),
+        cash_net_expr.label("cash_net"),
+        bank_net_expr.label("bank_net"),
+        total_count_expr.label("total_count"),
+    ).where(
         CashEntry.tenant_code == tenant
     )
 
     if date_from is not None:
         stmt = stmt.where(CashEntry.entry_date >= date_from)
+
     if date_to is not None:
         stmt = stmt.where(CashEntry.entry_date <= date_to)
 
     row = db.execute(stmt).one()
-    income, expense = row.income, row.expense
-    net = income - expense
 
-    return CashSummaryRead(income=income, expense=expense, net=net)
+    income = row.income
+    expense = row.expense
+
+    return CashSummaryRead(
+        income=income,
+        expense=expense,
+        net=income - expense,
+        cash_net=row.cash_net,
+        bank_net=row.bank_net,
+        total_count=row.total_count,
+    )
 
 
 # ======================================================

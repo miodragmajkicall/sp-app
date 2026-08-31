@@ -205,25 +205,41 @@ class CashEntryRead(BaseModel):
 
 class CashSummaryRead(BaseModel):
     """
-    Izlazni model za sumarni prikaz prihoda i rashoda.
+    Izlazni model za sumarni prikaz novčanih tokova.
     """
 
     model_config = BaseConfig
 
     income: Decimal = Field(
         ...,
-        description="Ukupan prihod (suma svih `income` unosa) za zadani period i tenant.",
+        description="Ukupan priliv (`income`) za zadani period i tenant.",
         examples=["1500.00"],
     )
     expense: Decimal = Field(
         ...,
-        description="Ukupan rashod (suma svih `expense` unosa) za zadani period i tenant.",
+        description="Ukupan odliv (`expense`) za zadani period i tenant.",
         examples=["500.00"],
     )
     net: Decimal = Field(
         ...,
-        description="Neto rezultat: income - expense za zadani period i tenant.",
+        description="Neto novčani tok: income - expense.",
         examples=["1000.00"],
+    )
+    cash_net: Decimal = Field(
+        ...,
+        description="Neto novčani tok kase za zadani period.",
+        examples=["600.00"],
+    )
+    bank_net: Decimal = Field(
+        ...,
+        description="Neto novčani tok tekućeg računa za zadani period.",
+        examples=["400.00"],
+    )
+    total_count: int = Field(
+        ...,
+        ge=0,
+        description="Broj CashEntry zapisa uključenih u summary.",
+        examples=[25],
     )
 
 
