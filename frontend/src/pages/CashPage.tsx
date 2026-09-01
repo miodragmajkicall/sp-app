@@ -20,8 +20,10 @@ import type {
   CashKind,
   CashListItem,
   CashListResponse,
+  CashRecognitionClass,
   CashSourceType,
   CashSummary,
+  CashTaxTreatment,
 } from "../types/cash";
 
 const PAGE_SIZE = 20;
@@ -103,6 +105,74 @@ function sourceBadgeClass(source: CashSourceType): string {
   }
 
   return "inline-flex items-center rounded-full bg-rose-50 px-2.5 py-1 text-[11px] font-semibold text-rose-700 ring-1 ring-rose-100";
+}
+
+function recognitionLabel(value: CashRecognitionClass): string {
+  if (value === "business_activity") return "POSLOVNI";
+  return "SAMO TOK";
+}
+
+function recognitionBadgeClass(value: CashRecognitionClass): string {
+  if (value === "business_activity") {
+    return "inline-flex items-center rounded-full bg-sky-50 px-2 py-0.5 text-[10px] font-semibold text-sky-700 ring-1 ring-sky-100";
+  }
+
+  return "inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600 ring-1 ring-slate-200";
+}
+
+function taxTreatmentLabel(value: CashTaxTreatment): string {
+  if (value === "deductible") return "ODBITNO";
+  if (value === "nondeductible") return "NEODBITNO";
+  return "NERAZRIJEŠENO";
+}
+
+function taxTreatmentBadgeClass(value: CashTaxTreatment): string {
+  if (value === "deductible") {
+    return "inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-100";
+  }
+
+  if (value === "nondeductible") {
+    return "inline-flex items-center rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700 ring-1 ring-rose-100";
+  }
+
+  return "inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-100";
+}
+
+function treatmentCell(entry: CashListItem): React.ReactNode {
+  if (entry.source_type !== "manual") {
+    return <span className="text-xs text-slate-400">—</span>;
+  }
+
+  if (!entry.recognition_class) {
+    return (
+      <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700 ring-1 ring-red-100">
+        NEMA KLASIFIKACIJE
+      </span>
+    );
+  }
+
+  const showTaxTreatment =
+    entry.kind === "expense" &&
+    entry.recognition_class === "business_activity";
+
+  return (
+    <div className="flex min-w-[120px] flex-col items-start gap-1">
+      <span className={recognitionBadgeClass(entry.recognition_class)}>
+        {recognitionLabel(entry.recognition_class)}
+      </span>
+
+      {showTaxTreatment &&
+        (entry.tax_treatment ? (
+          <span className={taxTreatmentBadgeClass(entry.tax_treatment)}>
+            {taxTreatmentLabel(entry.tax_treatment)}
+          </span>
+        ) : (
+          <span className="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-700 ring-1 ring-red-100">
+            NEMA TRETMANA
+          </span>
+        ))}
+    </div>
+  );
 }
 
 function sourceDocumentCell(entry: CashListItem): React.ReactNode {
@@ -211,6 +281,10 @@ export default function CashPage() {
     const [entryDate, setEntryDate] = useState<string>(todayIso());
     const [kind, setKind] = useState<CashKind>("income");
     const [account, setAccount] = useState<CashAccount>("cash");
+    const [recognitionClass, setRecognitionClass] =
+      useState<CashRecognitionClass>("business_activity");
+    const [taxTreatment, setTaxTreatment] =
+      useState<CashTaxTreatment>("unresolved");
     const [amount, setAmount] = useState<string>("");
     const [description, setDescription] = useState<string>("");
     const [formError, setFormError] = useState<string>("");
@@ -221,6 +295,7 @@ export default function CashPage() {
 
     function invalidateCashConsumers() {
       queryClient.invalidateQueries({ queryKey: ["cash"] });
+      queryClient.invalidateQueries({ queryKey: ["kpr"] });
       queryClient.invalidateQueries({
         queryKey: ["dashboard", "monthly", "current"],
       });
@@ -231,6 +306,8 @@ export default function CashPage() {
       setEntryDate(todayIso());
       setKind("income");
       setAccount("cash");
+      setRecognitionClass("business_activity");
+      setTaxTreatment("unresolved");
       setAmount("");
       setDescription("");
       setFormError("");
@@ -248,6 +325,8 @@ export default function CashPage() {
       setEntryDate(entry.entry_date);
       setKind(entry.kind);
       setAccount(entry.account);
+      setRecognitionClass(entry.recognition_class ?? "business_activity");
+      setTaxTreatment(entry.tax_treatment ?? "unresolved");
       setAmount(String(entry.amount));
       setDescription(entry.note ?? "");
       setFormError("");
@@ -322,6 +401,11 @@ export default function CashPage() {
         return;
       }
 
+      const taxTreatmentForPayload =
+        kind === "expense" && recognitionClass === "business_activity"
+          ? taxTreatment
+          : null;
+
       try {
         if (editingEntryId !== null) {
           const payload: CashEntryUpdatePayload = {
@@ -329,6 +413,8 @@ export default function CashPage() {
             kind,
             amount: parsed,
             account,
+            recognition_class: recognitionClass,
+            tax_treatment: taxTreatmentForPayload,
             note: description.trim() || null,
           };
 
@@ -347,6 +433,8 @@ export default function CashPage() {
           kind,
           amount: parsed,
           account,
+          recognition_class: recognitionClass,
+          tax_treatment: taxTreatmentForPayload,
           note: description.trim() || null,
         };
 
@@ -640,6 +728,9 @@ export default function CashPage() {
               <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
                 Izvor
               </th>
+              <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide whitespace-nowrap">
+                Tretman
+              </th>
               <th className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide">
                 Opis
               </th>
@@ -681,6 +772,10 @@ export default function CashPage() {
                   <span className={sourceBadgeClass(entry.source_type)}>
                     {sourceLabel(entry.source_type)}
                   </span>
+                </td>
+
+                <td className="px-4 py-3">
+                  {treatmentCell(entry)}
                 </td>
 
                 <td className="px-4 py-3">
@@ -828,6 +923,60 @@ export default function CashPage() {
                   <option value="bank">TEKUĆI RAČUN</option>
                 </select>
               </label>
+
+              <label className="space-y-1.5 text-xs font-medium text-slate-600">
+                Namjena unosa
+                <select
+                  className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+                  value={recognitionClass}
+                  onChange={(e) =>
+                    setRecognitionClass(
+                      e.target.value as CashRecognitionClass
+                    )
+                  }
+                >
+                  <option value="business_activity">
+                    POSLOVNI DOGAĐAJ
+                  </option>
+                  <option value="cash_only">
+                    SAMO NOVČANI TOK
+                  </option>
+                </select>
+                <span className="block text-[11px] font-normal leading-4 text-slate-500">
+                  Poslovni događaj može učestvovati u poslovnim i poreskim
+                  evidencijama. Samo novčani tok utiče samo na kretanje novca.
+                </span>
+              </label>
+
+              {kind === "expense" &&
+                recognitionClass === "business_activity" && (
+                  <label className="space-y-1.5 text-xs font-medium text-slate-600">
+                    Poreski tretman rashoda
+                    <select
+                      className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900 shadow-sm outline-none transition focus:border-slate-500 focus:ring-2 focus:ring-slate-200"
+                      value={taxTreatment}
+                      onChange={(e) =>
+                        setTaxTreatment(
+                          e.target.value as CashTaxTreatment
+                        )
+                      }
+                    >
+                      <option value="unresolved">NERAZRIJEŠENO</option>
+                      <option value="deductible">PORESKI ODBITNO</option>
+                      <option value="nondeductible">
+                        PORESKI NEODBITNO
+                      </option>
+                    </select>
+
+                    {taxTreatment === "unresolved" && (
+                      <span className="block rounded-lg bg-amber-50 px-2.5 py-2 text-[11px] font-normal leading-4 text-amber-800 ring-1 ring-amber-100">
+                        Nerazriješen poreski tretman neće biti automatski
+                        smatran odbitnim i može blokirati završni automatski
+                        poreski obračun dok se ne razriješi.
+                      </span>
+                    )}
+                  </label>
+                )}
 
               <label className="space-y-1.5 text-xs font-medium text-slate-600">
                 Iznos (KM)

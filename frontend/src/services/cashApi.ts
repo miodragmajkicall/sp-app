@@ -6,8 +6,10 @@ import type {
   CashEntry,
   CashKind,
   CashListResponse,
+  CashRecognitionClass,
   CashSourceType,
   CashSummary,
+  CashTaxTreatment,
 } from "../types/cash";
 
 export interface CashListParams {
@@ -32,6 +34,8 @@ export interface CashEntryCreatePayload {
   kind: CashKind;
   amount: number;
   account: CashAccount;
+  recognition_class: CashRecognitionClass;
+  tax_treatment?: CashTaxTreatment | null;
   note?: string | null;
 }
 
@@ -40,6 +44,8 @@ export interface CashEntryUpdatePayload {
   kind?: CashKind;
   amount?: number;
   account?: CashAccount;
+  recognition_class?: CashRecognitionClass;
+  tax_treatment?: CashTaxTreatment | null;
   note?: string | null;
 }
 

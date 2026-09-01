@@ -3,6 +3,15 @@
 export type CashKind = "income" | "expense";
 export type CashAccount = "cash" | "bank";
 
+export type CashRecognitionClass =
+  | "business_activity"
+  | "cash_only";
+
+export type CashTaxTreatment =
+  | "deductible"
+  | "nondeductible"
+  | "unresolved";
+
 export type CashSourceType =
   | "manual"
   | "output_invoice_payment"
@@ -14,6 +23,8 @@ export interface CashEntry {
   kind: CashKind;
   amount: number | string;
   account: CashAccount;
+  recognition_class: CashRecognitionClass | null;
+  tax_treatment: CashTaxTreatment | null;
   invoice_id: number | null;
   input_invoice_id: number | null;
   note: string | null;
