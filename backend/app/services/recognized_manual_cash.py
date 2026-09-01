@@ -25,6 +25,7 @@ class RecognizedManualCash:
     recognition_date: date
     kind: Literal["income", "expense"]
     amount: Decimal
+    tax_treatment: Literal["deductible", "nondeductible", "unresolved"] | None
     description: str | None
 
 
@@ -75,6 +76,7 @@ def list_recognized_manual_cash(
             recognition_date=row.entry_date,
             kind=row.kind,
             amount=Decimal(str(row.amount)),
+            tax_treatment=row.tax_treatment,
             description=row.description,
         )
         for row in rows

@@ -117,10 +117,15 @@ def _insert_invoice_january_2025(
 
 
 def _insert_cash_entry_january_2025(
-    db, *, tenant_code: str, kind: str, amount: Decimal
+    db,
+    *,
+    tenant_code: str,
+    kind: str,
+    amount: Decimal,
+    tax_treatment: str | None = None,
 ) -> None:
     """
-    Ubacuje jedan zapis u `cash_entries` za januar 2025.
+    Ubacuje jedan manual business CashEntry za januar 2025.
     """
     bind = db.get_bind()
     metadata = MetaData()
@@ -141,6 +146,8 @@ def _insert_cash_entry_january_2025(
             row[col.name] = amount
         elif col.name == "recognition_class":
             row[col.name] = "business_activity"
+        elif col.name == "tax_treatment":
+            row[col.name] = tax_treatment
         elif col.name == "description":
             row[col.name] = f"{kind} for auto tax test"
         elif (
@@ -252,18 +259,8 @@ def test_tax_monthly_preview_formula_basic() -> None:
     assert data["is_final"] is False
 
 
-def test_tax_monthly_auto_aggregates_invoices_and_recognized_manual_cash() -> None:
-    """
-    Test za /tax/monthly/auto:
-
-    - kreira tenanta sa podržanim CASH recognition profilom
-    - ubaci 1 fakturu u januaru 2025
-    - ubaci manual business cash income + expense
-    - provjeri:
-        * recognized manual income ulazi u total_income
-        * manual expense nije automatski poreski odbitan u 3E-2A
-    """
-    tenant_code = "t-tax-auto"
+def test_tax_monthly_auto_includes_deductible_manual_cash_expense() -> None:
+    tenant_code = "t-tax-auto-deductible"
 
     db = SessionLocal()
     try:
@@ -287,31 +284,95 @@ def test_tax_monthly_auto_aggregates_invoices_and_recognized_manual_cash() -> No
             tenant_code=tenant_code,
             kind="expense",
             amount=cash_expense,
+            tax_treatment="deductible",
         )
 
         db.commit()
 
         headers = {"X-Tenant-Code": tenant_code}
         _set_tax_cash_profile(headers)
-        params = {"year": 2025, "month": 1}
 
-        resp = client.get("/tax/monthly/auto", params=params, headers=headers)
+        resp = client.get(
+            "/tax/monthly/auto",
+            params={"year": 2025, "month": 1},
+            headers=headers,
+        )
         assert resp.status_code == 200, resp.text
 
         data = resp.json()
 
-        total_income = invoice_income + cash_income
-        total_expense = Decimal("0.00")
-
-        # Ovaj test provjerava source aggregation / recognition boundary.
-        assert _dec2(data["total_income"]) == _dec2(total_income)
-        assert _dec2(data["total_expense"]) == _dec2(total_expense)
-
-        assert data["year"] == 2025
-        assert data["month"] == 1
-        assert data["tenant_code"] == tenant_code
-        assert data["currency"] == "BAM"
+        assert _dec2(data["total_income"]) == _dec2(invoice_income + cash_income)
+        assert _dec2(data["total_expense"]) == _dec2(cash_expense)
         assert data["is_final"] is False
+
+    finally:
+        _cleanup_tax_test_data(db, tenant_code)
+        db.close()
+
+
+def test_tax_monthly_auto_excludes_nondeductible_manual_cash_expense() -> None:
+    tenant_code = "t-tax-auto-nondeductible"
+
+    db = SessionLocal()
+    try:
+        _ensure_tenant(db, tenant_code)
+
+        cash_expense = Decimal("150.00")
+        _insert_cash_entry_january_2025(
+            db,
+            tenant_code=tenant_code,
+            kind="expense",
+            amount=cash_expense,
+            tax_treatment="nondeductible",
+        )
+        db.commit()
+
+        headers = {"X-Tenant-Code": tenant_code}
+        _set_tax_cash_profile(headers)
+
+        resp = client.get(
+            "/tax/monthly/auto",
+            params={"year": 2025, "month": 1},
+            headers=headers,
+        )
+        assert resp.status_code == 200, resp.text
+        assert _dec2(resp.json()["total_expense"]) == Decimal("0.00")
+
+    finally:
+        _cleanup_tax_test_data(db, tenant_code)
+        db.close()
+
+
+def test_tax_monthly_auto_unresolved_manual_cash_expense_fails_closed() -> None:
+    tenant_code = "t-tax-auto-unresolved"
+
+    db = SessionLocal()
+    try:
+        _ensure_tenant(db, tenant_code)
+
+        _insert_cash_entry_january_2025(
+            db,
+            tenant_code=tenant_code,
+            kind="expense",
+            amount=Decimal("150.00"),
+            tax_treatment="unresolved",
+        )
+        db.commit()
+
+        headers = {"X-Tenant-Code": tenant_code}
+        _set_tax_cash_profile(headers)
+
+        resp = client.get(
+            "/tax/monthly/auto",
+            params={"year": 2025, "month": 1},
+            headers=headers,
+        )
+
+        assert resp.status_code == 409, resp.text
+        assert (
+            resp.json()["detail"]
+            == "Manual cash tax treatment is unresolved for this period"
+        )
 
     finally:
         _cleanup_tax_test_data(db, tenant_code)

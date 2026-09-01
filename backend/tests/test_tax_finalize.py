@@ -116,10 +116,15 @@ def _insert_invoice_january_2025(
 
 
 def _insert_cash_entry_january_2025(
-    db, *, tenant_code: str, kind: str, amount: Decimal
+    db,
+    *,
+    tenant_code: str,
+    kind: str,
+    amount: Decimal,
+    tax_treatment: str | None = None,
 ) -> None:
     """
-    Ubacuje jedan zapis u `cash_entries` za januar 2025.
+    Ubacuje jedan manual business CashEntry za januar 2025.
     """
     bind = db.get_bind()
     metadata = MetaData()
@@ -140,6 +145,8 @@ def _insert_cash_entry_january_2025(
             row[col.name] = amount
         elif col.name == "recognition_class":
             row[col.name] = "business_activity"
+        elif col.name == "tax_treatment":
+            row[col.name] = tax_treatment
         elif col.name == "description":
             row[col.name] = f"{kind} for tax finalize test"
         elif (
@@ -235,6 +242,7 @@ def test_tax_monthly_finalize_persists_result_and_marks_final() -> None:
             tenant_code=tenant_code,
             kind="expense",
             amount=cash_expense,
+            tax_treatment="deductible",
         )
         db.commit()
 
@@ -260,7 +268,7 @@ def test_tax_monthly_finalize_persists_result_and_marks_final() -> None:
         data = resp.json()
 
         total_income = invoice_income + cash_income
-        total_expense = Decimal("0.00")
+        total_expense = cash_expense
 
         # 1a) Provjera response payload-a i recognition agregacije.
         assert data["year"] == 2025
@@ -346,6 +354,7 @@ def test_tax_monthly_finalize_cannot_double_finalize_same_period() -> None:
             tenant_code=tenant_code,
             kind="expense",
             amount=cash_expense,
+            tax_treatment="deductible",
         )
         db.commit()
 

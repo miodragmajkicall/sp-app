@@ -303,36 +303,93 @@ def test_kpr_cash_basis_invoice_is_recognized_only_in_payment_month():
     assert invoice_rows[0]["date"] == "2026-08-18"
 
 
-def test_kpr_business_activity_cash_expense_remains_visible():
+def test_kpr_manual_cash_exposes_tax_treatment_contract():
     tenant = f"kpr-cash-{uuid4().hex[:12]}"
     headers = {"X-Tenant-Code": tenant}
     _set_cash_profile(tenant)
 
-    response = client.post(
-        "/cash/",
-        headers=headers,
-        json={
+    payloads = [
+        {
             "entry_date": "2026-08-19",
             "kind": "expense",
             "amount": "30.00",
             "recognition_class": "business_activity",
-            "note": "Independent expense",
+            "tax_treatment": "deductible",
+            "note": "Deductible expense",
         },
-    )
-    assert response.status_code == 201, response.text
+        {
+            "entry_date": "2026-08-20",
+            "kind": "expense",
+            "amount": "40.00",
+            "recognition_class": "business_activity",
+            "tax_treatment": "nondeductible",
+            "note": "Nondeductible expense",
+        },
+        {
+            "entry_date": "2026-08-21",
+            "kind": "expense",
+            "amount": "50.00",
+            "recognition_class": "business_activity",
+            "tax_treatment": "unresolved",
+            "note": "Unresolved expense",
+        },
+        {
+            "entry_date": "2026-08-22",
+            "kind": "income",
+            "amount": "60.00",
+            "recognition_class": "business_activity",
+            "note": "Recognized income",
+        },
+    ]
+
+    created_ids = []
+    for payload in payloads:
+        response = client.post(
+            "/cash/",
+            headers=headers,
+            json=payload,
+        )
+        assert response.status_code == 201, response.text
+        created_ids.append(response.json()["id"])
 
     kpr = client.get("/kpr?year=2026&month=8", headers=headers)
     assert kpr.status_code == 200, kpr.text
 
-    cash_rows = [
-        row
+    rows_by_id = {
+        row["source_id"]: row
         for row in kpr.json()["items"]
-        if row["source"] == "cash" and row["source_id"] == response.json()["id"]
-    ]
-    assert len(cash_rows) == 1
-    assert Decimal(str(cash_rows[0]["amount"])) == Decimal("30.00")
-    assert cash_rows[0]["date"] == "2026-08-19"
-    assert cash_rows[0]["tax_deductible"] is False
+        if row["source"] == "cash" and row["source_id"] in created_ids
+    }
+    assert len(rows_by_id) == 4
+
+    deductible = rows_by_id[created_ids[0]]
+    assert deductible["tax_treatment"] == "deductible"
+    assert deductible["tax_deductible"] is True
+
+    nondeductible = rows_by_id[created_ids[1]]
+    assert nondeductible["tax_treatment"] == "nondeductible"
+    assert nondeductible["tax_deductible"] is False
+
+    unresolved = rows_by_id[created_ids[2]]
+    assert unresolved["tax_treatment"] == "unresolved"
+    assert unresolved["tax_deductible"] is False
+
+    income = rows_by_id[created_ids[3]]
+    assert income["kind"] == "income"
+    assert income["tax_treatment"] is None
+    assert income["tax_deductible"] is False
+
+    export = client.get(
+        "/kpr/export-excel?year=2026&month=8",
+        headers=headers,
+    )
+    assert export.status_code == 200, export.text
+
+    csv_text = export.content.decode("utf-8-sig")
+    assert "tax_treatment" in csv_text
+    assert "deductible" in csv_text
+    assert "nondeductible" in csv_text
+    assert "unresolved" in csv_text
 
 
 def test_kpr_cash_only_entry_is_not_recognized():

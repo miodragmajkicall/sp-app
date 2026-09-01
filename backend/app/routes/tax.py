@@ -549,6 +549,20 @@ def _aggregate_monthly_income_and_expense(
         Decimal("0.00"),
     )
 
+    cash_expense = Decimal("0.00")
+    for cash in recognized_manual_cash:
+        if cash.kind != "expense":
+            continue
+        if cash.tax_treatment == "deductible":
+            cash_expense += cash.amount
+            continue
+        if cash.tax_treatment == "nondeductible":
+            continue
+        raise HTTPException(
+            status_code=409,
+            detail="Manual cash tax treatment is unresolved for this period",
+        )
+
     try:
         recognized_input_expenses = list_recognized_input_expenses(
             db,
@@ -564,7 +578,7 @@ def _aggregate_monthly_income_and_expense(
     )
 
     total_income = invoice_income + cash_income
-    total_expense = input_expense
+    total_expense = input_expense + cash_expense
 
     return total_income, total_expense
 

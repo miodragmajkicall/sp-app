@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from uuid import uuid4
 
 from fastapi.testclient import TestClient
 from sqlalchemy import MetaData, Table, select
@@ -106,10 +107,15 @@ def _insert_invoice_january_2025(
 
 
 def _insert_cash_entry_january_2025(
-    db, *, tenant_code: str, kind: str, amount: Decimal
+    db,
+    *,
+    tenant_code: str,
+    kind: str,
+    amount: Decimal,
+    tax_treatment: str | None = None,
 ) -> None:
     """
-    Ubacuje jedan zapis u `cash_entries` za januar 2025.
+    Ubacuje jedan manual business CashEntry za januar 2025.
     """
     bind = db.get_bind()
     metadata = MetaData()
@@ -129,6 +135,8 @@ def _insert_cash_entry_january_2025(
             row[col.name] = amount
         elif col.name == "recognition_class":
             row[col.name] = "business_activity"
+        elif col.name == "tax_treatment":
+            row[col.name] = tax_treatment
         elif col.name == "description":
             row[col.name] = f"{kind} for tax finalize history test"
         elif (
@@ -231,6 +239,7 @@ def test_tax_monthly_finalize_creates_history_audit_row() -> None:
             tenant_code=tenant_code,
             kind="expense",
             amount=cash_expense,
+            tax_treatment="deductible",
         )
         db.commit()
 
@@ -255,7 +264,7 @@ def test_tax_monthly_finalize_creates_history_audit_row() -> None:
         data = resp.json()
 
         total_income = invoice_income + cash_income
-        total_expense = Decimal("0.00")
+        total_expense = cash_expense
 
         assert _dec2(data["total_income"]) == _dec2(total_income)
         assert _dec2(data["total_expense"]) == _dec2(total_expense)
@@ -302,6 +311,83 @@ def test_tax_monthly_finalize_creates_history_audit_row() -> None:
         )
         assert _dec2(row.total_due) == _dec2(data["total_due"])
         assert row.currency == data["currency"]
+
+    finally:
+        _cleanup_tax_history_test_data(db, tenant_code)
+        db.close()
+
+
+def test_tax_monthly_finalize_unresolved_manual_cash_creates_no_snapshot() -> None:
+    tenant_code = f"t-tax-finalize-unresolved-{uuid4().hex[:8]}"
+
+    db = SessionLocal()
+    try:
+        _ensure_tenant(db, tenant_code)
+
+        _insert_cash_entry_january_2025(
+            db,
+            tenant_code=tenant_code,
+            kind="expense",
+            amount=Decimal("150.00"),
+            tax_treatment="unresolved",
+        )
+        db.commit()
+
+        headers = {"X-Tenant-Code": tenant_code}
+        tax_profile = client.put(
+            "/settings/tax",
+            headers=headers,
+            json={
+                "entity": "RS",
+                "regime": "pausal",
+                "scenario_key": "rs_primary",
+                "has_additional_activity": False,
+            },
+        )
+        assert tax_profile.status_code == 200, tax_profile.text
+
+        response = client.post(
+            "/tax/monthly/finalize",
+            params={"year": 2025, "month": 1},
+            headers=headers,
+        )
+
+        assert response.status_code == 409, response.text
+        assert (
+            response.json()["detail"]
+            == "Manual cash tax treatment is unresolved for this period"
+        )
+
+        bind = db.get_bind()
+        metadata = MetaData()
+        tax_results = Table(
+            "tax_monthly_results",
+            metadata,
+            autoload_with=bind,
+        )
+        history = Table(
+            "tax_monthly_finalize_history",
+            metadata,
+            autoload_with=bind,
+        )
+
+        result_rows = db.execute(
+            select(tax_results).where(
+                tax_results.c.tenant_code == tenant_code,
+                tax_results.c.year == 2025,
+                tax_results.c.month == 1,
+            )
+        ).fetchall()
+        history_rows = db.execute(
+            select(history).where(
+                history.c.tenant_code == tenant_code,
+                history.c.year == 2025,
+                history.c.month == 1,
+            )
+        ).fetchall()
+
+        assert result_rows == []
+        assert history_rows == []
 
     finally:
         _cleanup_tax_history_test_data(db, tenant_code)

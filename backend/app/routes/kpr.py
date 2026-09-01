@@ -197,7 +197,11 @@ def _collect_kpr_rows(
                 description=cash.description,
                 amount=cash.amount,
                 currency="BAM",
-                tax_deductible=False,
+                tax_deductible=(
+                    cash.kind == "expense"
+                    and cash.tax_treatment == "deductible"
+                ),
+                tax_treatment=cash.tax_treatment,
                 source="cash",
                 source_id=cash.cash_entry_id,
             )
@@ -482,7 +486,7 @@ def export_kpr_pdf(
         "Generiše CSV fajl (kompatibilan sa Excel-om) za Knjigu prihoda i rashoda "
         "za traženi period.\n\n"
         "CSV sadrži kolone: datum, vrsta, kategorija, kupac/dobavljač, dok_broj, "
-        "opis, iznos, valuta, poreski_priznat, source, source_id.\n"
+        "opis, iznos, valuta, poreski_priznat, tax_treatment, source, source_id.\n"
     ),
 )
 def export_kpr_excel(
@@ -525,6 +529,7 @@ def export_kpr_excel(
             "iznos",
             "valuta",
             "poreski_priznat",
+            "tax_treatment",
             "source",
             "source_id",
         ]
@@ -540,6 +545,7 @@ def export_kpr_excel(
         iznos = str(_as_decimal(r.amount))
         valuta = getattr(r, "currency", "BAM") or "BAM"
         poreski = "DA" if r.tax_deductible else "NE"
+        tax_treatment = r.tax_treatment or ""
         source = r.source or ""
         source_id = r.source_id
 
@@ -554,6 +560,7 @@ def export_kpr_excel(
                 iznos,
                 valuta,
                 poreski,
+                tax_treatment,
                 source,
                 source_id,
             ]

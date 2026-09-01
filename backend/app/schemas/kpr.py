@@ -27,7 +27,7 @@ class KprRowItem(BaseModel):
     - kupac/dobavljač / opis,
     - broj dokumenta (broj fakture ako postoji),
     - iznos,
-    - da li je rashod poreski priznat (za V1: tretiramo sve rashode kao priznate).
+    - poreski tretman rashoda i legacy indikator poreske priznatosti.
     """
 
     model_config = BaseConfig
@@ -92,10 +92,22 @@ class KprRowItem(BaseModel):
     tax_deductible: bool = Field(
         ...,
         description=(
-            "Da li je rashod poreski priznat.\n"
-            "Za V1: sve stavke tipa 'expense' tretiramo kao poreski priznate."
+            "Legacy indikator da li se rashod uključuje u poreski priznate rashode. "
+            "Za manual cash stavke detaljna klasifikacija je dostupna kroz "
+            "`tax_treatment`."
         ),
         examples=[True],
+    )
+    tax_treatment: Optional[
+        Literal["deductible", "nondeductible", "unresolved"]
+    ] = Field(
+        None,
+        description=(
+            "Poreski tretman manual business cash rashoda. "
+            "Vrijednosti su `deductible`, `nondeductible` ili `unresolved`. "
+            "Za fakture, prihode i stavke gdje tretman nije primjenjiv vrijednost je null."
+        ),
+        examples=["deductible"],
     )
     source: str = Field(
         ...,
