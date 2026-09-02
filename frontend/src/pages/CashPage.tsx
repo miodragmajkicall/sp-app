@@ -495,8 +495,9 @@ export default function CashPage() {
                 <span className="rounded-md bg-white/10 px-1.5 py-0.5 font-mono text-white">
                   t-demo
                 </span>
-                . Ovi podaci se koriste za pregled novca, dashboard metrike,
-                KPR i kasnije poreske obračune.
+                . Svi zapisi učestvuju u pregledu novčanih tokova, dok samo
+                odgovarajuće klasifikovani poslovni zapisi mogu učestvovati u
+                KPR-u i poreskim obračunima.
               </p>
             </div>
 
