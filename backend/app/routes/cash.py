@@ -478,6 +478,18 @@ def list_cash_ui(
         None,
         description="Filter po poslovnom izvoru CashEntry zapisa.",
     ),
+    recognition_class: Optional[
+        Literal["business_activity", "cash_only"]
+    ] = Query(
+        None,
+        description="Filter po recognition klasifikaciji ručnog CashEntry zapisa.",
+    ),
+    tax_treatment: Optional[
+        Literal["deductible", "nondeductible", "unresolved"]
+    ] = Query(
+        None,
+        description="Filter po poreskom tretmanu ručnog poslovnog rashoda.",
+    ),
     limit: int = Query(
         20,
         ge=1,
@@ -522,6 +534,10 @@ def list_cash_ui(
         filters.append(CashEntry.kind == kind)
     if account is not None:
         filters.append(CashEntry.account == account)
+    if recognition_class is not None:
+        filters.append(CashEntry.recognition_class == recognition_class)
+    if tax_treatment is not None:
+        filters.append(CashEntry.tax_treatment == tax_treatment)
 
     if source_type == "manual":
         filters.extend(

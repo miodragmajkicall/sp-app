@@ -12,7 +12,16 @@ def _headers_for_tenant(code: str) -> dict:
     return {"X-Tenant-Code": code}
 
 
-def _create_cash(tenant_code: str, entry_date: str, kind: str, amount: str, suffix: str) -> dict:
+def _create_cash(
+    tenant_code: str,
+    entry_date: str,
+    kind: str,
+    amount: str,
+    suffix: str,
+    *,
+    recognition_class: str | None = None,
+    tax_treatment: str | None = None,
+) -> dict:
     """
     Helper koji kreira jednostavan cash unos za dati tenant.
     Vraća kompletan JSON response (created cash entry).
@@ -20,10 +29,16 @@ def _create_cash(tenant_code: str, entry_date: str, kind: str, amount: str, suff
     headers = _headers_for_tenant(tenant_code)
     payload = {
         "entry_date": entry_date,
-        "kind": kind,          # "income" ili "expense"
-        "amount": amount,      # npr. "100.00"
+        "kind": kind,
+        "amount": amount,
         "note": f"Note {suffix}",
     }
+
+    if recognition_class is not None:
+        payload["recognition_class"] = recognition_class
+    if tax_treatment is not None:
+        payload["tax_treatment"] = tax_treatment
+
     r = httpx.post(f"{BASE_URL}/cash/", json=payload, headers=headers, timeout=5)
     assert r.status_code == 201, r.text
     return r.json()
@@ -166,3 +181,114 @@ def test_cash_list_ui_kind_filter():
     ids_expense = {item["id"] for item in data["items"]}
     assert ids_expense == {c2["id"]}
     assert data["total"] == 1
+
+
+def test_cash_list_ui_recognition_and_tax_treatment_filters():
+    tenant_code = f"cash-ui-treatment-{int(time.time())}"
+    headers = _headers_for_tenant(tenant_code)
+
+    business_income = _create_cash(
+        tenant_code,
+        "2026-09-01",
+        "income",
+        "100.00",
+        "BUSINESS-INCOME",
+        recognition_class="business_activity",
+    )
+    cash_only_expense = _create_cash(
+        tenant_code,
+        "2026-09-02",
+        "expense",
+        "20.00",
+        "CASH-ONLY",
+        recognition_class="cash_only",
+    )
+    deductible_expense = _create_cash(
+        tenant_code,
+        "2026-09-03",
+        "expense",
+        "30.00",
+        "DEDUCTIBLE",
+        recognition_class="business_activity",
+        tax_treatment="deductible",
+    )
+    nondeductible_expense = _create_cash(
+        tenant_code,
+        "2026-09-04",
+        "expense",
+        "40.00",
+        "NONDEDUCTIBLE",
+        recognition_class="business_activity",
+        tax_treatment="nondeductible",
+    )
+    unresolved_expense = _create_cash(
+        tenant_code,
+        "2026-09-05",
+        "expense",
+        "50.00",
+        "UNRESOLVED",
+        recognition_class="business_activity",
+        tax_treatment="unresolved",
+    )
+
+    r = httpx.get(
+        f"{BASE_URL}/cash/list",
+        params={"recognition_class": "business_activity"},
+        headers=headers,
+        timeout=5,
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["total"] == 4
+    assert {item["id"] for item in data["items"]} == {
+        business_income["id"],
+        deductible_expense["id"],
+        nondeductible_expense["id"],
+        unresolved_expense["id"],
+    }
+
+    r = httpx.get(
+        f"{BASE_URL}/cash/list",
+        params={"recognition_class": "cash_only"},
+        headers=headers,
+        timeout=5,
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["total"] == 1
+    assert {item["id"] for item in data["items"]} == {
+        cash_only_expense["id"],
+    }
+
+    for tax_treatment, expected_id in [
+        ("deductible", deductible_expense["id"]),
+        ("nondeductible", nondeductible_expense["id"]),
+        ("unresolved", unresolved_expense["id"]),
+    ]:
+        r = httpx.get(
+            f"{BASE_URL}/cash/list",
+            params={"tax_treatment": tax_treatment},
+            headers=headers,
+            timeout=5,
+        )
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert data["total"] == 1
+        assert [item["id"] for item in data["items"]] == [expected_id]
+
+    r = httpx.get(
+        f"{BASE_URL}/cash/list",
+        params={
+            "kind": "expense",
+            "recognition_class": "business_activity",
+            "tax_treatment": "unresolved",
+        },
+        headers=headers,
+        timeout=5,
+    )
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["total"] == 1
+    assert [item["id"] for item in data["items"]] == [
+        unresolved_expense["id"],
+    ]

@@ -233,6 +233,10 @@ export default function CashPage() {
     const [kindFilter, setKindFilter] = useState<"" | CashKind>("");
     const [accountFilter, setAccountFilter] = useState<"" | CashAccount>("");
     const [sourceFilter, setSourceFilter] = useState<"" | CashSourceType>("");
+    const [recognitionFilter, setRecognitionFilter] =
+      useState<"" | CashRecognitionClass>("");
+    const [taxTreatmentFilter, setTaxTreatmentFilter] =
+      useState<"" | CashTaxTreatment>("");
     const [page, setPage] = useState(0);
 
     const listParams = useMemo<CashListParams>(
@@ -242,10 +246,25 @@ export default function CashPage() {
         ...(kindFilter ? { kind: kindFilter } : {}),
         ...(accountFilter ? { account: accountFilter } : {}),
         ...(sourceFilter ? { source_type: sourceFilter } : {}),
+        ...(recognitionFilter
+          ? { recognition_class: recognitionFilter }
+          : {}),
+        ...(taxTreatmentFilter
+          ? { tax_treatment: taxTreatmentFilter }
+          : {}),
         limit: PAGE_SIZE,
         offset: page * PAGE_SIZE,
       }),
-      [dateFrom, dateTo, kindFilter, accountFilter, sourceFilter, page]
+      [
+        dateFrom,
+        dateTo,
+        kindFilter,
+        accountFilter,
+        sourceFilter,
+        recognitionFilter,
+        taxTreatmentFilter,
+        page,
+      ]
     );
 
     const summaryParams = useMemo<CashSummaryParams>(
@@ -585,7 +604,7 @@ export default function CashPage() {
           </div>
 
             <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-7">
                 <label className="space-y-1 text-xs font-medium text-slate-600">
                   Od datuma
                   <input
@@ -660,6 +679,43 @@ export default function CashPage() {
                     <option value="input_invoice_payment">Ulazna faktura</option>
                   </select>
                 </label>
+
+                <label className="space-y-1 text-xs font-medium text-slate-600">
+                  Namjena
+                  <select
+                    value={recognitionFilter}
+                    onChange={(e) => {
+                      setRecognitionFilter(
+                        e.target.value as "" | CashRecognitionClass
+                      );
+                      setPage(0);
+                    }}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                  >
+                    <option value="">Sve</option>
+                    <option value="business_activity">Poslovni događaj</option>
+                    <option value="cash_only">Samo novčani tok</option>
+                  </select>
+                </label>
+
+                <label className="space-y-1 text-xs font-medium text-slate-600">
+                  Poreski tretman
+                  <select
+                    value={taxTreatmentFilter}
+                    onChange={(e) => {
+                      setTaxTreatmentFilter(
+                        e.target.value as "" | CashTaxTreatment
+                      );
+                      setPage(0);
+                    }}
+                    className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-900"
+                  >
+                    <option value="">Svi</option>
+                    <option value="unresolved">Nerazriješeno</option>
+                    <option value="deductible">Poreski odbitno</option>
+                    <option value="nondeductible">Poreski neodbitno</option>
+                  </select>
+                </label>
               </div>
 
               <div className="mt-3 flex justify-end">
@@ -671,6 +727,8 @@ export default function CashPage() {
                     setKindFilter("");
                     setAccountFilter("");
                     setSourceFilter("");
+                    setRecognitionFilter("");
+                    setTaxTreatmentFilter("");
                     setPage(0);
                   }}
                   className="text-xs font-semibold text-slate-600 hover:text-slate-950"

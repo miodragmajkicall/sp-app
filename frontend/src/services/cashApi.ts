@@ -20,6 +20,8 @@ export interface CashListParams {
   kind?: CashKind;
   account?: CashAccount;
   source_type?: CashSourceType;
+  recognition_class?: CashRecognitionClass;
+  tax_treatment?: CashTaxTreatment;
   limit?: number;
   offset?: number;
 }
