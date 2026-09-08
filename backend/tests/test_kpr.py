@@ -499,3 +499,304 @@ def test_kpr_paid_input_invoice_with_unresolved_context_fails_closed():
         "recognition policy is not configured"
         in kpr.json()["detail"]
     )
+
+
+def test_kpr_global_order_and_pagination():
+    tenant = f"kpr-order-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+    save_complete_profile(client, headers)
+    _set_cash_profile(tenant)
+
+    invoice = client.post(
+        "/invoices",
+        headers=headers,
+        json={
+            "invoice_number": f"KPR-ORDER-{uuid4().hex[:8]}",
+            "issue_date": "2026-09-10",
+            "due_date": "2026-09-20",
+            "buyer_name": "KPR Order Kupac",
+            "buyer_address": "Banja Luka",
+            "items": [
+                {
+                    "description": "KPR order test",
+                    "quantity": "1",
+                    "unit_price": "100.00",
+                    "vat_rate": "0.17",
+                }
+            ],
+        },
+    )
+    assert invoice.status_code == 201, invoice.text
+    invoice_id = invoice.json()["id"]
+
+    input_invoice = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": "KPR Order Supplier",
+            "invoice_number": f"KPR-INP-{uuid4().hex[:8]}",
+            "issue_date": "2026-08-30",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "117.00",
+        },
+    )
+    assert input_invoice.status_code == 201, input_invoice.text
+    input_id = input_invoice.json()["id"]
+
+    payment = client.post(
+        f"/input-invoices/{input_id}/payment",
+        headers=headers,
+        json={
+            "payment_date": "2026-09-08",
+            "account": "bank",
+        },
+    )
+    assert payment.status_code == 201, payment.text
+
+    cash_ids = []
+    for entry_date in (
+        "2026-09-05",
+        "2026-09-10",
+        "2026-09-10",
+        "2026-09-12",
+    ):
+        response = client.post(
+            "/cash/",
+            headers=headers,
+            json={
+                "entry_date": entry_date,
+                "kind": "income",
+                "amount": "10.00",
+                "recognition_class": "business_activity",
+                "note": "KPR pagination test",
+            },
+        )
+        assert response.status_code == 201, response.text
+        cash_ids.append(response.json()["id"])
+
+    expected = [
+        ("2026-09-05", "cash", cash_ids[0]),
+        ("2026-09-08", "input_invoice", input_id),
+        ("2026-09-10", "cash", cash_ids[1]),
+        ("2026-09-10", "cash", cash_ids[2]),
+        ("2026-09-10", "invoice", invoice_id),
+        ("2026-09-12", "cash", cash_ids[3]),
+    ]
+
+    def row_keys(items):
+        return [
+            (row["date"], row["source"], row["source_id"])
+            for row in items
+        ]
+
+    base_url = "/kpr?year=2026&month=9"
+
+    full = client.get(
+        f"{base_url}&limit=100&offset=0",
+        headers=headers,
+    )
+    assert full.status_code == 200, full.text
+    assert full.json()["total"] == 6
+    assert row_keys(full.json()["items"]) == expected
+
+    paged_items = []
+    for offset in (0, 2, 4):
+        response = client.get(
+            f"{base_url}&limit=2&offset={offset}",
+            headers=headers,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["total"] == 6
+        assert len(response.json()["items"]) == 2
+        paged_items.extend(response.json()["items"])
+
+    assert row_keys(paged_items) == expected
+    assert len(set(row_keys(paged_items))) == 6
+
+    empty_page = client.get(
+        f"{base_url}&limit=2&offset=6",
+        headers=headers,
+    )
+    assert empty_page.status_code == 200, empty_page.text
+    assert empty_page.json()["total"] == 6
+    assert empty_page.json()["items"] == []
+
+    repeated = client.get(
+        f"{base_url}&limit=2&offset=2",
+        headers=headers,
+    )
+    assert repeated.status_code == 200, repeated.text
+    assert row_keys(repeated.json()["items"]) == expected[2:4]
+
+
+def test_kpr_kind_filter_before_pagination():
+    tenant = f"kpr-kind-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+    _set_cash_profile(tenant)
+
+    scenarios = [
+        ("2026-09-01", "income", "10.00", None),
+        ("2026-09-02", "expense", "20.00", "deductible"),
+        ("2026-09-03", "income", "30.00", None),
+        ("2026-09-04", "expense", "40.00", "unresolved"),
+    ]
+
+    created_ids = []
+    for entry_date, kind, amount, treatment in scenarios:
+        payload = {
+            "entry_date": entry_date,
+            "kind": kind,
+            "amount": amount,
+            "recognition_class": "business_activity",
+            "note": "KPR kind filter test",
+        }
+        if treatment is not None:
+            payload["tax_treatment"] = treatment
+
+        response = client.post("/cash/", headers=headers, json=payload)
+        assert response.status_code == 201, response.text
+        created_ids.append(response.json()["id"])
+
+    cash_only = client.post(
+        "/cash/",
+        headers=headers,
+        json={
+            "entry_date": "2026-09-05",
+            "kind": "expense",
+            "amount": "999.00",
+            "recognition_class": "cash_only",
+            "note": "Excluded cashflow",
+        },
+    )
+    assert cash_only.status_code == 201, cash_only.text
+
+    base_url = "/kpr?year=2026&month=9"
+
+    def get_rows(query):
+        response = client.get(f"{base_url}{query}", headers=headers)
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    full = get_rows("&limit=100&offset=0")
+    assert full["total"] == 4
+    assert [row["source_id"] for row in full["items"]] == created_ids
+
+    income = get_rows("&kind=income&limit=1&offset=0")
+    assert income["total"] == 2
+    assert [row["source_id"] for row in income["items"]] == [created_ids[0]]
+
+    income_page_2 = get_rows("&kind=income&limit=1&offset=1")
+    assert income_page_2["total"] == 2
+    assert [row["source_id"] for row in income_page_2["items"]] == [created_ids[2]]
+
+    expense = get_rows("&kind=expense&limit=1&offset=0")
+    assert expense["total"] == 2
+    assert [row["source_id"] for row in expense["items"]] == [created_ids[1]]
+    assert expense["items"][0]["tax_treatment"] == "deductible"
+
+    expense_page_2 = get_rows("&kind=expense&limit=1&offset=1")
+    assert expense_page_2["total"] == 2
+    assert [row["source_id"] for row in expense_page_2["items"]] == [created_ids[3]]
+    assert expense_page_2["items"][0]["tax_treatment"] == "unresolved"
+
+    empty_page = get_rows("&kind=expense&limit=1&offset=2")
+    assert empty_page["total"] == 2
+    assert empty_page["items"] == []
+
+    for invalid_kind in ("other", "INCOME"):
+        response = client.get(
+            f"{base_url}&kind={invalid_kind}",
+            headers=headers,
+        )
+        assert response.status_code == 422, response.text
+
+
+def test_kpr_summary_is_independent_of_kind_and_pagination():
+    tenant = f"kpr-summary-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+    _set_cash_profile(tenant)
+
+    scenarios = [
+        ("2026-09-01", "income", "10.00", None),
+        ("2026-09-02", "expense", "20.00", "deductible"),
+        ("2026-09-03", "expense", "30.00", "unresolved"),
+    ]
+
+    created_ids = []
+    for entry_date, kind, amount, treatment in scenarios:
+        payload = {
+            "entry_date": entry_date,
+            "kind": kind,
+            "amount": amount,
+            "recognition_class": "business_activity",
+            "note": "KPR summary test",
+        }
+        if treatment is not None:
+            payload["tax_treatment"] = treatment
+
+        response = client.post("/cash/", headers=headers, json=payload)
+        assert response.status_code == 201, response.text
+        created_ids.append(response.json()["id"])
+
+    cash_only = client.post(
+        "/cash/",
+        headers=headers,
+        json={
+            "entry_date": "2026-09-04",
+            "kind": "expense",
+            "amount": "999.00",
+            "recognition_class": "cash_only",
+            "note": "Excluded cashflow",
+        },
+    )
+    assert cash_only.status_code == 201, cash_only.text
+
+    expected_summary = {
+        "income": Decimal("10.00"),
+        "expense": Decimal("50.00"),
+        "net": Decimal("-40.00"),
+    }
+
+    def assert_summary(data, expected):
+        assert {
+            key: Decimal(str(value))
+            for key, value in data["summary"].items()
+        } == expected
+
+    base_url = "/kpr?year=2026&month=9"
+
+    cases = [
+        ("&limit=100&offset=0", 3, created_ids),
+        ("&limit=1&offset=0", 3, [created_ids[0]]),
+        ("&limit=1&offset=2", 3, [created_ids[2]]),
+        ("&kind=income&limit=1&offset=0", 1, [created_ids[0]]),
+        ("&kind=expense&limit=1&offset=0", 2, [created_ids[1]]),
+        ("&kind=expense&limit=1&offset=1", 2, [created_ids[2]]),
+        ("&kind=expense&limit=1&offset=2", 2, []),
+    ]
+
+    for query, expected_total, expected_ids in cases:
+        response = client.get(f"{base_url}{query}", headers=headers)
+        assert response.status_code == 200, response.text
+
+        data = response.json()
+        assert data["total"] == expected_total
+        assert [row["source_id"] for row in data["items"]] == expected_ids
+        assert_summary(data, expected_summary)
+
+    empty = client.get(
+        "/kpr?year=2026&month=10&limit=1&offset=0",
+        headers=headers,
+    )
+    assert empty.status_code == 200, empty.text
+    assert empty.json()["total"] == 0
+    assert empty.json()["items"] == []
+    assert_summary(
+        empty.json(),
+        {
+            "income": Decimal("0.00"),
+            "expense": Decimal("0.00"),
+            "net": Decimal("0.00"),
+        },
+    )

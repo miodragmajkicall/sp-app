@@ -1,9 +1,9 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/KprPage.tsx
-import { useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { fetchKprList, exportKprPdf, exportKprExcel } from "../services/kprApi";
-import type { KprListResponse, KprRowItem } from "../types/kpr";
+import type { KprKind, KprListResponse, KprRowItem } from "../types/kpr";
 
 const CURRENT_YEAR = new Date().getFullYear();
 const CURRENT_MONTH = new Date().getMonth() + 1;
@@ -124,54 +124,58 @@ export default function KprPage() {
   const [year, setYear] = useState<number | undefined>(CURRENT_YEAR);
   const [month, setMonth] = useState<number | undefined>(CURRENT_MONTH);
   const [kindFilter, setKindFilter] = useState<KindFilter>("ALL");
+  const [page, setPage] = useState(1);
+
+  const pageSize = 25;
+  const offset = (page - 1) * pageSize;
+  const kind: KprKind | undefined =
+    kindFilter === "ALL"
+      ? undefined
+      : kindFilter === "INCOME"
+        ? "income"
+        : "expense";
 
   const {
     data,
     isLoading,
+    isFetching,
     isError,
     error,
     refetch,
     isRefetching,
   } = useQuery<KprListResponse, Error>({
-    queryKey: ["kpr", { year, month }],
+    queryKey: ["kpr", { year, month, kind, limit: pageSize, offset }],
     queryFn: () =>
       fetchKprList({
         year,
         month,
+        kind,
+        limit: pageSize,
+        offset,
       }),
   });
 
-  const allItems: KprRowItem[] = data?.items ?? [];
-
-  const filteredItems = useMemo(() => {
-    if (kindFilter === "ALL") return allItems;
-    if (kindFilter === "INCOME") {
-      return allItems.filter((r) => r.kind === "income");
-    }
-    return allItems.filter((r) => r.kind === "expense");
-  }, [allItems, kindFilter]);
-
+  const filteredItems: KprRowItem[] = data?.items ?? [];
   const total = data?.total ?? 0;
 
-  const totals = useMemo(() => {
-    let income = 0;
-    let expense = 0;
+  const totals = data?.summary ?? {
+    income: 0,
+    expense: 0,
+    net: 0,
+  };
 
-    for (const row of allItems) {
-      if (row.kind === "income") {
-        income += row.amount ?? 0;
-      } else if (row.kind === "expense") {
-        expense += row.amount ?? 0;
-      }
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const pageStart = filteredItems.length > 0 ? offset + 1 : 0;
+  const pageEnd =
+    filteredItems.length > 0
+      ? Math.min(offset + filteredItems.length, total)
+      : 0;
+
+  useEffect(() => {
+    if (data && !isFetching && !isError && page > totalPages) {
+      setPage(totalPages);
     }
-
-    return {
-      income,
-      expense,
-      net: income - expense,
-    };
-  }, [allItems]);
-
+  }, [data, isFetching, isError, page, totalPages]);
   const handleExportPdf = async () => {
     if (!year || !month) {
       window.alert(
@@ -348,14 +352,15 @@ export default function KprPage() {
               Period i vrsta stavke
             </h2>
             <p className="mt-1 text-xs text-slate-500">
-              Filteri kontrolišu period učitavanja i lokalni prikaz
-              prihodovnih/rashodovnih stavki.
+              Filteri određuju period i vrstu stavki. Zbirni iznosi prikazuju
+              cijeli odabrani period, nezavisno od vrste i stranice.
             </p>
           </div>
 
           <button
             type="button"
             onClick={() => {
+              setPage(1);
               setYear(CURRENT_YEAR);
               setMonth(CURRENT_MONTH);
               setKindFilter("ALL");
@@ -373,6 +378,7 @@ export default function KprPage() {
               value={year ?? ""}
               onChange={(e) => {
                 const v = e.target.value;
+                setPage(1);
                 setYear(v === "" ? undefined : Number(v));
               }}
               className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
@@ -390,6 +396,7 @@ export default function KprPage() {
               value={month ?? ""}
               onChange={(e) => {
                 const v = e.target.value;
+                setPage(1);
                 setMonth(v === "" ? undefined : Number(v));
               }}
               className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
@@ -415,7 +422,10 @@ export default function KprPage() {
             <div className="grid grid-cols-3 gap-1 rounded-2xl border border-slate-200 bg-slate-50 p-1">
               <button
                 type="button"
-                onClick={() => setKindFilter("ALL")}
+                onClick={() => {
+                  setPage(1);
+                  setKindFilter("ALL");
+                }}
                 className={[
                   "rounded-xl px-2 py-2 text-xs font-semibold transition",
                   kindFilter === "ALL"
@@ -428,7 +438,10 @@ export default function KprPage() {
 
               <button
                 type="button"
-                onClick={() => setKindFilter("INCOME")}
+                onClick={() => {
+                  setPage(1);
+                  setKindFilter("INCOME");
+                }}
                 className={[
                   "rounded-xl px-2 py-2 text-xs font-semibold transition",
                   kindFilter === "INCOME"
@@ -441,7 +454,10 @@ export default function KprPage() {
 
               <button
                 type="button"
-                onClick={() => setKindFilter("EXPENSE")}
+                onClick={() => {
+                  setPage(1);
+                  setKindFilter("EXPENSE");
+                }}
                 className={[
                   "rounded-xl px-2 py-2 text-xs font-semibold transition",
                   kindFilter === "EXPENSE"
@@ -501,11 +517,16 @@ export default function KprPage() {
               📘
             </div>
             <h3 className="mt-4 text-base font-semibold text-slate-900">
-              Nema KPR stavki za odabrani period
+              {kindFilter === "ALL"
+                ? "Nema KPR stavki za odabrani period"
+                : kindFilter === "INCOME"
+                  ? "Nema prihoda za odabrani period"
+                  : "Nema rashoda za odabrani period"}
             </h3>
             <p className="mx-auto mt-2 max-w-md text-sm text-slate-500">
-              Kada se kreiraju izlazne fakture, ulazne fakture ili ručni cash
-              unosi, ovdje će se pojaviti evidencija prihoda i rashoda.
+              {kindFilter === "ALL"
+                ? "Za odabrani period nema prepoznatih KPR stavki."
+                : "Promijeni vrstu ili period da vidiš druge stavke."}
             </p>
           </div>
         )}
@@ -513,10 +534,11 @@ export default function KprPage() {
         {!isLoading && !isError && total > 0 && filteredItems.length === 0 && (
           <div className="p-8 text-center">
             <h3 className="text-base font-semibold text-slate-900">
-              Nema stavki za odabrani filter
+              Nema stavki na ovoj stranici
             </h3>
             <p className="mt-2 text-sm text-slate-500">
-              Promijeni filter vrste ili resetuj filtere da vidiš sve stavke.
+              Ako se broj stavki promijenio, prikaz će se vratiti na posljednju
+              dostupnu stranicu.
             </p>
           </div>
         )}
@@ -616,6 +638,45 @@ export default function KprPage() {
               </tbody>
             </table>
           </div>
+        )}
+
+        {!isLoading && !isError && (
+          <nav
+            aria-label="Paginacija KPR-a"
+            className="flex flex-col gap-3 border-t border-slate-100 px-4 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-5"
+          >
+            <p className="text-xs text-slate-500">
+              {filteredItems.length > 0
+                ? `Prikazano ${pageStart}–${pageEnd} od ${total} stavki`
+                : `Prikazano 0 od ${total} stavki`}
+            </p>
+
+            <div className="flex items-center gap-3">
+              <button
+                type="button"
+                onClick={() => setPage((current) => Math.max(1, current - 1))}
+                disabled={isFetching || page <= 1}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Prethodna
+              </button>
+
+              <span className="whitespace-nowrap text-xs font-medium text-slate-600">
+                Stranica {page} od {totalPages}
+              </span>
+
+              <button
+                type="button"
+                onClick={() =>
+                  setPage((current) => Math.min(current + 1, totalPages))
+                }
+                disabled={isFetching || page >= totalPages}
+                className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Sljedeća
+              </button>
+            </div>
+          </nav>
         )}
       </section>
     </div>

@@ -1,12 +1,17 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/services/kprApi.ts
 import { apiClient } from "./apiClient";
-import type { KprListResponse, KprRowItem } from "../types/kpr";
+import type {
+  KprKind,
+  KprListResponse,
+  KprRowItem,
+} from "../types/kpr";
 
 export interface FetchKprListOptions {
   year?: number;
   month?: number;
-  page?: number;
-  pageSize?: number;
+  kind?: KprKind;
+  limit?: number;
+  offset?: number;
 }
 
 /**
@@ -45,23 +50,29 @@ function mapKprRowItem(raw: any): KprRowItem {
 
 /**
  * GET /kpr – lista stavki za Knjigu prihoda i rashoda.
- * Backend vraća { total, items }.
+ * Backend vraća { total, summary, items }.
  */
 export async function fetchKprList(
   options: FetchKprListOptions = {},
 ): Promise<KprListResponse> {
-  const page = options.page ?? 1;
-  const pageSize = options.pageSize ?? 500;
+  const limit = options.limit ?? 1000;
+  const offset = options.offset ?? 0;
 
   const res = await apiClient.get<{
     total: number;
+    summary: {
+      income: number | string;
+      expense: number | string;
+      net: number | string;
+    };
     items: any[];
   }>("/kpr", {
     params: {
       year: options.year,
       month: options.month,
-      page,
-      page_size: pageSize,
+      kind: options.kind,
+      limit,
+      offset,
     },
   });
 
@@ -69,6 +80,11 @@ export async function fetchKprList(
 
   return {
     total: raw.total ?? 0,
+    summary: {
+      income: Number(raw.summary.income),
+      expense: Number(raw.summary.expense),
+      net: Number(raw.summary.net),
+    },
     items: Array.isArray(raw.items)
       ? raw.items.map(mapKprRowItem)
       : [],

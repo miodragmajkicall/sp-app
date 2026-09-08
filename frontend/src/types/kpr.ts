@@ -32,7 +32,14 @@ export interface KprRowItem {
   source_id: number;
 }
 
+export interface KprSummary {
+  income: number;
+  expense: number;
+  net: number;
+}
+
 export interface KprListResponse {
   total: number;
+  summary: KprSummary;
   items: KprRowItem[];
 }

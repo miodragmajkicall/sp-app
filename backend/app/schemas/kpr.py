@@ -123,11 +123,33 @@ class KprRowItem(BaseModel):
     )
 
 
+class KprSummary(BaseModel):
+    """Informativni zbir KPR stavki za cijeli odabrani period."""
+
+    model_config = BaseConfig
+
+    income: Decimal = Field(
+        ...,
+        ge=0,
+        description="Ukupni prihodi za period, nezavisno od vrste i paginacije.",
+    )
+    expense: Decimal = Field(
+        ...,
+        ge=0,
+        description="Ukupni rashodi za period, nezavisno od vrste i paginacije.",
+    )
+    net: Decimal = Field(
+        ...,
+        description="Prihodi minus rashodi; nije poreska osnovica.",
+    )
+
+
 class KprListResponse(BaseModel):
     """
     Odgovor za UI KPR tabele (Tab 1: Evidencija).
 
-    - `total` – ukupan broj stavki koje zadovoljavaju filtere,
+    - `total` – broj stavki nakon filtera vrste, prije paginacije,
+    - `summary` – zbir cijelog perioda, nezavisan od vrste i paginacije,
     - `items` – jedna stranica/redovi za tabelarni prikaz.
     """
 
@@ -138,6 +160,10 @@ class KprListResponse(BaseModel):
         ge=0,
         description="Ukupan broj stavki u KPR-u za zadate filtere.",
         examples=[42],
+    )
+    summary: KprSummary = Field(
+        ...,
+        description="Informativni zbir prihoda, rashoda i neto rezultata za period.",
     )
     items: List[KprRowItem] = Field(
         ...,

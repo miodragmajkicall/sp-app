@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 from io import BytesIO, StringIO
-from typing import List, Optional
+from typing import List, Literal, Optional
 import csv
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
 from app.models import Invoice
-from app.schemas.kpr import KprListResponse, KprRowItem
+from app.schemas.kpr import KprListResponse, KprRowItem, KprSummary
 from app.services.recognized_input_expenses import (
     UnsupportedInputExpenseRecognitionError,
     list_recognized_input_expenses,
@@ -207,8 +207,8 @@ def _collect_kpr_rows(
             )
         )
 
-    # Ne forsiramo dodatno globalno sortiranje po r.date
-    # – već smo po pojedinačnim upitima sortirali po datumu + ID.
+    # Stabilan globalni redoslijed prije paginacije.
+    rows.sort(key=lambda row: (row.entry_date, row.source, row.source_id))
     return rows
 
 
@@ -249,6 +249,10 @@ def list_kpr(
         le=12,
         description="Mjesec za filter po datumu (1–12).",
     ),
+    kind: Optional[Literal["income", "expense"]] = Query(
+        None,
+        description="Vrsta stavke: income ili expense.",
+    ),
     limit: int = Query(
         1000,
         ge=1,
@@ -265,6 +269,23 @@ def list_kpr(
     _ensure_tenant(db, tenant)
 
     all_rows = _collect_kpr_rows(db, tenant_code=tenant, year=year, month=month)
+
+    income = sum(
+        (row.amount for row in all_rows if row.kind == "income"),
+        Decimal("0.00"),
+    )
+    expense = sum(
+        (row.amount for row in all_rows if row.kind == "expense"),
+        Decimal("0.00"),
+    )
+    summary = KprSummary(
+        income=income,
+        expense=expense,
+        net=income - expense,
+    )
+
+    if kind is not None:
+        all_rows = [row for row in all_rows if row.kind == kind]
     total = len(all_rows)
 
     # Paginacija na Python strani – za V1 je sasvim dovoljna
@@ -272,6 +293,7 @@ def list_kpr(
 
     return KprListResponse(
         total=total,
+        summary=summary,
         items=paged_rows,
     )
 
