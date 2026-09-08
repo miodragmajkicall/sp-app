@@ -2,6 +2,11 @@
 
 export type KprKind = "income" | "expense";
 
+export type KprTaxTreatment =
+  | "deductible"
+  | "nondeductible"
+  | "unresolved";
+
 export interface KprRowItem {
   /**
    * Datum u KPR-u (YYYY-MM-DD).
@@ -21,7 +26,8 @@ export interface KprRowItem {
   description: string | null;
   amount: number;
   currency: string;
-  tax_deductible: boolean;
+  tax_deductible: boolean | null;
+  tax_treatment: KprTaxTreatment | null;
   source: string;
   source_id: number;
 }

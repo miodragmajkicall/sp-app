@@ -28,7 +28,13 @@ function mapKprRowItem(raw: any): KprRowItem {
     tax_deductible:
       typeof raw.tax_deductible === "boolean"
         ? raw.tax_deductible
-        : raw.kind === "expense",
+        : null,
+    tax_treatment:
+      raw.tax_treatment === "deductible" ||
+      raw.tax_treatment === "nondeductible" ||
+      raw.tax_treatment === "unresolved"
+        ? raw.tax_treatment
+        : null,
     source: raw.source ?? raw.category ?? "",
     source_id:
       typeof raw.source_id === "number"

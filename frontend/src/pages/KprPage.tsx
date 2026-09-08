@@ -66,6 +66,59 @@ function formatReference(row: KprRowItem): string {
   return "Ostalo";
 }
 
+function renderTaxTreatment(row: KprRowItem) {
+  if (row.kind !== "expense") {
+    return <span className="text-xs text-slate-400">—</span>;
+  }
+
+  const treatment = row.tax_treatment;
+
+  if (treatment === "deductible") {
+    return (
+      <span className="inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-700">
+        ODBITNO
+      </span>
+    );
+  }
+
+  if (treatment === "nondeductible") {
+    return (
+      <span className="inline-flex rounded-full bg-rose-50 px-2.5 py-1 text-[10px] font-bold text-rose-700">
+        NEODBITNO
+      </span>
+    );
+  }
+
+  if (treatment === "unresolved") {
+    return (
+      <span className="inline-flex rounded-full bg-amber-50 px-2.5 py-1 text-[10px] font-bold text-amber-800">
+        NERAZRIJEŠENO
+      </span>
+    );
+  }
+
+  if (row.tax_deductible === true) {
+    return (
+      <span className="inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-700">
+        ODBITNO
+      </span>
+    );
+  }
+
+  if (row.tax_deductible === false) {
+    return (
+      <span className="inline-flex rounded-full bg-rose-50 px-2.5 py-1 text-[10px] font-bold text-rose-700">
+        NEODBITNO
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex rounded-full bg-red-50 px-2.5 py-1 text-[10px] font-bold text-red-700">
+      NEMA TRETMANA
+    </span>
+  );
+}
 
 export default function KprPage() {
   const [year, setYear] = useState<number | undefined>(CURRENT_YEAR);
@@ -556,15 +609,7 @@ export default function KprPage() {
                     </td>
 
                     <td className="px-4 py-3 text-center">
-                      {row.tax_deductible ? (
-                        <span className="inline-flex rounded-full bg-emerald-50 px-2.5 py-1 text-[10px] font-bold text-emerald-700">
-                          DA
-                        </span>
-                      ) : (
-                        <span className="inline-flex rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-500">
-                          NE
-                        </span>
-                      )}
+                      {renderTaxTreatment(row)}
                     </td>
                   </tr>
                 ))}
