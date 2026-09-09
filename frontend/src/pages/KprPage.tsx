@@ -230,9 +230,15 @@ export default function KprPage() {
               </h1>
 
               <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">
-                Centralni pregled svih prihodovnih i rashodovnih stavki iz
-                izlaznih faktura, ulaznih faktura i ručnih cash unosa za tenant{" "}
+                Objedinjeni pregled prihoda i rashoda iz izlaznih faktura,
+                plaćenih ulaznih faktura i ručnih poslovnih novčanih unosa za tenant{" "}
                 <span className="font-mono text-white">t-demo</span>.
+              </p>
+              <p className="mt-2 max-w-2xl text-xs leading-5 text-slate-400">
+                Datum u KPR-u zavisi od izvora: izlazne fakture koriste datum
+                izdavanja, ulazne fakture datum plaćanja, a ručni poslovni unosi
+                datum unosa. KPR je izvedena evidencija, a ne pregled svih
+                novčanih tokova.
               </p>
 
               <div className="mt-4 flex flex-wrap items-center gap-2 text-[11px] text-slate-300">
@@ -325,7 +331,7 @@ export default function KprPage() {
                 {formatAmount(totals.net)}
               </p>
               <p className="mt-1 text-[11px] text-slate-400">
-                Prihodi minus rashodi.
+                Informativni saldo KPR-a; nije poreska osnovica.
               </p>
             </div>
 
@@ -548,8 +554,11 @@ export default function KprPage() {
             <table className="min-w-full text-xs">
               <thead className="sticky top-0 z-10 bg-white text-slate-500 shadow-sm">
                 <tr className="border-b border-slate-100">
-                  <th className="whitespace-nowrap px-4 py-3 text-left font-semibold">
-                    Datum
+                  <th
+                    className="whitespace-nowrap px-4 py-3 text-left font-semibold"
+                    title="Datum priznavanja u KPR-u, prema vrsti izvora."
+                  >
+                    Datum priznavanja
                   </th>
                   <th className="px-4 py-3 text-left font-semibold">Vrsta</th>
                   <th className="px-4 py-3 text-left font-semibold">Konto</th>
@@ -605,7 +614,10 @@ export default function KprPage() {
                     </td>
 
                     <td className="whitespace-nowrap px-4 py-3 text-[11px]">
-                      {formatReference(row)}
+                      <div>{formatReference(row)}</div>
+                      <div className="mt-1 font-mono text-[10px] text-slate-400">
+                        {row.source} · ID {row.source_id}
+                      </div>
                     </td>
 
                     <td className="px-4 py-3 text-[11px]">
