@@ -1292,3 +1292,109 @@ def test_kpr_month_only_checks_only_relevant_unsupported_rows(source: str) -> No
     )
     assert other_year.status_code == 200, other_year.text
     assert other_year.json()["total"] == 0
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ("", ""),
+        ("Običan tekst", "Običan tekst"),
+        ("  Običan tekst", "  Običan tekst"),
+        ("O'Connor", "O'Connor"),
+        ('Čačak, "navodnici"\nDrugi red',
+         'Čačak, "navodnici"\nDrugi red'),
+        ("=1+1", "\t=1+1"),
+        ("+SUM(1,2)", "\t+SUM(1,2)"),
+        ("-15", "\t-15"),
+        ("@SUM(1,2)", "\t@SUM(1,2)"),
+        ("  =1+1", "\t  =1+1"),
+        ("\t@SUM(1,2)", "\t\t@SUM(1,2)"),
+        ("\n=1+1", "\t\n=1+1"),
+        ("\r@SUM(1,2)", "\t\r@SUM(1,2)"),
+        ("\x00=1+1", "\t\x00=1+1"),
+        ("\u200b=1+1", "\t\u200b=1+1"),
+        ("\ufeff=1+1", "\t\ufeff=1+1"),
+        ("\uff1d1+1", "\t\uff1d1+1"),
+        (" \tObičan tekst", "\t \tObičan tekst"),
+    ],
+)
+def test_kpr_csv_safe_text(value: str, expected: str) -> None:
+    from app.routes.kpr import _csv_safe_text
+
+    assert _csv_safe_text(value) == expected
+
+
+def test_kpr_csv_export_formula_protection_preserves_source(
+    monkeypatch,
+) -> None:
+    import csv
+    from datetime import date
+    from io import StringIO
+
+    from app.routes import kpr as kpr_route
+    from app.schemas.kpr import KprRowItem
+
+    row = KprRowItem(
+        date=date(2026, 9, 9),
+        kind="income",
+        category="invoice",
+        counterparty="=1+1",
+        document_number=" \t+SUM(1,2)",
+        description="\n@SUM(1,2)",
+        amount=Decimal("12.34"),
+        currency="BAM",
+        tax_deductible=False,
+        tax_treatment=None,
+        source="invoice",
+        source_id=42,
+    )
+    original = row.model_dump()
+
+    # Izolujemo export: nema upisa u bazu niti promjene recognition pravila.
+    monkeypatch.setattr(
+        kpr_route, "_ensure_tenant", lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        kpr_route, "_collect_kpr_rows",
+        lambda *_args, **_kwargs: [row],
+    )
+
+    response = client.get(
+        "/kpr/export-excel",
+        headers={"X-Tenant-Code": "kpr-csv-formula-test"},
+        params={"year": 2026, "month": 9},
+    )
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/csv")
+
+    columns = [
+        "datum", "vrsta", "kategorija", "kupac_dobavljac",
+        "dok_broj", "opis", "iznos", "valuta", "poreski_priznat",
+        "tax_treatment", "source", "source_id",
+    ]
+    expected_row = [
+        "2026-09-09", "PRIHOD", "invoice",
+        "\t=1+1", "\t \t+SUM(1,2)", "\t\n@SUM(1,2)",
+        "12.34", "BAM", "NE", "", "invoice", "42",
+    ]
+
+    # Provjera stvarnih CSV bajtova: BOM, QUOTE_ALL, CRLF i escaping.
+    buffer = StringIO(newline="")
+    writer = csv.writer(buffer, quoting=csv.QUOTE_ALL)
+    writer.writerow(columns)
+    writer.writerow(expected_row)
+    expected_bytes = buffer.getvalue().encode("utf-8-sig")
+
+    assert response.content == expected_bytes
+
+    parsed = list(csv.reader(
+        StringIO(response.content.decode("utf-8-sig"), newline="")
+    ))
+    assert parsed == [columns, expected_row]
+    assert all(len(item) == 12 for item in parsed)
+
+    # Export ne smije promijeniti ni izvorni model ni njegove vrijednosti.
+    assert row.model_dump() == original
+    assert row.counterparty == "=1+1"
+    assert row.document_number == " \t+SUM(1,2)"
+    assert row.description == "\n@SUM(1,2)"
