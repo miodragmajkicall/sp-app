@@ -1398,3 +1398,67 @@ def test_kpr_csv_export_formula_protection_preserves_source(
     assert row.counterparty == "=1+1"
     assert row.document_number == " \t+SUM(1,2)"
     assert row.description == "\n@SUM(1,2)"
+
+
+@pytest.mark.parametrize(
+    "description, expected_status",
+    [
+        ("KPR test", 200),
+        ("Unsupported: \U0010ffff", 422),
+    ],
+    ids=["supported", "unsupported"],
+)
+def test_kpr_pdf_unsupported_glyph_returns_422(
+    monkeypatch,
+    description: str,
+    expected_status: int,
+) -> None:
+    from datetime import date
+
+    from app.routes import kpr as kpr_route
+    from app.schemas.kpr import KprRowItem
+
+    row = KprRowItem(
+        date=date(2026, 9, 9),
+        kind="income",
+        category="cash",
+        description=description,
+        amount=Decimal("12.34"),
+        currency="BAM",
+        tax_deductible=False,
+        tax_treatment=None,
+        source="cash",
+        source_id=42,
+    )
+    original = row.model_dump()
+
+    # Izolujemo agregaciju; stvarni PDF renderer ostaje aktivan.
+    monkeypatch.setattr(
+        kpr_route, "_ensure_tenant", lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        kpr_route, "_collect_kpr_rows",
+        lambda *_args, **_kwargs: [row],
+    )
+
+    response = client.get(
+        "/kpr/export",
+        headers={"X-Tenant-Code": "kpr-pdf-glyph-test"},
+        params={"year": 2026, "month": 9},
+    )
+
+    assert response.status_code == expected_status, response.text
+
+    if expected_status == 422:
+        assert response.json() == {
+            "detail": (
+                "KPR PDF cannot be generated because the document contains "
+                "characters unsupported by the PDF font"
+            )
+        }
+        assert not response.content.startswith(b"%PDF-")
+    else:
+        assert response.headers["content-type"].startswith("application/pdf")
+        assert response.content.startswith(b"%PDF-")
+
+    assert row.model_dump() == original

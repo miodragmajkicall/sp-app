@@ -357,17 +357,27 @@ def export_kpr_pdf(
         description="Mjesec za KPR export (opciono). Ako nije zadat, eksportuje se cijela godina.",
     ),
 ) -> StreamingResponse:
+    from app.services.pdf_invoice import UnsupportedPdfGlyphError
     from app.services.pdf_kpr import KprPeriod, render_kpr_pdf
 
     tenant = _require_tenant(x_tenant_code)
     _ensure_tenant(db, tenant)
 
     rows = _collect_kpr_rows(db, tenant_code=tenant, year=year, month=month)
-    pdf_bytes = render_kpr_pdf(
-        tenant_code=tenant,
-        period=KprPeriod(year=year, month=month),
-        rows=rows,
-    )
+    try:
+        pdf_bytes = render_kpr_pdf(
+            tenant_code=tenant,
+            period=KprPeriod(year=year, month=month),
+            rows=rows,
+        )
+    except UnsupportedPdfGlyphError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "KPR PDF cannot be generated because the document contains "
+                "characters unsupported by the PDF font"
+            ),
+        ) from exc
 
     filename = f"kpr-{tenant}-{year}"
     if month is not None:
