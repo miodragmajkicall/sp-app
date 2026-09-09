@@ -177,10 +177,8 @@ export default function KprPage() {
     }
   }, [data, isFetching, isError, page, totalPages]);
   const handleExportPdf = async () => {
-    if (!year || !month) {
-      window.alert(
-        "Za PDF export trenutno zahtijevamo odabranu godinu i mjesec.",
-      );
+    if (!year) {
+      window.alert("Za PDF export odaberi godinu.");
       return;
     }
 
@@ -198,10 +196,8 @@ export default function KprPage() {
   };
 
   const handleExportExcel = async () => {
-    if (!year || !month) {
-      window.alert(
-        "Za Excel/CSV export trenutno zahtijevamo odabranu godinu i mjesec.",
-      );
+    if (!year) {
+      window.alert("Za Excel/CSV export odaberi godinu.");
       return;
     }
 
@@ -295,6 +291,10 @@ export default function KprPage() {
               >
                 Excel
               </button>
+              <p className="w-full text-xs leading-5 text-slate-300">
+                PDF i CSV obuhvataju sve stavke odabranog perioda, nezavisno od
+                trenutne stranice i filtera vrste. Excel preuzima CSV fajl.
+              </p>
             </div>
           </div>
 

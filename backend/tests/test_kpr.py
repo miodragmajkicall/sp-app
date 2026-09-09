@@ -800,3 +800,144 @@ def test_kpr_summary_is_independent_of_kind_and_pagination():
             "net": Decimal("0.00"),
         },
     )
+
+def test_kpr_csv_export_full_period_and_format():
+    import csv
+    from io import StringIO
+
+    tenant = f"kpr-csv-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+    _set_cash_profile(tenant)
+
+    special_note = 'Čačak, ćirilica, šuma, žito, đak "navodnici"\nDrugi red'
+    scenarios = [
+        ("2026-01-10", "income", "1.00", None, special_note),
+        *[
+            (f"2026-09-{day:02d}", "income", "1.00", None, "CSV income")
+            for day in range(1, 27)
+        ],
+        ("2026-09-27", "expense", "2.00", "deductible", "Odbitno"),
+        ("2026-09-28", "expense", "3.00", "nondeductible", "Neodbitno"),
+        ("2026-09-29", "expense", "4.00", "unresolved", "Nerazriješeno"),
+    ]
+
+    records = []
+    for entry_date, kind, amount, treatment, note in scenarios:
+        payload = {
+            "entry_date": entry_date,
+            "kind": kind,
+            "amount": amount,
+            "recognition_class": "business_activity",
+            "note": note,
+        }
+        if treatment is not None:
+            payload["tax_treatment"] = treatment
+
+        response = client.post("/cash/", headers=headers, json=payload)
+        assert response.status_code == 201, response.text
+        records.append((*scenarios[len(records)], str(response.json()["id"])))
+
+    for entry_date, recognition_class in (
+        ("2026-09-30", "cash_only"),
+        ("2027-01-01", "business_activity"),
+    ):
+        response = client.post(
+            "/cash/",
+            headers=headers,
+            json={
+                "entry_date": entry_date,
+                "kind": "income",
+                "amount": "999.00",
+                "recognition_class": recognition_class,
+                "note": "Outside selected KPR scope",
+            },
+        )
+        assert response.status_code == 201, response.text
+
+    expected_ids = [record[5] for record in records]
+
+    full = client.get(
+        "/kpr?year=2026&limit=10000&offset=0",
+        headers=headers,
+    )
+    assert full.status_code == 200, full.text
+    data = full.json()
+    assert data["total"] == 30
+    assert [str(row["source_id"]) for row in data["items"]] == expected_ids
+    assert {
+        key: Decimal(str(value))
+        for key, value in data["summary"].items()
+    } == {
+        "income": Decimal("27.00"),
+        "expense": Decimal("9.00"),
+        "net": Decimal("18.00"),
+    }
+
+    first = client.get(
+        "/kpr?year=2026&limit=25&offset=0", headers=headers
+    )
+    second = client.get(
+        "/kpr?year=2026&limit=25&offset=25", headers=headers
+    )
+    assert first.status_code == second.status_code == 200
+    assert [
+        str(row["source_id"])
+        for row in first.json()["items"] + second.json()["items"]
+    ] == expected_ids
+
+    columns = [
+        "datum", "vrsta", "kategorija", "kupac_dobavljac",
+        "dok_broj", "opis", "iznos", "valuta", "poreski_priznat",
+        "tax_treatment", "source", "source_id",
+    ]
+
+    expected_rows = [
+        [
+            entry_date,
+            "PRIHOD" if kind == "income" else "RASHOD",
+            "cash", "", "", note, f"{Decimal(amount):.2f}", "BAM",
+            "DA" if treatment == "deductible" else "NE",
+            treatment or "", "cash", source_id,
+        ]
+        for entry_date, kind, amount, treatment, note, source_id in records
+    ]
+
+    def read_csv(params):
+        response = client.get(
+            "/kpr/export-excel", headers=headers, params=params
+        )
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"].startswith("text/csv")
+
+        raw = response.content
+        assert raw.startswith(b"\xef\xbb\xbf")
+        text = raw.decode("utf-8-sig")
+        rows = list(csv.reader(StringIO(text, newline="")))
+
+        assert rows[0] == columns
+        assert all(len(row) == 12 for row in rows)
+        assert text.endswith("\r\n")
+        assert raw.count(b"\r\n") == len(rows)
+        return raw, rows
+
+    annual_bytes, annual_rows = read_csv({"year": 2026})
+    assert annual_rows == [columns, *expected_rows]
+    assert len({row[11] for row in annual_rows[1:]}) == 30
+
+    _, monthly_rows = read_csv({"year": 2026, "month": 9})
+    assert monthly_rows == [
+        columns,
+        *[row for row in expected_rows if row[0].startswith("2026-09-")],
+    ]
+
+    filtered_bytes, filtered_rows = read_csv({
+        "year": 2026,
+        "kind": "expense",
+        "limit": 1,
+        "offset": 25,
+    })
+    assert filtered_bytes == annual_bytes
+    assert filtered_rows == annual_rows
+
+    _, empty_rows = read_csv({"year": 2028})
+    assert empty_rows == [columns]
