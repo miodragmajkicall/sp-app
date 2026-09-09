@@ -289,6 +289,11 @@ def create_invoice(
     tenant = _require_tenant(x_tenant_code)
 
     _ensure_tenant_exists(db, tenant)
+    ensure_period_open(
+        db,
+        tenant_code=tenant,
+        period_date=payload.issue_date,
+    )
     issuer_snapshot = _get_invoice_issuer_snapshot(db, tenant)
 
     data = payload.model_dump()

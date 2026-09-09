@@ -447,6 +447,11 @@ def test_unexpected_integrity_error_is_generic_after_rollback(
     monkeypatch.setattr(invoices_route, "_ensure_tenant_exists", lambda *_args: None)
     monkeypatch.setattr(
         invoices_route,
+        "ensure_period_open",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        invoices_route,
         "_get_invoice_issuer_snapshot",
         lambda *_args: {
             "issuer_business_name": "Issuer",
@@ -533,3 +538,107 @@ def test_invoice_requests_do_not_execute_runtime_ddl() -> None:
 
     assert not hasattr(invoices_route, "_ensure_is_paid_column")
     assert all("alter table" not in statement.lower() for statement in statements)
+
+@pytest.mark.parametrize("path", ["/invoices", "/invoices/"])
+def test_create_invoice_respects_finalized_issue_month(path: str) -> None:
+    from app.models import TaxMonthlyResult
+
+    headers = _headers("invoice-period-lock")
+    other_headers = _headers("invoice-period-other")
+    tenant = headers["X-Tenant-Code"]
+    number = f"LOCK-{uuid4().hex[:12]}"
+
+    # Minimalni finalizovani snapshot: testiramo period guard,
+    # ne ponavljamo obračun TAX modula.
+    with SessionLocal() as db:
+        snapshot = TaxMonthlyResult(
+            tenant_code=tenant,
+            year=2090,
+            month=1,
+            total_income=Decimal("0.00"),
+            total_expense=Decimal("0.00"),
+            taxable_base=Decimal("0.00"),
+            income_tax=Decimal("0.00"),
+            contributions_total=Decimal("0.00"),
+            total_due=Decimal("0.00"),
+            is_final=True,
+        )
+        db.add(snapshot)
+        db.commit()
+        snapshot_id = snapshot.id
+
+    period = {"year": 2090, "month": 1}
+    before = client.get("/kpr", headers=headers, params=period)
+    assert before.status_code == 200, before.text
+
+    closed = client.post(
+        path,
+        headers=headers,
+        json=_payload(
+            number,
+            issue_date="2090-01-10",
+            due_date="2090-01-20",
+        ),
+    )
+    assert closed.status_code == 400, closed.text
+    assert closed.json() == {
+        "detail": (
+            "Cannot modify data for finalized tax period 2090-01 "
+            f"for tenant {tenant}."
+        )
+    }
+
+    _assert_invoice_and_items_not_persisted(tenant, number)
+
+    after = client.get("/kpr", headers=headers, params=period)
+    assert after.status_code == 200, after.text
+    assert after.json() == before.json()
+
+    # Isti broj može se koristiti u otvorenom mjesecu:
+    # odbijeni pokušaj nije ostavio parcijalni upis.
+    open_response = client.post(
+        path,
+        headers=headers,
+        json=_payload(
+            number,
+            issue_date="2090-02-10",
+            due_date="2090-02-20",
+        ),
+    )
+    assert open_response.status_code == 201, open_response.text
+
+    # Finalizacija jednog tenanta ne zaključava drugog.
+    other_response = client.post(
+        path,
+        headers=other_headers,
+        json=_payload(
+            number,
+            issue_date="2090-01-10",
+            due_date="2090-01-20",
+        ),
+    )
+    assert other_response.status_code == 201, other_response.text
+
+    with SessionLocal() as db:
+        stored = db.get(TaxMonthlyResult, snapshot_id)
+        assert stored is not None
+        assert stored.tenant_code == tenant
+        assert (stored.year, stored.month) == (2090, 1)
+        assert stored.is_final is True
+        assert (
+            stored.total_income,
+            stored.total_expense,
+            stored.taxable_base,
+            stored.income_tax,
+            stored.contributions_total,
+            stored.total_due,
+        ) == (Decimal("0.00"),) * 6
+        assert (
+            db.query(TaxMonthlyResult)
+            .filter(
+                TaxMonthlyResult.tenant_code == tenant,
+                TaxMonthlyResult.year == 2090,
+                TaxMonthlyResult.month == 1,
+            )
+            .count()
+        ) == 1
