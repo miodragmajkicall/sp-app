@@ -5,7 +5,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Literal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import CashEntry
@@ -35,6 +35,7 @@ def list_recognized_manual_cash(
     tenant_code: str,
     date_from: date | None = None,
     date_to: date | None = None,
+    month: int | None = None,
 ) -> list[RecognizedManualCash]:
     """Return recognized manual business cash events for one tenant.
 
@@ -53,6 +54,8 @@ def list_recognized_manual_cash(
         filters.append(CashEntry.entry_date >= date_from)
     if date_to is not None:
         filters.append(CashEntry.entry_date < date_to)
+    if month is not None:
+        filters.append(func.extract("month", CashEntry.entry_date) == month)
 
     stmt = (
         select(CashEntry)

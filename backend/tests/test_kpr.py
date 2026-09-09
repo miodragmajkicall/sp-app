@@ -4,6 +4,7 @@ from __future__ import annotations
 from decimal import Decimal
 from uuid import uuid4
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.db import SessionLocal
@@ -1114,3 +1115,180 @@ def test_kpr_pdf_full_period_and_format():
     assert empty_ids == []
     assert "Nema evidentiranih stavki" in empty_text
     assert "0.00 BAM" in empty_text
+
+
+def _kpr3_create_paid_input(headers: dict, payment_date: str) -> int:
+    created = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": "KPR Month Supplier",
+            "invoice_number": f"KPR-MONTH-{uuid4().hex[:10]}",
+            "issue_date": "2025-08-01",
+            "posting_date": "2025-08-01",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "117.00",
+        },
+    )
+    assert created.status_code == 201, created.text
+    invoice_id = created.json()["id"]
+
+    payment = client.post(
+        f"/input-invoices/{invoice_id}/payment",
+        headers=headers,
+        json={"payment_date": payment_date, "account": "bank"},
+    )
+    assert payment.status_code == 201, payment.text
+    return invoice_id
+
+
+def test_kpr_month_only_collects_all_years_before_pagination() -> None:
+    tenant = f"kpr-month-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+    save_complete_profile(client, headers)
+    _set_cash_profile(tenant)
+
+    invoice = client.post(
+        "/invoices",
+        headers=headers,
+        json={
+            "invoice_number": f"KPR-MONTH-{uuid4().hex[:10]}",
+            "issue_date": "2025-09-05",
+            "due_date": "2025-09-20",
+            "buyer_name": "KPR Month Buyer",
+            "buyer_address": "Test address",
+            "items": [{
+                "description": "Test service",
+                "quantity": "1",
+                "unit_price": "10.00",
+                "vat_rate": "0.00",
+            }],
+        },
+    )
+    assert invoice.status_code == 201, invoice.text
+    invoice_id = invoice.json()["id"]
+
+    input_id = _kpr3_create_paid_input(headers, "2026-09-12")
+
+    cash_ids = []
+    for entry_date, amount in (
+        ("2025-09-10", "1.00"),
+        ("2026-09-10", "2.00"),
+        ("2026-08-10", "999.00"),
+    ):
+        response = client.post(
+            "/cash/",
+            headers=headers,
+            json={
+                "entry_date": entry_date,
+                "kind": "income",
+                "amount": amount,
+                "recognition_class": "business_activity",
+                "note": "KPR month-only regression",
+            },
+        )
+        assert response.status_code == 201, response.text
+        cash_ids.append(response.json()["id"])
+
+    response = client.get("/kpr", headers=headers, params={"month": 9})
+    assert response.status_code == 200, response.text
+    body = response.json()
+
+    assert body["total"] == 4
+    assert [(row["source"], row["source_id"]) for row in body["items"]] == [
+        ("invoice", invoice_id),
+        ("cash", cash_ids[0]),
+        ("cash", cash_ids[1]),
+        ("input_invoice", input_id),
+    ]
+    assert [row["date"] for row in body["items"]] == [
+        "2025-09-05",
+        "2025-09-10",
+        "2026-09-10",
+        "2026-09-12",
+    ]
+    assert body["summary"] == {
+        "income": "13.00",
+        "expense": "117.00",
+        "net": "-104.00",
+    }
+
+    filtered = client.get(
+        "/kpr",
+        headers=headers,
+        params={"month": 9, "kind": "expense", "limit": 1, "offset": 0},
+    )
+    assert filtered.status_code == 200, filtered.text
+    assert filtered.json()["total"] == 1
+    assert filtered.json()["summary"] == body["summary"]
+    assert filtered.json()["items"] == [body["items"][3]]
+
+    for year, expected_ids in (
+        (2025, [invoice_id, cash_ids[0]]),
+        (2026, [cash_ids[1], input_id]),
+    ):
+        yearly = client.get(
+            "/kpr", headers=headers, params={"year": year, "month": 9},
+        )
+        assert yearly.status_code == 200, yearly.text
+        assert [row["source_id"] for row in yearly.json()["items"]] == expected_ids
+
+
+@pytest.mark.parametrize("source", ["manual", "input"])
+def test_kpr_month_only_checks_only_relevant_unsupported_rows(source: str) -> None:
+    tenant = f"kpr-month-unsupported-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+
+    def create_event(entry_date: str) -> None:
+        if source == "manual":
+            response = client.post(
+                "/cash/",
+                headers=headers,
+                json={
+                    "entry_date": entry_date,
+                    "kind": "income",
+                    "amount": "1.00",
+                    "recognition_class": "business_activity",
+                    "note": "KPR month-only unsupported",
+                },
+            )
+            assert response.status_code == 201, response.text
+        else:
+            _kpr3_create_paid_input(headers, entry_date)
+
+    create_event("2025-08-18")
+
+    # Avgustovski unsupported zapis ne smije blokirati prazan septembar.
+    for params in (
+        {"month": 9},
+        {"year": 2025, "month": 9},
+        {"year": 2026, "month": 9},
+    ):
+        response = client.get("/kpr", headers=headers, params=params)
+        assert response.status_code == 200, response.text
+        assert response.json()["total"] == 0
+        assert response.json()["items"] == []
+
+    create_event("2026-09-18")
+
+    # Relevantan unsupported zapis i dalje mora fail-closed.
+    expected_message = (
+        "Manual cash recognition policy is not configured"
+        if source == "manual"
+        else "Input invoice recognition policy is not configured"
+    )
+    for params in (
+        {"month": 9},
+        {"year": 2026, "month": 9},
+    ):
+        response = client.get("/kpr", headers=headers, params=params)
+        assert response.status_code == 409, response.text
+        assert expected_message in response.json()["detail"]
+
+    # Godišnje ograničen upit ne smije vidjeti zapis iz druge godine.
+    other_year = client.get(
+        "/kpr", headers=headers, params={"year": 2025, "month": 9},
+    )
+    assert other_year.status_code == 200, other_year.text
+    assert other_year.json()["total"] == 0

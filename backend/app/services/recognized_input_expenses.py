@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import CashEntry, InputInvoice
@@ -38,6 +38,7 @@ def list_recognized_input_expenses(
     tenant_code: str,
     date_from: date | None = None,
     date_to: date | None = None,
+    month: int | None = None,
 ) -> list[RecognizedInputExpense]:
     """Return tenant-owned input expenses recognized in the requested period.
 
@@ -54,6 +55,8 @@ def list_recognized_input_expenses(
         filters.append(CashEntry.entry_date >= date_from)
     if date_to is not None:
         filters.append(CashEntry.entry_date < date_to)
+    if month is not None:
+        filters.append(func.extract("month", CashEntry.entry_date) == month)
 
     stmt = (
         select(InputInvoice, CashEntry.entry_date)

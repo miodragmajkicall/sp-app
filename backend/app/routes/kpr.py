@@ -148,6 +148,7 @@ def _collect_kpr_rows(
             tenant_code=tenant_code,
             date_from=date_from,
             date_to=date_to,
+            month=month if year is None else None,
         )
     except UnsupportedInputExpenseRecognitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
@@ -180,6 +181,7 @@ def _collect_kpr_rows(
             tenant_code=tenant_code,
             date_from=date_from,
             date_to=date_to,
+            month=month if year is None else None,
         )
     except UnsupportedManualCashRecognitionError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
