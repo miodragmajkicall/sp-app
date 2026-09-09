@@ -941,3 +941,176 @@ def test_kpr_csv_export_full_period_and_format():
 
     _, empty_rows = read_csv({"year": 2028})
     assert empty_rows == [columns]
+
+def test_kpr_pdf_tax_labels():
+    from app.schemas.kpr import KprRowItem
+    from app.services.pdf_kpr import _tax_label
+
+    cases = [
+        ("income", None, False, "—"),
+        ("expense", "deductible", True, "Odbitno"),
+        ("expense", "nondeductible", False, "Neodbitno"),
+        ("expense", "unresolved", False, "Nerazriješeno"),
+        ("expense", "unresolved", True, "Nerazriješeno"),
+        ("expense", None, True, "Odbitno"),
+        ("expense", None, False, "Neodbitno"),
+    ]
+
+    for kind, treatment, legacy, expected in cases:
+        row = KprRowItem(
+            date="2026-09-01",
+            kind=kind,
+            category="cash",
+            amount=Decimal("1.00"),
+            tax_deductible=legacy,
+            tax_treatment=treatment,
+            source="cash",
+            source_id=1,
+        )
+        assert _tax_label(row) == expected
+
+
+def test_kpr_pdf_full_period_and_format():
+    import re
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    tenant = f"kpr-pdf-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+    _set_cash_profile(tenant)
+
+    special_note = (
+        'Čačak, šuma "navodnici"\n'
+        'Drugi red & <test> Милица Ђорђевић'
+    )
+    treatments = ("deductible", "nondeductible", "unresolved")
+    expected_ids = []
+
+    for number in range(1, 32):
+        entry_date = (
+            f"2026-01-{number:02d}"
+            if number <= 30 else "2026-02-01"
+        )
+        kind = "expense" if number <= 30 and number % 2 == 0 else "income"
+        treatment = (
+            treatments[(number // 2 - 1) % 3]
+            if kind == "expense" else None
+        )
+        note = f"P3B-ROW-{number:02d}"
+        if number == 1:
+            note += "\n" + special_note
+        if number == 4:
+            note += " deductible u opisu"
+
+        payload = {
+            "entry_date": entry_date,
+            "kind": kind,
+            "amount": "2.00" if kind == "expense" else (
+                "10.00" if number == 31 else "1.00"
+            ),
+            "recognition_class": "business_activity",
+            "note": note,
+        }
+        if treatment is not None:
+            payload["tax_treatment"] = treatment
+
+        response = client.post("/cash/", headers=headers, json=payload)
+        assert response.status_code == 201, response.text
+        expected_ids.append(response.json()["id"])
+
+    for entry_date, recognition_class in (
+        ("2026-01-31", "cash_only"),
+        ("2027-01-01", "business_activity"),
+    ):
+        response = client.post(
+            "/cash/",
+            headers=headers,
+            json={
+                "entry_date": entry_date,
+                "kind": "income",
+                "amount": "999.00",
+                "recognition_class": recognition_class,
+                "note": "Outside selected KPR scope",
+            },
+        )
+        assert response.status_code == 201, response.text
+
+    listing = client.get(
+        "/kpr", headers=headers,
+        params={"year": 2026, "limit": 10000, "offset": 0},
+    )
+    assert listing.status_code == 200, listing.text
+    data = listing.json()
+    assert data["total"] == 31
+    assert [row["source_id"] for row in data["items"]] == expected_ids
+    assert {
+        key: Decimal(str(value))
+        for key, value in data["summary"].items()
+    } == {
+        "income": Decimal("25.00"),
+        "expense": Decimal("30.00"),
+        "net": Decimal("-5.00"),
+    }
+
+    def read_pdf(params):
+        response = client.get(
+            "/kpr/export", headers=headers, params=params
+        )
+        assert response.status_code == 200, response.text
+        assert response.headers["content-type"].startswith("application/pdf")
+        assert response.content.startswith(b"%PDF-")
+
+        reader = PdfReader(BytesIO(response.content))
+        pages = [page.extract_text() or "" for page in reader.pages]
+        assert pages
+        assert all(
+            float(page.mediabox.width) > float(page.mediabox.height)
+            for page in reader.pages
+        )
+        assert all("Datum" in text and "Stranica" in text for text in pages)
+
+        text = "\n".join(pages)
+        ids = [
+            int(value)
+            for value in re.findall(r"\bcash\s*/\s*(\d+)\b", text)
+        ]
+        return pages, text, ids
+
+    annual_pages, annual_text, annual_ids = read_pdf({"year": 2026})
+    assert len(annual_pages) > 1
+    assert annual_ids == expected_ids
+    assert len(set(annual_ids)) == 31
+
+    for number in range(1, 32):
+        assert annual_text.count(f"P3B-ROW-{number:02d}") == 1
+
+    for value in (
+        "Čačak", "šuma", '"navodnici"', "Drugi red",
+        "& <test>", "Милица", "Ђорђевић",
+        "Odbitno", "Neodbitno", "Nerazriješeno",
+        "25.00 BAM", "30.00 BAM", "-5.00 BAM",
+        "nije poreska osnovica",
+    ):
+        assert value in annual_text
+
+    assert annual_text.count("Ukupni prihodi") == 1
+    assert "Outside selected KPR scope" not in annual_text
+
+    _, monthly_text, monthly_ids = read_pdf({
+        "year": 2026, "month": 1,
+    })
+    assert monthly_ids == expected_ids[:30]
+    assert "P3B-ROW-31" not in monthly_text
+
+    _, filtered_text, filtered_ids = read_pdf({
+        "year": 2026, "kind": "expense",
+        "limit": 1, "offset": 25,
+    })
+    assert filtered_ids == annual_ids
+    assert filtered_text == annual_text
+
+    _, empty_text, empty_ids = read_pdf({"year": 2028})
+    assert empty_ids == []
+    assert "Nema evidentiranih stavki" in empty_text
+    assert "0.00 BAM" in empty_text

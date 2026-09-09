@@ -303,39 +303,11 @@ def list_kpr(
 # ======================================================
 
 
-def _escape_pdf_text(text: str) -> str:
-    translit_map = str.maketrans(
-        {
-            "č": "c",
-            "ć": "c",
-            "š": "s",
-            "đ": "d",
-            "ž": "z",
-            "Č": "C",
-            "Ć": "C",
-            "Š": "S",
-            "Đ": "D",
-            "Ž": "Z",
-        }
-    )
-    text = text.translate(translit_map)
-    return (
-        text.replace("\\", "\\\\")
-        .replace("(", "\\(")
-        .replace(")", "\\)")
-    )
-
-
 @router.get(
     "/export",
     summary="PDF export Knjige prihoda i rashoda (KPR)",
     response_class=StreamingResponse,
-    description=(
-        "Generiše jednostavan PDF prikaz Knjige prihoda i rashoda za traženi period.\n\n"
-        "Tipično se koristi za:\n"
-        "- štampu KPR-e za knjigovodstvo ili poresku upravu,\n"
-        "- arhivu u PDF formatu.\n"
-    ),
+    description="Generiše informativni PDF izvještaj za odabrani period.",
 )
 def export_kpr_pdf(
     db: Session = Depends(_get_session_dep),
@@ -357,127 +329,17 @@ def export_kpr_pdf(
         description="Mjesec za KPR export (opciono). Ako nije zadat, eksportuje se cijela godina.",
     ),
 ) -> StreamingResponse:
+    from app.services.pdf_kpr import KprPeriod, render_kpr_pdf
+
     tenant = _require_tenant(x_tenant_code)
     _ensure_tenant(db, tenant)
 
     rows = _collect_kpr_rows(db, tenant_code=tenant, year=year, month=month)
-
-    # -----------------------------
-    # 1) Tekstualne linije za PDF
-    # -----------------------------
-    lines: List[str] = []
-    lines.append("Knjiga prihoda i rashoda (KPR)")
-    lines.append(f"Tenant: {tenant}")
-    lines.append(f"Godina: {year}")
-    if month is not None:
-        lines.append(f"Mjesec: {month:02d}")
-    lines.append("")
-
-    if not rows:
-        lines.append("Nema evidentiranih stavki za odabrani period.")
-    else:
-        lines.append(
-            "Datum       Vrsta     Kategorija       Iznos (BAM)  Izvor  ID"
-        )
-        lines.append(
-            "--------------------------------------------------------------"
-        )
-        for r in rows:
-            kind = "PRIHOD" if r.kind == "income" else "RASHOD"
-            row_date = _get_row_date(r)
-            line = (
-                f"{row_date.isoformat()}  "
-                f"{kind:<8} "
-                f"{r.category:<14} "
-                f"{_as_decimal(r.amount):10.2f}  "
-                f"{r.source:<7} "
-                f"{r.source_id}"
-            )
-            lines.append(line)
-
-    # -----------------------------
-    # 2) Pretvaranje u PDF stream
-    # -----------------------------
-    stream_lines: List[str] = []
-    stream_lines.append("BT")
-    stream_lines.append("/F1 11 Tf")
-    stream_lines.append("50 800 Td")
-
-    first = True
-    for line in lines:
-        text = _escape_pdf_text(line)
-        if first:
-            first = False
-        else:
-            stream_lines.append("0 -14 Td")
-        stream_lines.append(f"({text}) Tj")
-
-    stream_lines.append("ET")
-    stream_data_str = "\n".join(stream_lines) + "\n"
-    stream_data = stream_data_str.encode("latin-1")
-    stream_len = len(stream_data)
-
-    objs: List[bytes] = []
-
-    def add_obj(body: str) -> int:
-        index = len(objs) + 1
-        obj_bytes = f"{index} 0 obj\n{body}\nendobj\n".encode("latin-1")
-        objs.append(obj_bytes)
-        return index
-
-    # 1 – Catalog
-    add_obj("<< /Type /Catalog /Pages 2 0 R >>")
-
-    # 2 – Pages
-    add_obj("<< /Type /Pages /Kids [3 0 R] /Count 1 >>")
-
-    # 3 – Page
-    add_obj(
-        "<< /Type /Page /Parent 2 0 R "
-        "/MediaBox [0 0 595 842] "
-        "/Contents 4 0 R "
-        "/Resources << /Font << /F1 5 0 R >> >> >>"
+    pdf_bytes = render_kpr_pdf(
+        tenant_code=tenant,
+        period=KprPeriod(year=year, month=month),
+        rows=rows,
     )
-
-    # 4 – Contents
-    contents_body = (
-        f"<< /Length {stream_len} >>\nstream\n"
-        f"{stream_data_str}"
-        "endstream"
-    )
-    add_obj(contents_body)
-
-    # 5 – Font
-    add_obj("<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>")
-
-    buffer = BytesIO()
-    header = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n"
-    buffer.write(header.encode("latin-1"))
-
-    offsets = [0]
-    for obj in objs:
-        offsets.append(buffer.tell())
-        buffer.write(obj)
-
-    xref_pos = buffer.tell()
-    obj_count = len(objs) + 1
-
-    buffer.write(f"xref\n0 {obj_count}\n".encode("latin-1"))
-    buffer.write(b"0000000000 65535 f \n")
-    for off in offsets[1:]:
-        buffer.write(f"{off:010d} 00000 n \n".encode("latin-1"))
-
-    trailer = (
-        "trailer\n"
-        f"<< /Size {obj_count} /Root 1 0 R >>\n"
-        "startxref\n"
-        f"{xref_pos}\n"
-        "%%EOF\n"
-    )
-    buffer.write(trailer.encode("latin-1"))
-
-    pdf_bytes = buffer.getvalue()
-    buffer.close()
 
     filename = f"kpr-{tenant}-{year}"
     if month is not None:
@@ -487,7 +349,6 @@ def export_kpr_pdf(
     headers = {
         "Content-Disposition": f'inline; filename="{filename}"',
     }
-
     return StreamingResponse(
         BytesIO(pdf_bytes),
         media_type="application/pdf",
