@@ -22,6 +22,7 @@ from app.services.promet_dataset import (
     CanonicalPrometEvent,
     UnsupportedPrometDatasetModeError,
     list_canonical_promet_events,
+    query_canonical_promet_page,
 )
 from app.services.promet_eligibility import (
     PrometEligibilityStatus,
@@ -304,6 +305,64 @@ def list_promet(
 
     mode = _resolve_promet_mode_or_raise(db, tenant)
 
+    partner_needle = (
+        partner_query.strip().casefold()
+        if partner_query and partner_query.strip()
+        else None
+    )
+
+    # Ako je page zadat, zadržavamo postojeću page/page_size semantiku.
+    if page is not None:
+        effective_page_size = page_size or limit
+        query_limit = effective_page_size
+        query_offset = (page - 1) * effective_page_size
+    else:
+        query_limit = limit
+        query_offset = offset
+
+    # Bez stvarnog partner filtera koristimo SQL-optimizovani canonical path.
+    # Whitespace-only partner_query semantički je isto što i bez filtera.
+    if partner_needle is None:
+        try:
+            result = query_canonical_promet_page(
+                db,
+                tenant_code=tenant,
+                mode=mode,
+                year=year,
+                month=month,
+                date_from=date_from,
+                date_to=date_to,
+                limit=query_limit,
+                offset=query_offset,
+            )
+        except UnsupportedPrometDatasetModeError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "promet_dataset_not_implemented",
+                    "mode": mode.value,
+                },
+            ) from exc
+
+        summary = PrometSummary(
+            total_amount=result.total_amount,
+            cash_amount=result.cash_amount,
+            bank_amount=result.bank_amount,
+        )
+
+        promet_items = [
+            _canonical_event_to_promet_row(event)
+            for event in result.items
+        ]
+
+        return PrometListResponse(
+            total=result.total,
+            summary=summary,
+            items=promet_items,
+        )
+
+    # Partner filter namjerno ostaje na postojećem Python path-u:
+    # literal substring + casefold semantika mora ostati nepromijenjena.
     try:
         events = list_canonical_promet_events(
             db,
@@ -323,12 +382,6 @@ def list_promet(
 
     filtered_events: list[CanonicalPrometEvent] = []
 
-    partner_needle = (
-        partner_query.strip().casefold()
-        if partner_query and partner_query.strip()
-        else None
-    )
-
     for event in events:
         if year is not None and event.event_date.year != year:
             continue
@@ -336,21 +389,20 @@ def list_promet(
         if month is not None and event.event_date.month != month:
             continue
 
-        if partner_needle is not None:
-            searchable_values = (
-                event.counterparty_name,
-                event.description,
-            )
-            if not any(
-                partner_needle in value.casefold()
-                for value in searchable_values
-                if value
-            ):
-                continue
+        searchable_values = (
+            event.counterparty_name,
+            event.description,
+        )
+        if not any(
+            partner_needle in value.casefold()
+            for value in searchable_values
+            if value
+        ):
+            continue
 
         filtered_events.append(event)
 
-    # UI zadržava postojeći contract: najnoviji događaji prvi.
+    # Partner fallback zadržava postojeći newest-first contract.
     filtered_events.sort(
         key=lambda event: (
             event.event_date,
@@ -383,15 +435,6 @@ def list_promet(
         cash_amount=cash_amount,
         bank_amount=bank_amount,
     )
-
-    # Ako je page zadat, zadržavamo postojeću page/page_size semantiku.
-    if page is not None:
-        effective_page_size = page_size or limit
-        query_limit = effective_page_size
-        query_offset = (page - 1) * effective_page_size
-    else:
-        query_limit = limit
-        query_offset = offset
 
     page_events = filtered_events[
         query_offset:query_offset + query_limit
