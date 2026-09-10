@@ -51,12 +51,43 @@ class PrometRow(BaseModel):
     )
 
 
+class PrometSummary(BaseModel):
+    """
+    Zbir canonical Promet događaja nakon svih aktivnih filtera,
+    nezavisno od paginacije.
+
+    Ovo nije poreska osnovica niti univerzalna zakonska projekcija.
+    """
+
+    model_config = ConfigDict(
+        from_attributes=True,
+        populate_by_name=True,
+    )
+
+    total_amount: Decimal = Field(
+        ...,
+        ge=0,
+        description="Ukupan iznos svih filtriranih Promet događaja.",
+    )
+    cash_amount: Decimal = Field(
+        ...,
+        ge=0,
+        description="Ukupan iznos filtriranih događaja kanala cash.",
+    )
+    bank_amount: Decimal = Field(
+        ...,
+        ge=0,
+        description="Ukupan iznos filtriranih događaja kanala bank.",
+    )
+
+
 class PrometListResponse(BaseModel):
     """
     Response model za UI endpoint Knjige prometa.
 
     Tipična upotreba:
     - `total` – ukupan broj stavki koje zadovoljavaju filtere,
+    - `summary` – zbir svih filtriranih stavki prije paginacije,
     - `items` – jedna stranica podataka za prikaz u tabeli.
     """
 
@@ -66,6 +97,13 @@ class PrometListResponse(BaseModel):
         ...,
         ge=0,
         description="Ukupan broj stavki u Knjizi prometa koje zadovoljavaju filtere.",
+    )
+    summary: PrometSummary = Field(
+        ...,
+        description=(
+            "Zbir filtriranih Promet događaja, "
+            "nezavisan od paginacije."
+        ),
     )
     items: list[PrometRow] = Field(
         ...,

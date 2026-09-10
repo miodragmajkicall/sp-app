@@ -13,7 +13,11 @@ from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
 from app.models import CashEntry, Tenant
-from app.schemas.promet import PrometListResponse, PrometRow
+from app.schemas.promet import (
+    PrometListResponse,
+    PrometRow,
+    PrometSummary,
+)
 from app.services.promet_dataset import (
     CanonicalPrometEvent,
     UnsupportedPrometDatasetModeError,
@@ -236,7 +240,10 @@ def _cash_entry_to_promet_row(entry: CashEntry) -> PrometRow:
         "- `partner_query` – filter po partneru ili opisu (substring, case-insensitive).\n\n"
         "Paginacija:\n"
         "- Može se koristiti `page` + `page_size` (1-based), ili direktno `limit` + `offset`.\n"
-        "- Ako je `page` zadat, `limit`/`offset` se ignorišu."
+        "- Ako je `page` zadat, `limit`/`offset` se ignorišu.\n\n"
+        "Summary:\n"
+        "- `summary` se računa nad svim stavkama nakon filtera, "
+        "prije paginacije."
     ),
     responses={
         200: {
@@ -354,6 +361,29 @@ def list_promet(
 
     total = len(filtered_events)
 
+    cash_amount = sum(
+        (
+            event.amount
+            for event in filtered_events
+            if event.payment_channel == "cash"
+        ),
+        Decimal("0.00"),
+    )
+    bank_amount = sum(
+        (
+            event.amount
+            for event in filtered_events
+            if event.payment_channel == "bank"
+        ),
+        Decimal("0.00"),
+    )
+
+    summary = PrometSummary(
+        total_amount=cash_amount + bank_amount,
+        cash_amount=cash_amount,
+        bank_amount=bank_amount,
+    )
+
     # Ako je page zadat, zadržavamo postojeću page/page_size semantiku.
     if page is not None:
         effective_page_size = page_size or limit
@@ -374,6 +404,7 @@ def list_promet(
 
     return PrometListResponse(
         total=total,
+        summary=summary,
         items=promet_items,
     )
 

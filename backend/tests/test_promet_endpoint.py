@@ -182,6 +182,11 @@ def test_promet_rs_uses_canonical_dataset() -> None:
         body = response.json()
 
         assert body["total"] == 2
+        assert body["summary"] == {
+            "total_amount": "125.00",
+            "cash_amount": "25.00",
+            "bank_amount": "100.00",
+        }
         assert len(body["items"]) == 2
 
         # UI contract ostaje newest-first.
@@ -263,11 +268,62 @@ def test_promet_filters_partner_description_and_paginates_after_filtering() -> N
         body = response.json()
 
         assert body["total"] == 2
+        assert body["summary"] == {
+            "total_amount": "50.00",
+            "cash_amount": "20.00",
+            "bank_amount": "30.00",
+        }
         assert len(body["items"]) == 1
         assert body["items"][0]["date"] == "2026-09-01"
         assert body["items"][0]["partner_name"] == "Alpha usluga"
     finally:
         db.close()
+
+
+def test_promet_empty_filtered_result_returns_zero_summary() -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-endpoint-empty-summary")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 1),
+            kind="income",
+            amount="12.34",
+            account="cash",
+            recognition_class="business_activity",
+            description="Septembarski prihod",
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet",
+        headers={"X-Tenant-Code": tenant_code},
+        params={"year": 2025},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {
+        "total": 0,
+        "summary": {
+            "total_amount": "0.00",
+            "cash_amount": "0.00",
+            "bank_amount": "0.00",
+        },
+        "items": [],
+    }
 
 
 def test_promet_missing_configuration_fails_closed_without_creating_profiles() -> None:
