@@ -9,42 +9,41 @@ from pydantic import BaseModel, Field, ConfigDict
 
 class PrometRow(BaseModel):
     """
-    Jedan red u Knjizi prometa (KP-1042).
+    UI projekcija jednog canonical događaja Knjige prometa.
 
-    Za prvu verziju koristimo podatke iz keš knjige (CashEntry):
+    Ovo nije univerzalni KP-1042 model. Konkretna zakonska projekcija
+    zavisi od tenant Promet moda.
 
-    - datum prometa
-    - broj dokumenta (ako postoji, npr. broj fakture; u suprotnom ID zapisa)
-    - naziv partnera (kupac / dobavljač) ili opis transakcije
-    - iznos (pozitivan za prihode, negativan za rashode)
+    - datum događaja
+    - stvarni broj izvornog dokumenta kada postoji
+    - partner ili opis događaja kada postoji
+    - iznos prihoda/prometa
     - napomena (opcionalno)
     """
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
-    # VAŽNO: polje se zove "date", ali tip je DateType,
-    # da ne bismo imali sudar imena polja i tipa.
     date: DateType = Field(
         ...,
-        description="Datum prometa (datum kada je izvršen bezgotovinski promet).",
+        description="Datum canonical događaja Knjige prometa.",
     )
-    document_number: str = Field(
-        ...,
+    document_number: Optional[str] = Field(
+        default=None,
         min_length=1,
         max_length=64,
-        description="Broj dokumenta (npr. broj izlazne fakture ili interni broj naloga).",
+        description=(
+            "Stvarni broj izvornog dokumenta kada postoji; "
+            "ne generiše se sintetički broj."
+        ),
     )
-    partner_name: str = Field(
-        ...,
+    partner_name: Optional[str] = Field(
+        default=None,
         min_length=1,
-        description="Naziv kupca ili dobavljača (kupac/dobavljač) ili opis prometa.",
+        description="Naziv partnera ili eksplicitni opis događaja kada postoji.",
     )
     amount: Decimal = Field(
         ...,
-        description=(
-            "Iznos prometa u valuti tenanta (tipično BAM). "
-            "Pozitivan za prihode, negativan za rashode."
-        ),
+        description="Iznos canonical događaja u valuti tenanta (tipično BAM).",
     )
     note: Optional[str] = Field(
         default=None,

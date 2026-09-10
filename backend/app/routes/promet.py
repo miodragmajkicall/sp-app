@@ -12,8 +12,18 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import CashEntry
+from app.models import CashEntry, Tenant
 from app.schemas.promet import PrometListResponse, PrometRow
+from app.services.promet_dataset import (
+    CanonicalPrometEvent,
+    UnsupportedPrometDatasetModeError,
+    list_canonical_promet_events,
+)
+from app.services.promet_eligibility import (
+    PrometEligibilityStatus,
+    PrometMode,
+    resolve_tenant_promet_eligibility,
+)
 from app.tenant_security import require_tenant_code, ensure_tenant_exists
 
 router = APIRouter(
@@ -31,7 +41,79 @@ def _require_tenant(x_tenant_code: Optional[str]) -> str:
 
 
 def _ensure_tenant_exists(db: Session, code: str) -> None:
+    # Legacy helper se još koristi samo u starom CSV path-u.
     ensure_tenant_exists(db, code)
+
+
+def _require_existing_tenant(db: Session, code: str) -> None:
+    existing = db.execute(
+        select(Tenant.code).where(Tenant.code == code)
+    ).scalar_one_or_none()
+
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tenant not found",
+        )
+
+
+def _resolve_promet_mode_or_raise(
+    db: Session,
+    tenant: str,
+) -> PrometMode:
+    eligibility = resolve_tenant_promet_eligibility(
+        db=db,
+        tenant_code=tenant,
+    )
+
+    if eligibility.status is PrometEligibilityStatus.NEEDS_CONFIGURATION:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "promet_needs_configuration",
+                "reason_code": eligibility.reason_code,
+                "blocking_fields": list(eligibility.blocking_fields),
+            },
+        )
+
+    if eligibility.status is PrometEligibilityStatus.NOT_APPLICABLE:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "promet_not_applicable",
+                "reason_code": eligibility.reason_code,
+            },
+        )
+
+    if eligibility.mode is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Applicable Promet capability has no resolved mode",
+        )
+
+    return eligibility.mode
+
+
+def _canonical_event_to_promet_row(
+    event: CanonicalPrometEvent,
+) -> PrometRow:
+    # Za linked invoice prikazujemo stvarnog kupca, dok kod manualnog
+    # prihoda eksplicitni description služi kao opis događaja.
+    partner_name = event.counterparty_name or event.description
+
+    note = (
+        event.description
+        if event.counterparty_name is not None
+        else None
+    )
+
+    return PrometRow(
+        date=event.event_date,
+        document_number=event.document_number,
+        partner_name=partner_name,
+        amount=event.amount,
+        note=note,
+    )
 
 
 # ======================================================
@@ -145,13 +227,13 @@ def _cash_entry_to_promet_row(entry: CashEntry) -> PrometRow:
 @router.get(
     "/promet",
     response_model=PrometListResponse,
-    summary="Lista prometa (KP-1042) za UI tabelu",
+    summary="Lista Knjige prometa za UI tabelu",
     description=(
-        "UI-friendly lista za Knjigu prometa (KP-1042).\n\n"
+        "UI-friendly lista za tenant-specifičnu Knjigu prometa.\n\n"
         "Podržani filteri:\n"
-        "- `year` i `month` – filtriranje po godini/mjesecu `entry_date`,\n"
-        "- `date_from` / `date_to` – opseg datuma (uključivo, preko `entry_date`),\n"
-        "- `partner_query` – filter po opisu (substring, case-insensitive).\n\n"
+        "- `year` i `month` – filtriranje po godini/mjesecu događaja,\n"
+        "- `date_from` / `date_to` – uključivi opseg datuma događaja,\n"
+        "- `partner_query` – filter po partneru ili opisu (substring, case-insensitive).\n\n"
         "Paginacija:\n"
         "- Može se koristiti `page` + `page_size` (1-based), ili direktno `limit` + `offset`.\n"
         "- Ako je `page` zadat, `limit`/`offset` se ignorišu."
@@ -209,44 +291,91 @@ def list_promet(
     ),
 ) -> PrometListResponse:
     tenant = _require_tenant(x_tenant_code)
-    _ensure_tenant_exists(db, tenant)
 
-    base_stmt = _build_promet_base_stmt(
-        tenant=tenant,
-        year=year,
-        month=month,
-        date_from=date_from,
-        date_to=date_to,
-        partner_query=partner_query,
+    # GET /promet je read-only: nepoznat tenant se ne kreira.
+    _require_existing_tenant(db, tenant)
+
+    mode = _resolve_promet_mode_or_raise(db, tenant)
+
+    try:
+        events = list_canonical_promet_events(
+            db,
+            tenant_code=tenant,
+            mode=mode,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except UnsupportedPrometDatasetModeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "promet_dataset_not_implemented",
+                "mode": mode.value,
+            },
+        ) from exc
+
+    filtered_events: list[CanonicalPrometEvent] = []
+
+    partner_needle = (
+        partner_query.strip().casefold()
+        if partner_query and partner_query.strip()
+        else None
     )
 
-    # total
-    count_stmt = select(func.count()).select_from(base_stmt.subquery())
-    total: int = db.execute(count_stmt).scalar_one()
+    for event in events:
+        if year is not None and event.event_date.year != year:
+            continue
 
-    # paginacija – ako je zadat page, ima prednost nad limit/offset
+        if month is not None and event.event_date.month != month:
+            continue
+
+        if partner_needle is not None:
+            searchable_values = (
+                event.counterparty_name,
+                event.description,
+            )
+            if not any(
+                partner_needle in value.casefold()
+                for value in searchable_values
+                if value
+            ):
+                continue
+
+        filtered_events.append(event)
+
+    # UI zadržava postojeći contract: najnoviji događaji prvi.
+    filtered_events.sort(
+        key=lambda event: (
+            event.event_date,
+            event.source_id,
+        ),
+        reverse=True,
+    )
+
+    total = len(filtered_events)
+
+    # Ako je page zadat, zadržavamo postojeću page/page_size semantiku.
     if page is not None:
         effective_page_size = page_size or limit
-        if effective_page_size <= 0:
-            effective_page_size = 50
         query_limit = effective_page_size
         query_offset = (page - 1) * effective_page_size
     else:
         query_limit = limit
         query_offset = offset
 
-    items_stmt = (
-        base_stmt.order_by(CashEntry.entry_date.desc(), CashEntry.id.desc())
-        .limit(query_limit)
-        .offset(query_offset)
-    )
-
-    cash_rows: List[CashEntry] = db.execute(items_stmt).scalars().all()
-    promet_items: List[PrometRow] = [
-        _cash_entry_to_promet_row(entry) for entry in cash_rows
+    page_events = filtered_events[
+        query_offset:query_offset + query_limit
     ]
 
-    return PrometListResponse(total=total, items=promet_items)
+    promet_items = [
+        _canonical_event_to_promet_row(event)
+        for event in page_events
+    ]
+
+    return PrometListResponse(
+        total=total,
+        items=promet_items,
+    )
 
 
 # ======================================================
