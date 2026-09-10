@@ -75,6 +75,26 @@ class ProfileSettingsUpsert(BaseModel):
         return value
 
 
+# ---------------- BUSINESS PROFILE ----------------
+class BusinessProfileSettingsRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    tenant_code: str
+    sales_locations_count: Optional[int] = None
+    sells_to_consumers: Optional[bool] = None
+    daily_cash_turnover_covered_elsewhere: Optional[bool] = None
+    has_noncash_sales_to_legal_entities: Optional[bool] = None
+
+
+class BusinessProfileSettingsUpsert(BaseModel):
+    # Sva polja su opciona zbog PATCH-semantike PUT endpointa.
+    # Explicit null briše vrijednost; izostavljeno polje je ne mijenja.
+    sales_locations_count: Optional[int] = Field(default=None, ge=0)
+    sells_to_consumers: Optional[bool] = None
+    daily_cash_turnover_covered_elsewhere: Optional[bool] = None
+    has_noncash_sales_to_legal_entities: Optional[bool] = None
+
+
 # ---------------- TAX PROFILE ----------------
 class TaxProfileSettingsRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)

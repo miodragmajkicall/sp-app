@@ -23,7 +23,9 @@ from sqlalchemy.orm import Session
 from app.db import get_session
 from app.tenant_security import require_tenant_code, ensure_tenant_exists
 from app.models import (
+    Tenant,
     TenantProfileSettings,
+    TenantBusinessProfileSettings,
     TenantTaxProfileSettings,
     TenantSubscriptionSettings,
     TenantAsset,
@@ -32,6 +34,8 @@ from app.models import (
 from app.schemas.settings import (
     ProfileSettingsRead,
     ProfileSettingsUpsert,
+    BusinessProfileSettingsRead,
+    BusinessProfileSettingsUpsert,
     TaxProfileSettingsRead,
     TaxProfileSettingsUpsert,
     TaxScenarioOption,
@@ -800,6 +804,80 @@ def delete_profile_logo(
         db.commit()
 
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ======================================================
+#  BUSINESS PROFILE
+# ======================================================
+def _require_existing_tenant_for_business_profile(
+    db: Session,
+    tenant_code: str,
+) -> None:
+    tenant_id = db.execute(
+        select(Tenant.id).where(Tenant.code == tenant_code)
+    ).scalar_one_or_none()
+
+    if tenant_id is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+
+@router.get("/business", response_model=BusinessProfileSettingsRead)
+def get_business_profile_settings(
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    db: Session = Depends(get_session),
+):
+    tenant = require_tenant_code(x_tenant_code)
+
+    # Namjerno ne koristimo ensure_tenant_exists:
+    # GET mora biti read-only i ne smije kreirati nepoznat tenant.
+    _require_existing_tenant_for_business_profile(db, tenant)
+
+    row = db.execute(
+        select(TenantBusinessProfileSettings).where(
+            TenantBusinessProfileSettings.tenant_code == tenant
+        )
+    ).scalar_one_or_none()
+
+    if row is None:
+        return BusinessProfileSettingsRead(tenant_code=tenant)
+
+    return row
+
+
+@router.put("/business", response_model=BusinessProfileSettingsRead)
+def upsert_business_profile_settings(
+    payload: BusinessProfileSettingsUpsert,
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    db: Session = Depends(get_session),
+):
+    tenant = require_tenant_code(x_tenant_code)
+    _require_existing_tenant_for_business_profile(db, tenant)
+
+    row = db.execute(
+        select(TenantBusinessProfileSettings).where(
+            TenantBusinessProfileSettings.tenant_code == tenant
+        )
+    ).scalar_one_or_none()
+
+    if row is None:
+        row = TenantBusinessProfileSettings(tenant_code=tenant)
+        db.add(row)
+
+    fields_set = payload.model_fields_set
+    editable_fields = (
+        "sales_locations_count",
+        "sells_to_consumers",
+        "daily_cash_turnover_covered_elsewhere",
+        "has_noncash_sales_to_legal_entities",
+    )
+
+    for field_name in editable_fields:
+        if field_name in fields_set:
+            setattr(row, field_name, getattr(payload, field_name))
+
+    db.commit()
+    db.refresh(row)
+    return row
 
 
 # ======================================================

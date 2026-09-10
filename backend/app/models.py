@@ -775,6 +775,40 @@ class TenantProfileSettings(Base):
 
 
 # ======================================================
+#  TENANT BUSINESS PROFILE SETTINGS
+# ======================================================
+class TenantBusinessProfileSettings(Base):
+    __tablename__ = "tenant_business_profile_settings"
+
+    id = Column(BigInteger, primary_key=True, autoincrement=True)
+
+    tenant_code = Column(
+        String(64),
+        ForeignKey("tenants.code", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+
+    # Poslovne činjenice potrebne za scenario/capability odluke.
+    # NULL znači: podatak još nije konfigurisan / nije poznat.
+    sales_locations_count = Column(Integer, nullable=True)
+    sells_to_consumers = Column(Boolean, nullable=True)
+    daily_cash_turnover_covered_elsewhere = Column(Boolean, nullable=True)
+    has_noncash_sales_to_legal_entities = Column(Boolean, nullable=True)
+
+    created_at = Column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "sales_locations_count IS NULL OR sales_locations_count >= 0",
+            name="ck_tenant_business_profile_sales_locations_count",
+        ),
+    )
+
+
+# ======================================================
 #  TENANT TAX PROFILE SETTINGS
 # ======================================================
 class TenantTaxProfileSettings(Base):
