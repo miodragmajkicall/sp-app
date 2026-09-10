@@ -1,25 +1,64 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/pages/PrometPage.tsx
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
+import axios from "axios";
 import {
-  ArrowDownLeft,
-  ArrowUpRight,
-  CalendarRange,
-  Download,
+  Banknote,
+  CircleDollarSign,
+  Landmark,
   FileSpreadsheet,
   Filter,
   RefreshCw,
 } from "lucide-react";
 
 import {
-  exportPrometCsv,
   fetchPromet,
-  PrometRow,
+  type FetchPrometParams,
+  type PrometRow,
+  type PrometSummary,
 } from "../services/prometApi";
+
+const PAGE_SIZE = 25;
+
+const EMPTY_SUMMARY: PrometSummary = {
+  total_amount: 0,
+  cash_amount: 0,
+  bank_amount: 0,
+};
+
+function getPrometErrorMessage(error: unknown): string {
+  if (!axios.isAxiosError(error)) {
+    return error instanceof Error
+      ? error.message
+      : "Neočekivana greška";
+  }
+
+  const detail = error.response?.data?.detail;
+
+  if (detail?.code === "promet_needs_configuration") {
+    return "Knjiga prometa nije dostupna dok se ne dopune potrebni poslovni i poreski podaci.";
+  }
+
+  if (detail?.code === "promet_not_applicable") {
+    return "Knjiga prometa nije primjenjiva na trenutno podešeni poslovni scenario.";
+  }
+
+  if (detail?.code === "promet_dataset_not_implemented") {
+    return "Knjiga prometa za ovaj poslovni scenario još nije implementirana.";
+  }
+
+  if (typeof detail === "string" && detail.trim()) {
+    return detail;
+  }
+
+  return error.message || "Neočekivana greška";
+}
 
 function PrometPage() {
   const [rows, setRows] = useState<PrometRow[]>([]);
   const [total, setTotal] = useState(0);
+  const [summary, setSummary] = useState<PrometSummary>(EMPTY_SUMMARY);
+  const [page, setPage] = useState(1);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -30,62 +69,55 @@ function PrometPage() {
   const [dateTo, setDateTo] = useState<string>("");
   const [partnerQuery, setPartnerQuery] = useState<string>("");
 
-  const loadData = async () => {
+  const loadData = async (requestedPage = page) => {
     setLoading(true);
     setError(null);
 
     try {
-      const params: Record<string, any> = {
-        limit: 200,
-        offset: 0,
+      const params: FetchPrometParams = {
+        limit: PAGE_SIZE,
+        offset: (requestedPage - 1) * PAGE_SIZE,
       };
 
-      if (year) params.year = year;
-      if (month) params.month = month;
+      if (year) params.year = Number(year);
+      if (month) params.month = Number(month);
       if (dateFrom) params.date_from = dateFrom;
       if (dateTo) params.date_to = dateTo;
-      if (partnerQuery) params.partner_query = partnerQuery;
+
+      const trimmedPartnerQuery = partnerQuery.trim();
+      if (trimmedPartnerQuery) {
+        params.partner_query = trimmedPartnerQuery;
+      }
 
       const data = await fetchPromet(params);
 
       setRows(data.items ?? []);
       setTotal(data.total ?? 0);
-    } catch (err: any) {
+      setSummary(data.summary ?? EMPTY_SUMMARY);
+    } catch (err: unknown) {
       console.error(err);
-      setError(err.message || "Neočekivana greška");
+      setRows([]);
+      setTotal(0);
+      setSummary(EMPTY_SUMMARY);
+      setError(getPrometErrorMessage(err));
     } finally {
       setLoading(false);
     }
   };
 
-  const handleExport = async () => {
-    try {
-      const params: Record<string, any> = {};
 
-      if (year) params.year = year;
-      if (month) params.month = month;
-      if (dateFrom) params.date_from = dateFrom;
-      if (dateTo) params.date_to = dateTo;
-      if (partnerQuery) params.partner_query = partnerQuery;
+  const handleRefresh = () => {
+    setPage(1);
+    void loadData(1);
+  };
 
-      const blob = await exportPrometCsv(params);
-
-      const url = window.URL.createObjectURL(blob);
-
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = "promet-export.csv";
-      a.click();
-
-      window.URL.revokeObjectURL(url);
-    } catch (err: any) {
-      console.error(err);
-      setError(err.message || "Greška pri eksportovanju");
-    }
+  const handlePageChange = (nextPage: number) => {
+    setPage(nextPage);
+    void loadData(nextPage);
   };
 
   useEffect(() => {
-    loadData();
+    void loadData(1);
   }, []);
 
   const formatAmount = (value: string | number) => {
@@ -101,29 +133,13 @@ function PrometPage() {
     });
   };
 
-  const totalPositive = useMemo(() => {
-    return rows.reduce((sum, row) => {
-      const amount =
-        typeof row.amount === "number"
-          ? row.amount
-          : parseFloat(row.amount);
-
-      return amount > 0 ? sum + amount : sum;
-    }, 0);
-  }, [rows]);
-
-  const totalNegative = useMemo(() => {
-    return rows.reduce((sum, row) => {
-      const amount =
-        typeof row.amount === "number"
-          ? row.amount
-          : parseFloat(row.amount);
-
-      return amount < 0 ? sum + Math.abs(amount) : sum;
-    }, 0);
-  }, [rows]);
-
-  const netResult = totalPositive - totalNegative;
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const offset = (page - 1) * PAGE_SIZE;
+  const pageStart = rows.length > 0 ? offset + 1 : 0;
+  const pageEnd =
+    rows.length > 0
+      ? Math.min(offset + rows.length, total)
+      : 0;
 
   return (
     <div className="space-y-6">
@@ -134,17 +150,17 @@ function PrometPage() {
             <div className="max-w-3xl">
               <div className="mb-4 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/10 px-4 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-200">
                 <FileSpreadsheet className="h-3.5 w-3.5" />
-                KP-1042 • KNJIGA PROMETA
+                KNJIGA PROMETA
               </div>
 
               <h1 className="text-3xl font-bold tracking-tight lg:text-5xl">
-                Pregled bezgotovinskog prometa
+                Pregled prometa
               </h1>
 
               <p className="mt-4 max-w-2xl text-sm leading-7 text-slate-300 lg:text-base">
-                Centralizovan pregled svih stavki knjige prometa,
-                filtriranje po periodu i partnerima, uz CSV eksport za
-                računovodstvo i inspekcijske evidencije.
+                Pregled stavki Knjige prometa prema poslovnom scenariju,
+                sa filtriranjem po periodu i partneru te zbirnim pregledom
+                gotovinskog i bankovnog prometa.
               </p>
 
               <div className="mt-6 flex flex-wrap items-center gap-3 text-sm">
@@ -170,43 +186,43 @@ function PrometPage() {
               <div className="flex items-center justify-between rounded-2xl bg-white/10 px-4 py-3">
                 <div>
                   <p className="text-xs uppercase tracking-wide text-slate-300">
-                    Ukupan priliv
+                    Ukupan promet
                   </p>
 
-                  <p className="mt-1 text-xl font-bold text-emerald-300">
-                    {formatAmount(totalPositive)} KM
+                  <p className="mt-1 text-xl font-bold text-white">
+                    {formatAmount(summary.total_amount)} KM
                   </p>
                 </div>
 
-                <ArrowUpRight className="h-5 w-5 text-emerald-300" />
+                <CircleDollarSign className="h-5 w-5 text-slate-200" />
               </div>
 
               <div className="flex items-center justify-between rounded-2xl bg-white/10 px-4 py-3">
                 <div>
                   <p className="text-xs uppercase tracking-wide text-slate-300">
-                    Ukupan odliv
+                    Gotovina
                   </p>
 
-                  <p className="mt-1 text-xl font-bold text-rose-300">
-                    {formatAmount(totalNegative)} KM
+                  <p className="mt-1 text-xl font-bold text-emerald-300">
+                    {formatAmount(summary.cash_amount)} KM
                   </p>
                 </div>
 
-                <ArrowDownLeft className="h-5 w-5 text-rose-300" />
+                <Banknote className="h-5 w-5 text-emerald-300" />
               </div>
 
               <div className="flex items-center justify-between rounded-2xl border border-white/10 bg-[#0f172a]/70 px-4 py-3">
                 <div>
                   <p className="text-xs uppercase tracking-wide text-slate-400">
-                    Neto rezultat
+                    Banka
                   </p>
 
                   <p className="mt-1 text-2xl font-bold text-white">
-                    {formatAmount(netResult)} KM
+                    {formatAmount(summary.bank_amount)} KM
                   </p>
                 </div>
 
-                <CalendarRange className="h-5 w-5 text-slate-300" />
+                <Landmark className="h-5 w-5 text-slate-300" />
               </div>
             </div>
           </div>
@@ -235,21 +251,12 @@ function PrometPage() {
             <div className="flex flex-wrap gap-3">
               <button
                 type="button"
-                onClick={loadData}
+                onClick={handleRefresh}
                 disabled={loading}
                 className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
               >
                 <RefreshCw className="h-4 w-4" />
                 Osvježi podatke
-              </button>
-
-              <button
-                type="button"
-                onClick={handleExport}
-                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
-              >
-                <Download className="h-4 w-4" />
-                Export CSV
               </button>
             </div>
           </div>
@@ -411,11 +418,10 @@ function PrometPage() {
                       ? row.amount
                       : parseFloat(row.amount);
 
-                  const isNegative = amount < 0;
 
                   return (
                     <tr
-                      key={`${row.document_number}-${idx}`}
+                      key={`${row.date}-${row.document_number ?? "no-document"}-${idx}`}
                       className="border-b border-slate-100 transition hover:bg-slate-50/80"
                     >
                       <td className="px-6 py-4 font-medium text-slate-700">
@@ -424,24 +430,17 @@ function PrometPage() {
 
                       <td className="px-6 py-4">
                         <div className="font-mono text-xs text-slate-700">
-                          {row.document_number}
+                          {row.document_number ?? "—"}
                         </div>
                       </td>
 
                       <td className="px-6 py-4 text-slate-700">
-                        {row.partner_name}
+                        {row.partner_name ?? "—"}
                       </td>
 
                       <td className="px-6 py-4 text-right">
-                        <span
-                          className={`inline-flex rounded-full px-3 py-1 text-sm font-semibold ${
-                            isNegative
-                              ? "bg-rose-50 text-rose-700"
-                              : "bg-emerald-50 text-emerald-700"
-                          }`}
-                        >
-                          {isNegative ? "-" : "+"}
-                          {formatAmount(Math.abs(amount))} KM
+                        <span className="inline-flex rounded-full bg-emerald-50 px-3 py-1 text-sm font-semibold text-emerald-700">
+                          {formatAmount(amount)} KM
                         </span>
                       </td>
 
@@ -455,6 +454,47 @@ function PrometPage() {
             </table>
           </div>
         )}
+
+          {!loading && !error && (
+            <nav
+              aria-label="Paginacija Knjige prometa"
+              className="flex flex-col gap-3 border-t border-slate-100 px-6 py-4 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <p className="text-xs text-slate-500">
+                {rows.length > 0
+                  ? `Prikazano ${pageStart}–${pageEnd} od ${total} stavki`
+                  : `Prikazano 0 od ${total} stavki`}
+              </p>
+
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() =>
+                    handlePageChange(Math.max(1, page - 1))
+                  }
+                  disabled={loading || page <= 1}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Prethodna
+                </button>
+
+                <span className="whitespace-nowrap text-xs font-medium text-slate-600">
+                  Stranica {page} od {totalPages}
+                </span>
+
+                <button
+                  type="button"
+                  onClick={() =>
+                    handlePageChange(Math.min(totalPages, page + 1))
+                  }
+                  disabled={loading || page >= totalPages}
+                  className="rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Sljedeća
+                </button>
+              </div>
+            </nav>
+          )}
       </section>
     </div>
   );

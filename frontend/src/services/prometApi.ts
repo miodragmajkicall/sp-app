@@ -3,28 +3,39 @@ import { apiClient } from "./apiClient";
 
 export type PrometRow = {
   date: string;
-  document_number: string;
-  partner_name: string;
+  document_number: string | null;
+  partner_name: string | null;
   amount: number | string;
   note?: string | null;
 };
 
+export type PrometSummary = {
+  total_amount: number | string;
+  cash_amount: number | string;
+  bank_amount: number | string;
+};
+
+export type FetchPrometParams = {
+  year?: number;
+  month?: number;
+  date_from?: string;
+  date_to?: string;
+  partner_query?: string;
+  limit?: number;
+  offset?: number;
+};
+
 export type PrometListResponse = {
   total: number;
+  summary: PrometSummary;
   items: PrometRow[];
 };
 
-export async function fetchPromet(params: Record<string, any>) {
+export async function fetchPromet(
+  params: FetchPrometParams,
+): Promise<PrometListResponse> {
   const response = await apiClient.get<PrometListResponse>("/promet", {
     params,
-  });
-  return response.data;
-}
-
-export async function exportPrometCsv(params: Record<string, any>) {
-  const response = await apiClient.get("/promet/export", {
-    params,
-    responseType: "blob",
   });
   return response.data;
 }
