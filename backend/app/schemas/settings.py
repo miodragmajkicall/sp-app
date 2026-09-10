@@ -1,7 +1,7 @@
 # /home/miso/dev/sp-app/sp-app/backend/app/schemas/settings.py
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -93,6 +93,26 @@ class BusinessProfileSettingsUpsert(BaseModel):
     sells_to_consumers: Optional[bool] = None
     daily_cash_turnover_covered_elsewhere: Optional[bool] = None
     has_noncash_sales_to_legal_entities: Optional[bool] = None
+
+
+class PrometCapabilityRead(BaseModel):
+    tenant_code: str
+    status: Literal[
+        "applicable",
+        "not_applicable",
+        "needs_configuration",
+    ]
+    mode: Optional[
+        Literal[
+            "rs_small_entrepreneur",
+            "fbih_kp1042_multi_location",
+            "fbih_kp1042_pausal_b2b",
+            "bd_kp1042_multi_location",
+            "bd_kp1042_pausal_b2b",
+        ]
+    ] = None
+    reason_code: str
+    blocking_fields: list[str] = Field(default_factory=list)
 
 
 # ---------------- TAX PROFILE ----------------

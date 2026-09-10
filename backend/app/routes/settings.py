@@ -36,6 +36,7 @@ from app.schemas.settings import (
     ProfileSettingsUpsert,
     BusinessProfileSettingsRead,
     BusinessProfileSettingsUpsert,
+    PrometCapabilityRead,
     TaxProfileSettingsRead,
     TaxProfileSettingsUpsert,
     TaxScenarioOption,
@@ -47,6 +48,9 @@ from app.schemas.settings_ui import (
     UiScenarioOption,
     UiField,
     UiResolvedValue,
+)
+from app.services.promet_eligibility import (
+    resolve_tenant_promet_eligibility,
 )
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -878,6 +882,35 @@ def upsert_business_profile_settings(
     db.commit()
     db.refresh(row)
     return row
+
+
+@router.get(
+    "/business/promet-capability",
+    response_model=PrometCapabilityRead,
+)
+def get_promet_capability(
+    x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
+    db: Session = Depends(get_session),
+):
+    tenant = require_tenant_code(x_tenant_code)
+
+    # Capability lookup je strogo read-only.
+    # Nepostojeći tenant se ne kreira, a nepostojeći tax/business
+    # profile redovi ostaju nepoznate činjenice u resolveru.
+    _require_existing_tenant_for_business_profile(db, tenant)
+
+    eligibility = resolve_tenant_promet_eligibility(
+        db=db,
+        tenant_code=tenant,
+    )
+
+    return PrometCapabilityRead(
+        tenant_code=tenant,
+        status=eligibility.status.value,
+        mode=eligibility.mode.value if eligibility.mode is not None else None,
+        reason_code=eligibility.reason_code,
+        blocking_fields=list(eligibility.blocking_fields),
+    )
 
 
 # ======================================================
