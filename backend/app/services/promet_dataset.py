@@ -38,6 +38,22 @@ class CanonicalPrometEvent:
     description: str | None
 
 
+@dataclass(frozen=True)
+class CanonicalPrometPage:
+    total: int
+    total_amount: Decimal
+    cash_amount: Decimal
+    bank_amount: Decimal
+    items: tuple[CanonicalPrometEvent, ...]
+
+
+def _require_rs_promet_mode(mode: PrometMode) -> None:
+    if mode is not PrometMode.RS_SMALL_ENTREPRENEUR:
+        raise UnsupportedPrometDatasetModeError(
+            f"Promet dataset mode is not implemented: {mode.value}"
+        )
+
+
 def _build_rs_canonical_source_stmt(
     *,
     tenant_code: str,
@@ -147,10 +163,7 @@ def list_canonical_promet_events(
     Fail closed for modes whose statutory dataset cannot yet be built
     from the facts stored by EVIDENT.
     """
-    if mode is not PrometMode.RS_SMALL_ENTREPRENEUR:
-        raise UnsupportedPrometDatasetModeError(
-            f"Promet dataset mode is not implemented: {mode.value}"
-        )
+    _require_rs_promet_mode(mode)
 
     stmt = _build_rs_canonical_source_stmt(
         tenant_code=tenant_code,
