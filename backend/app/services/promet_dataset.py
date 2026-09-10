@@ -6,7 +6,7 @@ from decimal import Decimal
 from enum import Enum
 from typing import Literal
 
-from sqlalchemy import and_, or_, select
+from sqlalchemy import and_, case, func, or_, select, true
 from sqlalchemy.orm import Session
 
 from app.models import CashEntry, Invoice
@@ -59,6 +59,7 @@ def _build_rs_canonical_source_stmt(
     tenant_code: str,
     date_from: date | None = None,
     date_to: date | None = None,
+    columns=None,
 ):
     filters = [
         CashEntry.tenant_code == tenant_code,
@@ -79,8 +80,14 @@ def _build_rs_canonical_source_stmt(
     if date_to is not None:
         filters.append(CashEntry.entry_date <= date_to)
 
+    selected_columns = (
+        columns
+        if columns is not None
+        else (CashEntry, Invoice)
+    )
+
     return (
-        select(CashEntry, Invoice)
+        select(*selected_columns)
         .outerjoin(
             Invoice,
             and_(
@@ -141,6 +148,221 @@ def _canonical_promet_event_from_row(
         payment_channel=cash_entry.account,
         amount=amount,
         description=cash_entry.description,
+    )
+
+
+def query_canonical_promet_page(
+    db: Session,
+    *,
+    tenant_code: str,
+    mode: PrometMode,
+    year: int | None = None,
+    month: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> CanonicalPrometPage:
+    """
+    Return one optimized canonical Promet page.
+
+    The canonical source and source validation are scoped by
+    date_from/date_to. Year/month narrow only the list/summary dataset,
+    matching the existing /promet contract.
+
+    Partner search intentionally remains outside this optimized path.
+    """
+    _require_rs_promet_mode(mode)
+
+    if limit < 1:
+        raise ValueError("Promet page limit must be positive")
+
+    if offset < 0:
+        raise ValueError("Promet page offset cannot be negative")
+
+    source = _build_rs_canonical_source_stmt(
+        tenant_code=tenant_code,
+        date_from=date_from,
+        date_to=date_to,
+        columns=(
+            CashEntry.id.label("source_id"),
+            CashEntry.entry_date.label("event_date"),
+            CashEntry.amount.label("amount"),
+            CashEntry.account.label("payment_channel"),
+            CashEntry.invoice_id.label("invoice_id"),
+            Invoice.id.label("joined_invoice_id"),
+        ),
+    ).cte("promet_source")
+
+    missing_invoice = and_(
+        source.c.invoice_id.is_not(None),
+        source.c.joined_invoice_id.is_(None),
+    )
+
+    invalid_code = case(
+        (source.c.amount <= 0, "nonpositive_amount"),
+        (missing_invoice, "missing_invoice"),
+        else_=None,
+    )
+
+    first_invalid_code = (
+        select(invalid_code)
+        .where(
+            or_(
+                source.c.amount <= 0,
+                missing_invoice,
+            )
+        )
+        .order_by(
+            source.c.event_date.asc(),
+            source.c.source_id.asc(),
+        )
+        .limit(1)
+        .scalar_subquery()
+    )
+
+    filtered_conditions = []
+
+    if year is not None:
+        if month is not None:
+            period_start = date(year, month, 1)
+            period_end = (
+                date(year + 1, 1, 1)
+                if month == 12
+                else date(year, month + 1, 1)
+            )
+        else:
+            period_start = date(year, 1, 1)
+            period_end = date(year + 1, 1, 1)
+
+        filtered_conditions.extend(
+            [
+                source.c.event_date >= period_start,
+                source.c.event_date < period_end,
+            ]
+        )
+    elif month is not None:
+        filtered_conditions.append(
+            func.extract("month", source.c.event_date) == month
+        )
+
+    filtered_stmt = select(source)
+
+    if filtered_conditions:
+        filtered_stmt = filtered_stmt.where(*filtered_conditions)
+
+    filtered = filtered_stmt.cte("promet_filtered")
+
+    stats = (
+        select(
+            func.count().label("total"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            filtered.c.payment_channel == "cash",
+                            filtered.c.amount,
+                        ),
+                        else_=Decimal("0.00"),
+                    )
+                ),
+                Decimal("0.00"),
+            ).label("cash_amount"),
+            func.coalesce(
+                func.sum(
+                    case(
+                        (
+                            filtered.c.payment_channel == "bank",
+                            filtered.c.amount,
+                        ),
+                        else_=Decimal("0.00"),
+                    )
+                ),
+                Decimal("0.00"),
+            ).label("bank_amount"),
+        )
+        .select_from(filtered)
+        .cte("promet_stats")
+    )
+
+    page_rows = (
+        select(
+            filtered.c.source_id,
+            filtered.c.event_date,
+            filtered.c.joined_invoice_id,
+        )
+        .order_by(
+            filtered.c.event_date.desc(),
+            filtered.c.source_id.desc(),
+        )
+        .limit(limit)
+        .offset(offset)
+        .cte("promet_page_rows")
+    )
+
+    stmt = (
+        select(
+            CashEntry,
+            Invoice,
+            stats.c.total,
+            stats.c.cash_amount,
+            stats.c.bank_amount,
+            first_invalid_code.label("invalid_code"),
+        )
+        .select_from(stats)
+        .outerjoin(page_rows, true())
+        .outerjoin(
+            CashEntry,
+            CashEntry.id == page_rows.c.source_id,
+        )
+        .outerjoin(
+            Invoice,
+            Invoice.id == page_rows.c.joined_invoice_id,
+        )
+        .order_by(
+            page_rows.c.event_date.desc().nulls_last(),
+            page_rows.c.source_id.desc().nulls_last(),
+        )
+    )
+
+    rows = db.execute(stmt).all()
+
+    if not rows:
+        raise RuntimeError("Promet optimized query returned no stats row")
+
+    invalid = rows[0].invalid_code
+
+    if invalid == "nonpositive_amount":
+        raise RuntimeError(
+            "Promet income source must have a positive amount"
+        )
+
+    if invalid == "missing_invoice":
+        raise RuntimeError(
+            "Outgoing invoice payment points to an unavailable "
+            "invoice for this tenant"
+        )
+
+    total = int(rows[0].total or 0)
+    cash_amount = Decimal(str(rows[0].cash_amount or Decimal("0.00")))
+    bank_amount = Decimal(str(rows[0].bank_amount or Decimal("0.00")))
+
+    items = tuple(
+        _canonical_promet_event_from_row(
+            cash_entry=row.CashEntry,
+            invoice=row.Invoice,
+            mode=mode,
+        )
+        for row in rows
+        if row.CashEntry is not None
+    )
+
+    return CanonicalPrometPage(
+        total=total,
+        total_amount=cash_amount + bank_amount,
+        cash_amount=cash_amount,
+        bank_amount=bank_amount,
+        items=items,
     )
 
 

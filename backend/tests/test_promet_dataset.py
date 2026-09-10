@@ -14,6 +14,7 @@ from app.services.promet_dataset import (
     PrometSourceType,
     UnsupportedPrometDatasetModeError,
     list_canonical_promet_events,
+    query_canonical_promet_page,
 )
 from app.services.promet_eligibility import PrometMode
 
@@ -424,6 +425,415 @@ def test_unimplemented_modes_fail_closed(
                 db,
                 tenant_code=tenant_code,
                 mode=mode,
+            )
+
+        with pytest.raises(
+            UnsupportedPrometDatasetModeError,
+            match="Promet dataset mode is not implemented",
+        ):
+            query_canonical_promet_page(
+                db,
+                tenant_code=tenant_code,
+                mode=mode,
+            )
+    finally:
+        db.close()
+
+
+def test_rs_optimized_query_paginates_deterministically_and_keeps_full_summary() -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-query-page")
+
+    db = SessionLocal()
+    try:
+        first = _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 10),
+            kind="income",
+            amount="10.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="First",
+        )
+        second = _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 10),
+            kind="income",
+            amount="20.00",
+            account="bank",
+            recognition_class="business_activity",
+            description="Second",
+        )
+        third = _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 10),
+            kind="income",
+            amount="30.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Third",
+        )
+        db.commit()
+
+        page_one = query_canonical_promet_page(
+            db,
+            tenant_code=tenant_code,
+            mode=PrometMode.RS_SMALL_ENTREPRENEUR,
+            limit=2,
+            offset=0,
+        )
+
+        assert page_one.total == 3
+        assert page_one.total_amount == Decimal("60.00")
+        assert page_one.cash_amount == Decimal("40.00")
+        assert page_one.bank_amount == Decimal("20.00")
+        assert [event.source_id for event in page_one.items] == [
+            third.id,
+            second.id,
+        ]
+
+        page_two = query_canonical_promet_page(
+            db,
+            tenant_code=tenant_code,
+            mode=PrometMode.RS_SMALL_ENTREPRENEUR,
+            limit=2,
+            offset=2,
+        )
+
+        assert page_two.total == 3
+        assert page_two.total_amount == Decimal("60.00")
+        assert page_two.cash_amount == Decimal("40.00")
+        assert page_two.bank_amount == Decimal("20.00")
+        assert [event.source_id for event in page_two.items] == [
+            first.id,
+        ]
+
+        past_end = query_canonical_promet_page(
+            db,
+            tenant_code=tenant_code,
+            mode=PrometMode.RS_SMALL_ENTREPRENEUR,
+            limit=2,
+            offset=99,
+        )
+
+        assert past_end.total == 3
+        assert past_end.total_amount == Decimal("60.00")
+        assert past_end.cash_amount == Decimal("40.00")
+        assert past_end.bank_amount == Decimal("20.00")
+        assert past_end.items == ()
+    finally:
+        db.close()
+
+
+def test_rs_optimized_query_applies_month_and_date_filters() -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-query-filters")
+
+    db = SessionLocal()
+    try:
+        old_september = _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2025, 9, 20),
+            kind="income",
+            amount="5.00",
+            account="cash",
+            recognition_class="business_activity",
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 8, 31),
+            kind="income",
+            amount="10.00",
+            account="cash",
+            recognition_class="business_activity",
+        )
+        september_first = _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 1),
+            kind="income",
+            amount="20.00",
+            account="cash",
+            recognition_class="business_activity",
+        )
+        september_middle = _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 15),
+            kind="income",
+            amount="30.00",
+            account="bank",
+            recognition_class="business_activity",
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 10, 1),
+            kind="income",
+            amount="40.00",
+            account="bank",
+            recognition_class="business_activity",
+        )
+        db.commit()
+
+        month_only = query_canonical_promet_page(
+            db,
+            tenant_code=tenant_code,
+            mode=PrometMode.RS_SMALL_ENTREPRENEUR,
+            month=9,
+            limit=20,
+        )
+
+        assert month_only.total == 3
+        assert month_only.total_amount == Decimal("55.00")
+        assert [event.source_id for event in month_only.items] == [
+            september_middle.id,
+            september_first.id,
+            old_september.id,
+        ]
+
+        intersection = query_canonical_promet_page(
+            db,
+            tenant_code=tenant_code,
+            mode=PrometMode.RS_SMALL_ENTREPRENEUR,
+            year=2026,
+            month=9,
+            date_from=date(2026, 9, 10),
+            date_to=date(2026, 9, 30),
+            limit=20,
+        )
+
+        assert intersection.total == 1
+        assert intersection.total_amount == Decimal("30.00")
+        assert intersection.cash_amount == Decimal("0.00")
+        assert intersection.bank_amount == Decimal("30.00")
+        assert [event.source_id for event in intersection.items] == [
+            september_middle.id,
+        ]
+    finally:
+        db.close()
+
+
+def test_rs_optimized_query_does_not_hide_invalid_source_outside_filters_or_page() -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-query-invalid")
+
+    db = SessionLocal()
+    try:
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2025, 1, 1),
+            kind="income",
+            amount="0.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Invalid outside requested year",
+        )
+
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 10),
+            kind="income",
+            amount="100.00",
+            account="bank",
+            recognition_class="business_activity",
+            description="Valid requested row",
+        )
+
+        db.commit()
+
+        with pytest.raises(
+            RuntimeError,
+            match="Promet income source must have a positive amount",
+        ):
+            query_canonical_promet_page(
+                db,
+                tenant_code=tenant_code,
+                mode=PrometMode.RS_SMALL_ENTREPRENEUR,
+                year=2026,
+                limit=1,
+                offset=0,
+            )
+    finally:
+        db.close()
+
+
+
+def test_rs_optimized_query_date_scope_excludes_invalid_before_validation() -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-query-date-scope")
+
+    db = SessionLocal()
+    try:
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2025, 1, 1),
+            kind="income",
+            amount="0.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Invalid outside date scope",
+        )
+
+        valid = _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 10),
+            kind="income",
+            amount="125.00",
+            account="bank",
+            recognition_class="business_activity",
+            description="Valid inside date scope",
+        )
+
+        db.commit()
+
+        events = list_canonical_promet_events(
+            db,
+            tenant_code=tenant_code,
+            mode=PrometMode.RS_SMALL_ENTREPRENEUR,
+            date_from=date(2026, 1, 1),
+            date_to=date(2026, 12, 31),
+        )
+
+        page = query_canonical_promet_page(
+            db,
+            tenant_code=tenant_code,
+            mode=PrometMode.RS_SMALL_ENTREPRENEUR,
+            year=2026,
+            date_from=date(2026, 1, 1),
+            date_to=date(2026, 12, 31),
+            limit=20,
+        )
+
+        assert [event.source_id for event in events] == [valid.id]
+        assert page.total == 1
+        assert page.total_amount == Decimal("125.00")
+        assert page.cash_amount == Decimal("0.00")
+        assert page.bank_amount == Decimal("125.00")
+        assert [event.source_id for event in page.items] == [valid.id]
+    finally:
+        db.close()
+
+
+def test_rs_optimized_query_preserves_linked_invoice_traceability() -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-query-linked")
+
+    db = SessionLocal()
+    try:
+        invoice = _add_invoice(
+            db,
+            tenant_code=tenant_code,
+            invoice_number="OPT-PR-001",
+            buyer_name="Optimizovani Kupac",
+            buyer_type="BUSINESS",
+            buyer_tax_id="4400000000000",
+            amount="175.00",
+        )
+
+        payment = _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 12),
+            kind="income",
+            amount="175.00",
+            account="bank",
+            recognition_class=None,
+            invoice_id=invoice.id,
+            description="Optimized linked payment",
+        )
+
+        db.commit()
+
+        page = query_canonical_promet_page(
+            db,
+            tenant_code=tenant_code,
+            mode=PrometMode.RS_SMALL_ENTREPRENEUR,
+            limit=20,
+        )
+
+        assert page.total == 1
+        assert page.total_amount == Decimal("175.00")
+        assert len(page.items) == 1
+
+        event = page.items[0]
+
+        assert event.source_id == payment.id
+        assert event.source_type is PrometSourceType.OUTGOING_INVOICE_PAYMENT
+        assert event.source_document_id == invoice.id
+        assert event.document_number == "OPT-PR-001"
+        assert event.counterparty_name == "Optimizovani Kupac"
+        assert event.counterparty_type == "BUSINESS"
+        assert event.counterparty_tax_id == "4400000000000"
+        assert event.payment_channel == "bank"
+        assert event.amount == Decimal("175.00")
+        assert event.description == "Optimized linked payment"
+    finally:
+        db.close()
+
+
+def test_rs_optimized_query_rejects_cross_tenant_invoice_link() -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-query-local")
+    foreign_tenant = _create_tenant(client, "promet-query-foreign")
+
+    db = SessionLocal()
+    try:
+        foreign_invoice = _add_invoice(
+            db,
+            tenant_code=foreign_tenant,
+            invoice_number="FOREIGN-PR-001",
+            buyer_name="Foreign buyer",
+        )
+
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 15),
+            kind="income",
+            amount="100.00",
+            account="bank",
+            recognition_class=None,
+            invoice_id=foreign_invoice.id,
+            description="Cross-tenant invoice reference",
+        )
+
+        db.commit()
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "Outgoing invoice payment points to an unavailable "
+                "invoice for this tenant"
+            ),
+        ):
+            list_canonical_promet_events(
+                db,
+                tenant_code=tenant_code,
+                mode=PrometMode.RS_SMALL_ENTREPRENEUR,
+            )
+
+        with pytest.raises(
+            RuntimeError,
+            match=(
+                "Outgoing invoice payment points to an unavailable "
+                "invoice for this tenant"
+            ),
+        ):
+            query_canonical_promet_page(
+                db,
+                tenant_code=tenant_code,
+                mode=PrometMode.RS_SMALL_ENTREPRENEUR,
+                limit=20,
             )
     finally:
         db.close()
