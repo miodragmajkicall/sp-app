@@ -38,6 +38,44 @@ class CanonicalPrometEvent:
     description: str | None
 
 
+def _build_rs_canonical_source_stmt(
+    *,
+    tenant_code: str,
+    date_from: date | None = None,
+    date_to: date | None = None,
+):
+    filters = [
+        CashEntry.tenant_code == tenant_code,
+        CashEntry.kind == "income",
+        or_(
+            CashEntry.invoice_id.is_not(None),
+            and_(
+                CashEntry.invoice_id.is_(None),
+                CashEntry.input_invoice_id.is_(None),
+                CashEntry.recognition_class == "business_activity",
+            ),
+        ),
+    ]
+
+    if date_from is not None:
+        filters.append(CashEntry.entry_date >= date_from)
+
+    if date_to is not None:
+        filters.append(CashEntry.entry_date <= date_to)
+
+    return (
+        select(CashEntry, Invoice)
+        .outerjoin(
+            Invoice,
+            and_(
+                Invoice.id == CashEntry.invoice_id,
+                Invoice.tenant_code == CashEntry.tenant_code,
+            ),
+        )
+        .where(*filters)
+    )
+
+
 def list_canonical_promet_events(
     db: Session,
     *,
@@ -62,41 +100,13 @@ def list_canonical_promet_events(
             f"Promet dataset mode is not implemented: {mode.value}"
         )
 
-    filters = [
-        CashEntry.tenant_code == tenant_code,
-        CashEntry.kind == "income",
-        or_(
-            # Full payment of an outgoing invoice.
-            CashEntry.invoice_id.is_not(None),
-            # Manual business income which is not linked to any invoice.
-            and_(
-                CashEntry.invoice_id.is_(None),
-                CashEntry.input_invoice_id.is_(None),
-                CashEntry.recognition_class == "business_activity",
-            ),
-        ),
-    ]
-
-    if date_from is not None:
-        filters.append(CashEntry.entry_date >= date_from)
-
-    if date_to is not None:
-        filters.append(CashEntry.entry_date <= date_to)
-
-    stmt = (
-        select(CashEntry, Invoice)
-        .outerjoin(
-            Invoice,
-            and_(
-                Invoice.id == CashEntry.invoice_id,
-                Invoice.tenant_code == CashEntry.tenant_code,
-            ),
-        )
-        .where(*filters)
-        .order_by(
-            CashEntry.entry_date.asc(),
-            CashEntry.id.asc(),
-        )
+    stmt = _build_rs_canonical_source_stmt(
+        tenant_code=tenant_code,
+        date_from=date_from,
+        date_to=date_to,
+    ).order_by(
+        CashEntry.entry_date.asc(),
+        CashEntry.id.asc(),
     )
 
     rows = db.execute(stmt).all()
