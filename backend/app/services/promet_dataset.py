@@ -76,6 +76,58 @@ def _build_rs_canonical_source_stmt(
     )
 
 
+def _canonical_promet_event_from_row(
+    *,
+    cash_entry: CashEntry,
+    invoice: Invoice | None,
+    mode: PrometMode,
+) -> CanonicalPrometEvent:
+    amount = Decimal(str(cash_entry.amount))
+
+    if amount <= 0:
+        raise RuntimeError(
+            "Promet income source must have a positive amount"
+        )
+
+    if cash_entry.invoice_id is not None:
+        if invoice is None:
+            raise RuntimeError(
+                "Outgoing invoice payment points to an unavailable "
+                "invoice for this tenant"
+            )
+
+        return CanonicalPrometEvent(
+            mode=mode,
+            event_date=cash_entry.entry_date,
+            source_type=PrometSourceType.OUTGOING_INVOICE_PAYMENT,
+            source_id=cash_entry.id,
+            source_document_id=invoice.id,
+            document_number=invoice.invoice_number,
+            counterparty_name=invoice.buyer_name,
+            counterparty_type=invoice.buyer_type,
+            counterparty_tax_id=invoice.buyer_tax_id,
+            payment_channel=cash_entry.account,
+            amount=amount,
+            description=cash_entry.description,
+        )
+
+    return CanonicalPrometEvent(
+        mode=mode,
+        event_date=cash_entry.entry_date,
+        source_type=PrometSourceType.MANUAL_BUSINESS_INCOME,
+        source_id=cash_entry.id,
+        source_document_id=None,
+        # Ne izmišljamo CE-<id> kao broj pravnog dokumenta.
+        document_number=None,
+        counterparty_name=None,
+        counterparty_type=None,
+        counterparty_tax_id=None,
+        payment_channel=cash_entry.account,
+        amount=amount,
+        description=cash_entry.description,
+    )
+
+
 def list_canonical_promet_events(
     db: Session,
     *,
@@ -110,59 +162,13 @@ def list_canonical_promet_events(
     )
 
     rows = db.execute(stmt).all()
-    events: list[CanonicalPrometEvent] = []
-
-    for cash_entry, invoice in rows:
-        amount = Decimal(str(cash_entry.amount))
-
-        if amount <= 0:
-            raise RuntimeError(
-                "Promet income source must have a positive amount"
-            )
-
-        if cash_entry.invoice_id is not None:
-            if invoice is None:
-                raise RuntimeError(
-                    "Outgoing invoice payment points to an unavailable "
-                    "invoice for this tenant"
-                )
-
-            events.append(
-                CanonicalPrometEvent(
-                    mode=mode,
-                    event_date=cash_entry.entry_date,
-                    source_type=(
-                        PrometSourceType.OUTGOING_INVOICE_PAYMENT
-                    ),
-                    source_id=cash_entry.id,
-                    source_document_id=invoice.id,
-                    document_number=invoice.invoice_number,
-                    counterparty_name=invoice.buyer_name,
-                    counterparty_type=invoice.buyer_type,
-                    counterparty_tax_id=invoice.buyer_tax_id,
-                    payment_channel=cash_entry.account,
-                    amount=amount,
-                    description=cash_entry.description,
-                )
-            )
-            continue
-
-        events.append(
-            CanonicalPrometEvent(
-                mode=mode,
-                event_date=cash_entry.entry_date,
-                source_type=PrometSourceType.MANUAL_BUSINESS_INCOME,
-                source_id=cash_entry.id,
-                source_document_id=None,
-                # Ne izmišljamo CE-<id> kao broj pravnog dokumenta.
-                document_number=None,
-                counterparty_name=None,
-                counterparty_type=None,
-                counterparty_tax_id=None,
-                payment_channel=cash_entry.account,
-                amount=amount,
-                description=cash_entry.description,
-            )
+    events = [
+        _canonical_promet_event_from_row(
+            cash_entry=cash_entry,
+            invoice=invoice,
+            mode=mode,
         )
+        for cash_entry, invoice in rows
+    ]
 
     return events
