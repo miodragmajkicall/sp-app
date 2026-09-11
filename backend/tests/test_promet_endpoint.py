@@ -605,3 +605,578 @@ def test_promet_applicable_but_unimplemented_mode_fails_closed() -> None:
         "code": "promet_dataset_not_implemented",
         "mode": "fbih_kp1042_pausal_b2b",
     }
+
+def test_promet_csv_export_uses_canonical_dataset_tenant_isolation_and_asc_order() -> None:
+    import csv
+    from io import StringIO
+
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-csv-canonical")
+    other_tenant = _create_tenant(client, "promet-csv-other")
+
+    db = SessionLocal()
+    try:
+        for code in (tenant_code, other_tenant):
+            _add_tax_profile(
+                db,
+                tenant_code=code,
+                entity="RS",
+                regime="two_percent",
+                scenario_key="rs_primary",
+            )
+
+        invoice = _add_invoice(
+            db,
+            tenant_code=tenant_code,
+            invoice_number="PR-CSV-001",
+            buyer_name="Canonical Kupac",
+        )
+
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 10),
+            kind="income",
+            amount="100.00",
+            account="bank",
+            recognition_class=None,
+            invoice_id=invoice.id,
+            description="Uplata fakture",
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 9),
+            kind="income",
+            amount="25.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Rani ručni prihod",
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 10),
+            kind="income",
+            amount="30.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Kasniji isti datum",
+        )
+
+        # Canonical Promet export mora isključiti ova dva reda.
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 8),
+            kind="income",
+            amount="50.00",
+            account="cash",
+            recognition_class="cash_only",
+            description="Samo novčani tok",
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 7),
+            kind="expense",
+            amount="40.00",
+            account="bank",
+            recognition_class="business_activity",
+            description="Rashod ne pripada ovoj knjizi",
+        )
+
+        # Eksplicitni tenant-isolation dokaz.
+        _add_cash(
+            db,
+            tenant_code=other_tenant,
+            entry_date=date(2026, 9, 6),
+            kind="income",
+            amount="999.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Drugi tenant",
+        )
+
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export",
+        headers={"X-Tenant-Code": tenant_code},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/csv")
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="promet-export.csv"'
+    )
+    assert response.content.startswith(b"\xef\xbb\xbf")
+
+    rows = list(
+        csv.reader(
+            StringIO(
+                response.content.decode("utf-8-sig"),
+                newline="",
+            ),
+            delimiter=";",
+        )
+    )
+
+    # Export je hronološki ASC; isti datum koristi source_id ASC.
+    # Manual canonical prihod nema sintetički CE-* dokument.
+    assert rows == [
+        ["Datum", "Broj dokumenta", "Partner", "Iznos", "Napomena"],
+        ["2026-09-09", "", "Rani ručni prihod", "25.00", ""],
+        [
+            "2026-09-10",
+            "PR-CSV-001",
+            "Canonical Kupac",
+            "100.00",
+            "Uplata fakture",
+        ],
+        ["2026-09-10", "", "Kasniji isti datum", "30.00", ""],
+    ]
+
+
+def test_promet_csv_export_applies_all_date_filters() -> None:
+    import csv
+    from io import StringIO
+
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-csv-dates")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+
+        for event_date, description in (
+            (date(2026, 8, 31), "Avgust"),
+            (date(2026, 9, 1), "Septembar prvi"),
+            (date(2026, 9, 2), "Septembar drugi"),
+            (date(2026, 10, 1), "Oktobar"),
+            (date(2025, 9, 2), "Druga godina"),
+        ):
+            _add_cash(
+                db,
+                tenant_code=tenant_code,
+                entry_date=event_date,
+                kind="income",
+                amount="10.00",
+                account="cash",
+                recognition_class="business_activity",
+                description=description,
+            )
+
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export",
+        headers={"X-Tenant-Code": tenant_code},
+        params={
+            "year": 2026,
+            "month": 9,
+            "date_from": "2026-09-02",
+            "date_to": "2026-09-30",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    rows = list(
+        csv.reader(
+            StringIO(
+                response.content.decode("utf-8-sig"),
+                newline="",
+            ),
+            delimiter=";",
+        )
+    )
+
+    assert rows == [
+        ["Datum", "Broj dokumenta", "Partner", "Iznos", "Napomena"],
+        ["2026-09-02", "", "Septembar drugi", "10.00", ""],
+    ]
+
+
+@pytest.mark.parametrize("partner_query", ["%", "_", " STRASSE "])
+def test_promet_csv_export_partner_query_is_literal_casefold_substring(
+    partner_query: str,
+) -> None:
+    import csv
+    from io import StringIO
+
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-csv-partner")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+
+        invoice = _add_invoice(
+            db,
+            tenant_code=tenant_code,
+            invoice_number="PR-CSV-LITERAL-001",
+            buyer_name="Straße%_ Kupac",
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 10),
+            kind="income",
+            amount="10.00",
+            account="bank",
+            recognition_class=None,
+            invoice_id=invoice.id,
+            description="Uplata fakture",
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 11),
+            kind="income",
+            amount="20.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Straße%_ usluga",
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 12),
+            kind="income",
+            amount="90.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Drugi kupac",
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export",
+        headers={"X-Tenant-Code": tenant_code},
+        params={"partner_query": partner_query},
+    )
+
+    assert response.status_code == 200, response.text
+
+    rows = list(
+        csv.reader(
+            StringIO(response.content.decode("utf-8-sig"), newline=""),
+            delimiter=";",
+        )
+    )
+
+    assert rows == [
+        ["Datum", "Broj dokumenta", "Partner", "Iznos", "Napomena"],
+        [
+            "2026-09-10",
+            "PR-CSV-LITERAL-001",
+            "Straße%_ Kupac",
+            "10.00",
+            "Uplata fakture",
+        ],
+        ["2026-09-11", "", "Straße%_ usluga", "20.00", ""],
+    ]
+
+
+def test_promet_csv_export_is_not_limited_by_ui_pagination() -> None:
+    import csv
+    from datetime import timedelta
+    from io import StringIO
+
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-csv-full-set")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+
+        start = date(2026, 1, 1)
+        for index in range(55):
+            _add_cash(
+                db,
+                tenant_code=tenant_code,
+                entry_date=start + timedelta(days=index),
+                kind="income",
+                amount="1.00",
+                account="cash",
+                recognition_class="business_activity",
+                description=f"CSV red {index + 1:02d}",
+            )
+
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export",
+        headers={"X-Tenant-Code": tenant_code},
+        params={"year": 2026},
+    )
+
+    assert response.status_code == 200, response.text
+
+    rows = list(
+        csv.reader(
+            StringIO(response.content.decode("utf-8-sig"), newline=""),
+            delimiter=";",
+        )
+    )
+
+    assert len(rows) == 56
+    assert rows[1][2] == "CSV red 01"
+    assert rows[-1][2] == "CSV red 55"
+
+
+def test_promet_csv_export_format_security_and_source_preservation() -> None:
+    import csv
+    from io import StringIO
+
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-csv-security")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+
+        invoice = _add_invoice(
+            db,
+            tenant_code=tenant_code,
+            invoice_number="=1+1",
+            buyer_name=" \t+SUM(1,2)",
+        )
+        entry = _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 9),
+            kind="income",
+            amount="12.34",
+            account="bank",
+            recognition_class=None,
+            invoice_id=invoice.id,
+            description="\n@SUM(1,2)",
+        )
+
+        invoice_id = invoice.id
+        entry_id = entry.id
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export",
+        headers={"X-Tenant-Code": tenant_code},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("text/csv")
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="promet-export.csv"'
+    )
+
+    columns = [
+        "Datum",
+        "Broj dokumenta",
+        "Partner",
+        "Iznos",
+        "Napomena",
+    ]
+    expected_row = [
+        "2026-09-09",
+        "\t=1+1",
+        "\t \t+SUM(1,2)",
+        "12.34",
+        "\t\n@SUM(1,2)",
+    ]
+
+    buffer = StringIO(newline="")
+    writer = csv.writer(
+        buffer,
+        delimiter=";",
+        quoting=csv.QUOTE_ALL,
+    )
+    writer.writerow(columns)
+    writer.writerow(expected_row)
+
+    expected_bytes = buffer.getvalue().encode("utf-8-sig")
+
+    assert response.content == expected_bytes
+    assert response.content.startswith(b"\xef\xbb\xbf")
+    assert response.content.endswith(b"\r\n")
+
+    parsed = list(
+        csv.reader(
+            StringIO(response.content.decode("utf-8-sig"), newline=""),
+            delimiter=";",
+        )
+    )
+    assert parsed == [columns, expected_row]
+
+    # Export zaštita ne smije mijenjati vrijednosti spremljene u bazi.
+    db = SessionLocal()
+    try:
+        stored_invoice = db.execute(
+            select(Invoice).where(Invoice.id == invoice_id)
+        ).scalar_one()
+        stored_entry = db.execute(
+            select(CashEntry).where(CashEntry.id == entry_id)
+        ).scalar_one()
+
+        assert stored_invoice.invoice_number == "=1+1"
+        assert stored_invoice.buyer_name == " \t+SUM(1,2)"
+        assert stored_entry.description == "\n@SUM(1,2)"
+    finally:
+        db.close()
+
+
+def test_promet_csv_export_empty_result_is_header_only() -> None:
+    import csv
+    from io import StringIO
+
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-csv-empty")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export",
+        headers={"X-Tenant-Code": tenant_code},
+        params={"year": 2026},
+    )
+
+    assert response.status_code == 200, response.text
+
+    rows = list(
+        csv.reader(
+            StringIO(response.content.decode("utf-8-sig"), newline=""),
+            delimiter=";",
+        )
+    )
+
+    assert rows == [
+        ["Datum", "Broj dokumenta", "Partner", "Iznos", "Napomena"],
+    ]
+
+
+def test_promet_csv_export_uses_same_eligibility_guards_as_list() -> None:
+    client = TestClient(app)
+
+    missing_tenant = f"promet-csv-missing-{uuid4().hex[:8]}"
+    response = client.get(
+        "/promet/export",
+        headers={"X-Tenant-Code": missing_tenant},
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Tenant not found"
+
+    db = SessionLocal()
+    try:
+        stored = db.execute(
+            select(Tenant).where(Tenant.code == missing_tenant)
+        ).scalar_one_or_none()
+        assert stored is None
+    finally:
+        db.close()
+
+    unconfigured = _create_tenant(client, "promet-csv-unconfigured")
+    response = client.get(
+        "/promet/export",
+        headers={"X-Tenant-Code": unconfigured},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "promet_needs_configuration"
+
+    not_applicable = _create_tenant(client, "promet-csv-not-applicable")
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=not_applicable,
+            entity="RS",
+            regime="books",
+            scenario_key="rs_primary",
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export",
+        headers={"X-Tenant-Code": not_applicable},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "promet_not_applicable",
+        "reason_code": "rs_books_promet_not_applicable",
+    }
+
+    unsupported = _create_tenant(client, "promet-csv-fbih")
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=unsupported,
+            entity="FBiH",
+            regime="pausal",
+            scenario_key="fbih_obrt",
+        )
+        db.add(
+            TenantBusinessProfileSettings(
+                tenant_code=unsupported,
+                has_noncash_sales_to_legal_entities=True,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export",
+        headers={"X-Tenant-Code": unsupported},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "promet_dataset_not_implemented",
+        "mode": "fbih_kp1042_pausal_b2b",
+    }

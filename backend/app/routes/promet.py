@@ -1,23 +1,25 @@
 # /home/miso/dev/sp-app-sp-app/backend/app/routes/promet.py
 from __future__ import annotations
 
+import csv
 import io
 from datetime import date
 from decimal import Decimal
-from typing import List, Optional
+from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db import get_session as _get_session_dep
-from app.models import CashEntry, Tenant
+from app.models import Tenant
 from app.schemas.promet import (
     PrometListResponse,
     PrometRow,
     PrometSummary,
 )
+from app.services.csv_security import csv_safe_text
 from app.services.promet_dataset import (
     CanonicalPrometEvent,
     UnsupportedPrometDatasetModeError,
@@ -29,7 +31,7 @@ from app.services.promet_eligibility import (
     PrometMode,
     resolve_tenant_promet_eligibility,
 )
-from app.tenant_security import require_tenant_code, ensure_tenant_exists
+from app.tenant_security import require_tenant_code
 
 router = APIRouter(
     tags=["promet"],
@@ -43,11 +45,6 @@ router = APIRouter(
 
 def _require_tenant(x_tenant_code: Optional[str]) -> str:
     return require_tenant_code(x_tenant_code)
-
-
-def _ensure_tenant_exists(db: Session, code: str) -> None:
-    # Legacy helper se još koristi samo u starom CSV path-u.
-    ensure_tenant_exists(db, code)
 
 
 def _require_existing_tenant(db: Session, code: str) -> None:
@@ -117,109 +114,6 @@ def _canonical_event_to_promet_row(
         document_number=event.document_number,
         partner_name=partner_name,
         amount=event.amount,
-        note=note,
-    )
-
-
-# ======================================================
-#  HELPER – bazni upit za KP (Knjiga prometa)
-# ======================================================
-
-
-def _build_promet_base_stmt(
-    tenant: str,
-    year: Optional[int],
-    month: Optional[int],
-    date_from: Optional[date],
-    date_to: Optional[date],
-    partner_query: Optional[str],
-):
-    """
-    Za prvu verziju Knjige prometa koristimo CashEntry kao izvor podataka.
-
-    Trenutni model CashEntry sadrži:
-      * tenant_code
-      * entry_date (datum prometa / knjiženja)
-      * description (opis / kratki partner)
-      * amount (Decimal)
-      * kind ('income' ili 'expense')
-      * account ('cash' ili 'bank')
-
-    U kasnijim iteracijama možemo:
-    - filtrirati samo bezgotovinske transakcije (npr. account = 'bank'),
-    - povezati sa brojem fakture i stvarnim partnerom.
-    """
-
-    stmt = select(CashEntry).where(CashEntry.tenant_code == tenant)
-
-    if year is not None:
-        stmt = stmt.where(func.extract("year", CashEntry.entry_date) == year)
-    if month is not None:
-        stmt = stmt.where(func.extract("month", CashEntry.entry_date) == month)
-
-    if date_from is not None:
-        stmt = stmt.where(CashEntry.entry_date >= date_from)
-    if date_to is not None:
-        stmt = stmt.where(CashEntry.entry_date <= date_to)
-
-    if partner_query:
-        # Za sada filtriramo po opisu (description) kao proxy za partnera
-        stmt = stmt.where(CashEntry.description.ilike(f"%{partner_query}%"))
-
-    return stmt
-
-
-def _cash_entry_to_promet_row(entry: CashEntry) -> PrometRow:
-    """
-    Mapiranje jednog CashEntry zapisa u PrometRow za KP-1042.
-    """
-
-    # Datum prometa – koristimo entry_date iz modela
-    entry_date = getattr(entry, "entry_date", None)
-    if entry_date is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="CashEntry nema popunjen entry_date.",
-        )
-
-    # Broj dokumenta – za sada nemamo direktno polje u modelu,
-    # pa koristimo ID kao fallback (CE-<id>).
-    entry_id = getattr(entry, "id", None)
-    document_number = f"CE-{entry_id}" if entry_id is not None else "CE-N/A"
-
-    # Naziv partnera – za V1 koristimo description kao kratki opis / partnera
-    partner_name = getattr(entry, "description", None) or "N/A"
-
-    raw_amount = getattr(entry, "amount", Decimal("0"))
-    if not isinstance(raw_amount, Decimal):
-        try:
-            raw_amount = Decimal(str(raw_amount))
-        except Exception:
-            raw_amount = Decimal("0")
-
-    kind = getattr(entry, "kind", None)
-    # Konvencija: prihodi pozitivni, rashodi negativni
-    if kind == "expense":
-        signed_amount = -raw_amount
-    else:
-        signed_amount = raw_amount
-
-    note_parts: List[str] = []
-    if kind:
-        note_parts.append(f"Vrsta: {kind}")
-    account = getattr(entry, "account", None)
-    if account:
-        note_parts.append(f"Račun: {account}")
-    description = getattr(entry, "description", None)
-    if description:
-        note_parts.append(description)
-    note = " | ".join(note_parts) if note_parts else None
-
-    return PrometRow(
-        date=entry_date,
-        document_number=document_number,
-        partner_name=str(partner_name),
-        amount=signed_amount,
         note=note,
     )
 
@@ -462,9 +356,9 @@ def list_promet(
     summary="Export Knjige prometa (CSV za Excel)",
     response_class=StreamingResponse,
     description=(
-        "Export Knjige prometa (KP-1042) za zadatog tenanta u CSV format "
-        "koji se može direktno otvoriti u Excel-u.\n\n"
-        "Podržani filteri su isti kao i za `/promet`:\n"
+        "Export tenant-specifične Knjige prometa u CSV format koji se može "
+        "direktno otvoriti u Excel-u.\n\n"
+        "Podržani filteri su isti canonical filteri kao za `/promet`:\n"
         "- `year`, `month`, `date_from`, `date_to`, `partner_query`.\n\n"
         "Format: delimiter `;`, UTF-8 sa BOM radi korektnog prikaza u Excel-u."
     ),
@@ -482,53 +376,104 @@ def export_promet(
     partner_query: Optional[str] = Query(None),
 ) -> StreamingResponse:
     tenant = _require_tenant(x_tenant_code)
-    _ensure_tenant_exists(db, tenant)
 
-    base_stmt = _build_promet_base_stmt(
-        tenant=tenant,
-        year=year,
-        month=month,
-        date_from=date_from,
-        date_to=date_to,
-        partner_query=partner_query,
+    # Export koristi isti read-only tenant/eligibility contract kao GET /promet.
+    _require_existing_tenant(db, tenant)
+    mode = _resolve_promet_mode_or_raise(db, tenant)
+
+    partner_needle = (
+        partner_query.strip().casefold()
+        if partner_query and partner_query.strip()
+        else None
     )
 
-    base_stmt = base_stmt.order_by(CashEntry.entry_date.asc(), CashEntry.id.asc())
-    cash_rows: List[CashEntry] = db.execute(base_stmt).scalars().all()
-
-    # Priprema CSV sadržaja (Excel-friendly, delimiter ';', UTF-8 sa BOM)
-    output = io.StringIO()
-    # Header red
-    output.write("Datum;Broj dokumenta;Partner;Iznos;Napomena\n")
-
-    for entry in cash_rows:
-        row = _cash_entry_to_promet_row(entry)
-
-        date_str = row.date.isoformat()
-        doc_no = row.document_number or ""
-        partner = row.partner_name or ""
-        amount_str = f"{row.amount:.2f}"
-        note_str = row.note or ""
-
-        line = (
-            f"{date_str};"
-            f"{doc_no};"
-            f"{partner};"
-            f"{amount_str};"
-            f"{note_str}\n"
+    try:
+        events = list_canonical_promet_events(
+            db,
+            tenant_code=tenant,
+            mode=mode,
+            date_from=date_from,
+            date_to=date_to,
         )
-        output.write(line)
+    except UnsupportedPrometDatasetModeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "promet_dataset_not_implemented",
+                "mode": mode.value,
+            },
+        ) from exc
 
-    csv_bytes = ("\ufeff" + output.getvalue()).encode("utf-8")  # BOM za Excel
-    buffer = io.BytesIO(csv_bytes)
+    filtered_events: list[CanonicalPrometEvent] = []
+
+    for event in events:
+        if year is not None and event.event_date.year != year:
+            continue
+
+        if month is not None and event.event_date.month != month:
+            continue
+
+        if partner_needle is not None:
+            searchable_values = (
+                event.counterparty_name,
+                event.description,
+            )
+            if not any(
+                partner_needle in value.casefold()
+                for value in searchable_values
+                if value
+            ):
+                continue
+
+        filtered_events.append(event)
+
+    # CSV knjiga je hronološka; isti datum razrješava canonical source_id.
+    filtered_events.sort(
+        key=lambda event: (
+            event.event_date,
+            event.source_id,
+        )
+    )
+
+    output = io.StringIO(newline="")
+    writer = csv.writer(
+        output,
+        delimiter=";",
+        quoting=csv.QUOTE_ALL,
+    )
+
+    writer.writerow(
+        [
+            "Datum",
+            "Broj dokumenta",
+            "Partner",
+            "Iznos",
+            "Napomena",
+        ]
+    )
+
+    for event in filtered_events:
+        row = _canonical_event_to_promet_row(event)
+
+        writer.writerow(
+            [
+                row.date.isoformat(),
+                csv_safe_text(row.document_number or ""),
+                csv_safe_text(row.partner_name or ""),
+                f"{row.amount:.2f}",
+                csv_safe_text(row.note or ""),
+            ]
+        )
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")
+    output.close()
 
     filename = "promet-export.csv"
-    headers = {
-        "Content-Disposition": f'attachment; filename="{filename}"',
-    }
 
     return StreamingResponse(
-        buffer,
+        io.BytesIO(csv_bytes),
         media_type="text/csv; charset=utf-8",
-        headers=headers,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+        },
     )
