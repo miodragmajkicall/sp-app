@@ -6,7 +6,6 @@ from decimal import Decimal
 from io import BytesIO, StringIO
 from typing import List, Literal, Optional
 import csv
-import unicodedata
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -16,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.db import get_session as _get_session_dep
 from app.models import Invoice
 from app.schemas.kpr import KprListResponse, KprRowItem, KprSummary
+from app.services.csv_security import csv_safe_text as _csv_safe_text
 from app.services.recognized_input_expenses import (
     UnsupportedInputExpenseRecognitionError,
     list_recognized_input_expenses,
@@ -82,31 +82,6 @@ def _get_row_date(row: KprRowItem) -> date:
     # Ako baš nema ništa, vratimo "dummy" datum da ne padnemo,
     # ali u praksi do ovoga ne bi trebalo doći.
     return date.today()
-
-
-def _csv_safe_text(value: str) -> str:
-    """Protect free-text CSV cells without changing stored values."""
-    if not value:
-        return value
-
-    # Skip leading whitespace and invisible formatting characters.
-    # A leading control character is itself considered unsafe.
-    index = 0
-    has_control = False
-    while index < len(value):
-        char = value[index]
-        kind = unicodedata.category(char)
-        if not char.isspace() and kind not in {"Cc", "Cf"}:
-            break
-        if kind == "Cc":
-            has_control = True
-        index += 1
-
-    first = value[index:index + 1]
-    formula_starts = "=+-@\uff1d\uff0b\uff0d\uff20"
-    if has_control or (first and first in formula_starts):
-        return "\t" + value
-    return value
 
 
 def _collect_kpr_rows(
