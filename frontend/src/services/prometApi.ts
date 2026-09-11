@@ -1,4 +1,6 @@
 // /home/miso/dev/sp-app/sp-app/frontend/src/services/prometApi.ts
+import axios from "axios";
+
 import { apiClient } from "./apiClient";
 
 export type PrometRow = {
@@ -25,6 +27,11 @@ export type FetchPrometParams = {
   offset?: number;
 };
 
+export type ExportPrometParams = Omit<
+  FetchPrometParams,
+  "limit" | "offset"
+>;
+
 export type PrometListResponse = {
   total: number;
   summary: PrometSummary;
@@ -38,4 +45,36 @@ export async function fetchPromet(
     params,
   });
   return response.data;
+}
+
+export async function exportPrometCsv(
+  params: ExportPrometParams,
+): Promise<Blob> {
+  try {
+    const response = await apiClient.get<Blob>("/promet/export", {
+      params,
+      responseType: "blob",
+    });
+
+    return response.data;
+  } catch (error: unknown) {
+    // Axios sa responseType="blob" vraća i JSON greške kao Blob.
+    // Pretvori ih nazad u JSON kako bi PrometPage mogao koristiti
+    // isti backend error contract kao GET /promet.
+    if (
+      axios.isAxiosError(error) &&
+      error.response?.data instanceof Blob &&
+      error.response.data.type.includes("json")
+    ) {
+      try {
+        error.response.data = JSON.parse(
+          await error.response.data.text(),
+        );
+      } catch {
+        // Ako body nije validan JSON, zadrži originalni Axios error.
+      }
+    }
+
+    throw error;
+  }
 }

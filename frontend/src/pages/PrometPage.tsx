@@ -6,13 +6,16 @@ import {
   Banknote,
   CircleDollarSign,
   Landmark,
+  Download,
   FileSpreadsheet,
   Filter,
   RefreshCw,
 } from "lucide-react";
 
 import {
+  exportPrometCsv,
   fetchPromet,
+  type ExportPrometParams,
   type FetchPrometParams,
   type PrometRow,
   type PrometSummary,
@@ -61,6 +64,7 @@ function PrometPage() {
   const [page, setPage] = useState(1);
 
   const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [year, setYear] = useState<string>("");
@@ -69,25 +73,38 @@ function PrometPage() {
   const [dateTo, setDateTo] = useState<string>("");
   const [partnerQuery, setPartnerQuery] = useState<string>("");
 
-  const loadData = async (requestedPage = page) => {
+  const [appliedFilters, setAppliedFilters] =
+    useState<ExportPrometParams>({});
+
+  const buildDraftFilters = (): ExportPrometParams => {
+    const params: ExportPrometParams = {};
+
+    if (year) params.year = Number(year);
+    if (month) params.month = Number(month);
+    if (dateFrom) params.date_from = dateFrom;
+    if (dateTo) params.date_to = dateTo;
+
+    const trimmedPartnerQuery = partnerQuery.trim();
+    if (trimmedPartnerQuery) {
+      params.partner_query = trimmedPartnerQuery;
+    }
+
+    return params;
+  };
+
+  const loadData = async (
+    requestedPage = page,
+    filters: ExportPrometParams = appliedFilters,
+  ) => {
     setLoading(true);
     setError(null);
 
     try {
       const params: FetchPrometParams = {
+        ...filters,
         limit: PAGE_SIZE,
         offset: (requestedPage - 1) * PAGE_SIZE,
       };
-
-      if (year) params.year = Number(year);
-      if (month) params.month = Number(month);
-      if (dateFrom) params.date_from = dateFrom;
-      if (dateTo) params.date_to = dateTo;
-
-      const trimmedPartnerQuery = partnerQuery.trim();
-      if (trimmedPartnerQuery) {
-        params.partner_query = trimmedPartnerQuery;
-      }
 
       const data = await fetchPromet(params);
 
@@ -107,17 +124,46 @@ function PrometPage() {
 
 
   const handleRefresh = () => {
+    const nextFilters = buildDraftFilters();
+
+    setAppliedFilters(nextFilters);
     setPage(1);
-    void loadData(1);
+    void loadData(1, nextFilters);
   };
 
   const handlePageChange = (nextPage: number) => {
     setPage(nextPage);
-    void loadData(nextPage);
+    void loadData(nextPage, appliedFilters);
+  };
+
+  const handleExport = async () => {
+    setExporting(true);
+    setError(null);
+
+    try {
+      const blob = await exportPrometCsv(appliedFilters);
+      const url = URL.createObjectURL(blob);
+
+      try {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "promet-export.csv";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (err: unknown) {
+      console.error(err);
+      setError(getPrometErrorMessage(err));
+    } finally {
+      setExporting(false);
+    }
   };
 
   useEffect(() => {
-    void loadData(1);
+    void loadData(1, {});
   }, []);
 
   const formatAmount = (value: string | number) => {
@@ -168,15 +214,15 @@ function PrometPage() {
                   Stavki: {total}
                 </div>
 
-                {year && (
+                {appliedFilters.year !== undefined && (
                   <div className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-slate-100">
-                    Godina: {year}
+                    Godina: {appliedFilters.year}
                   </div>
                 )}
 
-                {month && (
+                {appliedFilters.month !== undefined && (
                   <div className="rounded-full border border-white/10 bg-white/10 px-4 py-2 text-slate-100">
-                    Mjesec: {month}
+                    Mjesec: {appliedFilters.month}
                   </div>
                 )}
               </div>
@@ -251,9 +297,19 @@ function PrometPage() {
             <div className="flex flex-wrap gap-3">
               <button
                 type="button"
+                onClick={() => void handleExport()}
+                disabled={loading || exporting}
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Download className="h-4 w-4" />
+                {exporting ? "Priprema CSV..." : "Preuzmi CSV"}
+              </button>
+
+              <button
+                type="button"
                 onClick={handleRefresh}
-                disabled={loading}
-                className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
+                disabled={loading || exporting}
+                className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <RefreshCw className="h-4 w-4" />
                 Osvježi podatke
