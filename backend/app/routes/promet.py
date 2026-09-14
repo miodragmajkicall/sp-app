@@ -29,7 +29,11 @@ from app.services.promet_dataset import (
 from app.services.promet_eligibility import (
     PrometEligibilityStatus,
     PrometMode,
-    resolve_tenant_promet_eligibility,
+)
+from app.services.promet_period import (
+    PrometProfileCoverageError,
+    PrometProfileModeChangedError,
+    resolve_promet_period,
 )
 from app.tenant_security import require_tenant_code
 
@@ -49,7 +53,9 @@ def _require_tenant(x_tenant_code: Optional[str]) -> str:
 
 def _require_existing_tenant(db: Session, code: str) -> None:
     existing = db.execute(
-        select(Tenant.code).where(Tenant.code == code)
+        select(Tenant.code)
+        .where(Tenant.code == code)
+        .with_for_update(read=True)
     ).scalar_one_or_none()
 
     if existing is None:
@@ -62,11 +68,41 @@ def _require_existing_tenant(db: Session, code: str) -> None:
 def _resolve_promet_mode_or_raise(
     db: Session,
     tenant: str,
+    *,
+    year: int | None = None,
+    month: int | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
 ) -> PrometMode:
-    eligibility = resolve_tenant_promet_eligibility(
-        db=db,
-        tenant_code=tenant,
-    )
+    try:
+        resolution = resolve_promet_period(
+            db,
+            tenant_code=tenant,
+            year=year,
+            month=month,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except PrometProfileCoverageError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "promet_profile_coverage_missing",
+                "from": exc.date_from.isoformat(),
+                "to": exc.date_to.isoformat(),
+            },
+        ) from exc
+    except PrometProfileModeChangedError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "promet_profile_mode_changed",
+                "from": exc.date_from.isoformat(),
+                "to": exc.date_to.isoformat(),
+            },
+        ) from exc
+
+    eligibility = resolution.eligibility
 
     if eligibility.status is PrometEligibilityStatus.NEEDS_CONFIGURATION:
         raise HTTPException(
@@ -212,7 +248,14 @@ def list_promet(
     # GET /promet je read-only: nepoznat tenant se ne kreira.
     _require_existing_tenant(db, tenant)
 
-    mode = _resolve_promet_mode_or_raise(db, tenant)
+    mode = _resolve_promet_mode_or_raise(
+        db,
+        tenant,
+        year=year,
+        month=month,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
     partner_needle = (
         partner_query.strip().casefold()
@@ -394,7 +437,14 @@ def export_promet(
 
     # Export koristi isti read-only tenant/eligibility contract kao GET /promet.
     _require_existing_tenant(db, tenant)
-    mode = _resolve_promet_mode_or_raise(db, tenant)
+    mode = _resolve_promet_mode_or_raise(
+        db,
+        tenant,
+        year=year,
+        month=month,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
     partner_needle = (
         partner_query.strip().casefold()
@@ -527,7 +577,14 @@ def export_promet_pdf(
     tenant = _require_tenant(x_tenant_code)
 
     _require_existing_tenant(db, tenant)
-    mode = _resolve_promet_mode_or_raise(db, tenant)
+    mode = _resolve_promet_mode_or_raise(
+        db,
+        tenant,
+        year=year,
+        month=month,
+        date_from=date_from,
+        date_to=date_to,
+    )
 
     partner_needle = (
         partner_query.strip().casefold()

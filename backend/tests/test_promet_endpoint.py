@@ -47,6 +47,8 @@ def _add_tax_profile(
             regime=regime,
             scenario_key=scenario_key,
             has_additional_activity=False,
+            effective_from=date(2025, 1, 1),
+            effective_to=None,
         )
     )
     db.flush()

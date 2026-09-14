@@ -366,6 +366,85 @@ def query_canonical_promet_page(
     )
 
 
+def get_canonical_promet_date_bounds(
+    db: Session,
+    *,
+    tenant_code: str,
+    mode: PrometMode,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> tuple[date | None, date | None]:
+    """
+    Return min/max event_date from the canonical Promet source scope.
+
+    This helper discovers the real data span only. Canonical source integrity
+    validation remains the responsibility of the existing dataset readers.
+    """
+    _require_rs_promet_mode(mode)
+
+    source = _build_rs_canonical_source_stmt(
+        tenant_code=tenant_code,
+        date_from=date_from,
+        date_to=date_to,
+        columns=(
+            CashEntry.entry_date.label("event_date"),
+        ),
+    ).subquery("promet_date_source")
+
+    minimum_date, maximum_date = db.execute(
+        select(
+            func.min(source.c.event_date),
+            func.max(source.c.event_date),
+        )
+    ).one()
+
+    return minimum_date, maximum_date
+
+
+def list_canonical_promet_years_for_month(
+    db: Session,
+    *,
+    tenant_code: str,
+    mode: PrometMode,
+    month: int,
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> tuple[int, ...]:
+    """
+    Return sorted years that contain canonical Promet source events
+    in the requested calendar month.
+
+    month-only Promet filtering means that month across all years, so gaps
+    between those calendar months must not be treated as requested coverage.
+    """
+    _require_rs_promet_mode(mode)
+
+    if month < 1 or month > 12:
+        raise ValueError("Promet month must be between 1 and 12")
+
+    source = _build_rs_canonical_source_stmt(
+        tenant_code=tenant_code,
+        date_from=date_from,
+        date_to=date_to,
+        columns=(
+            CashEntry.entry_date.label("event_date"),
+        ),
+    ).subquery("promet_month_source")
+
+    year_expr = func.extract("year", source.c.event_date)
+
+    years = db.execute(
+        select(year_expr)
+        .where(
+            func.extract("month", source.c.event_date) == month
+        )
+        .distinct()
+        .order_by(year_expr.asc())
+    ).scalars().all()
+
+    return tuple(int(year) for year in years)
+
+
 def list_canonical_promet_events(
     db: Session,
     *,
