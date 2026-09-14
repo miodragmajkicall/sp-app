@@ -1,6 +1,7 @@
 # /home/miso/dev/sp-app/sp-app/tests/test_kpr.py
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from uuid import uuid4
 
@@ -31,6 +32,7 @@ def _set_cash_profile(tenant: str) -> None:
                 regime="pausal",
                 scenario_key="rs_primary",
                 has_additional_activity=False,
+                effective_from=date(2025, 1, 1),
             )
         )
         db.commit()
@@ -60,6 +62,7 @@ def _ensure_sample_data() -> None:
             "regime": "pausal",
             "scenario_key": "rs_primary",
             "has_additional_activity": False,
+            "effective_from": "2025-01-01",
         },
     )
     assert tax_profile.status_code == 200, tax_profile.text

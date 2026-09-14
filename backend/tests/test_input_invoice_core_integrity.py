@@ -63,6 +63,7 @@ def _set_cash_profile(tenant: str) -> None:
                 regime="pausal",
                 scenario_key="rs_primary",
                 has_additional_activity=False,
+                effective_from=date(2026, 1, 1),
             )
         )
         db.commit()

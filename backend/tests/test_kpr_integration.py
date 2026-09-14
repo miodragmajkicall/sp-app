@@ -39,6 +39,7 @@ def _profile(tenant):
         db.add(TenantTaxProfileSettings(
             tenant_code=tenant, entity="RS", regime="pausal",
             scenario_key="rs_primary", has_additional_activity=False,
+            effective_from=date(2025, 1, 1),
         ))
         db.commit()
 

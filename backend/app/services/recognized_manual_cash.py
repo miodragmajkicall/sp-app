@@ -67,11 +67,16 @@ def list_recognized_manual_cash(
     if not rows:
         return []
 
-    context = resolve_tenant_recognition_context(db, tenant_code)
-    if context.basis is not RecognitionBasis.CASH:
-        raise UnsupportedManualCashRecognitionError(
-            "Manual cash recognition policy is not configured for this tenant"
-        )
+    contexts = {}
+    for row in rows:
+        if row.entry_date not in contexts:
+            contexts[row.entry_date] = resolve_tenant_recognition_context(
+                db, tenant_code, as_of=row.entry_date,
+            )
+        if contexts[row.entry_date].basis is not RecognitionBasis.CASH:
+            raise UnsupportedManualCashRecognitionError(
+                "Manual cash recognition policy is not configured for this tenant"
+            )
 
     return [
         RecognizedManualCash(

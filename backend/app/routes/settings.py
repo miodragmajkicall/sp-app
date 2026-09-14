@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Optional, Tuple, List, Any
 
@@ -51,6 +53,11 @@ from app.schemas.settings_ui import (
 )
 from app.services.promet_eligibility import (
     resolve_tenant_promet_eligibility,
+)
+from app.services.profile_history import (
+    get_current_business_profile,
+    get_current_tax_profile,
+    get_tax_profile_as_of,
 )
 
 router = APIRouter(prefix="/settings", tags=["settings"])
@@ -825,6 +832,82 @@ def _require_existing_tenant_for_business_profile(
         raise HTTPException(status_code=404, detail="Tenant not found")
 
 
+def _lock_tenant_profile_write(
+    db: Session,
+    tenant_code: str,
+) -> None:
+    tenant_id = db.execute(
+        select(Tenant.id)
+        .where(Tenant.code == tenant_code)
+        .with_for_update()
+    ).scalar_one_or_none()
+
+    if tenant_id is None:
+        raise HTTPException(status_code=404, detail="Tenant not found")
+
+
+def _profile_conflict(
+    *,
+    code: str,
+    profile: str,
+) -> None:
+    raise HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": code,
+            "profile": profile,
+        },
+    )
+
+
+def _business_editable_fields() -> tuple[str, ...]:
+    return (
+        "sales_locations_count",
+        "sells_to_consumers",
+        "daily_cash_turnover_covered_elsewhere",
+        "has_noncash_sales_to_legal_entities",
+    )
+
+
+def _business_requested_values(
+    payload: BusinessProfileSettingsUpsert,
+) -> dict[str, object]:
+    return {
+        field_name: getattr(payload, field_name)
+        for field_name in _business_editable_fields()
+        if field_name in payload.model_fields_set
+    }
+
+
+def _apply_business_requested_values(
+    row: TenantBusinessProfileSettings,
+    requested: dict[str, object],
+) -> None:
+    for field_name, value in requested.items():
+        setattr(row, field_name, value)
+
+
+def _copy_business_profile_state(
+    *,
+    tenant_code: str,
+    source: TenantBusinessProfileSettings,
+    effective_from,
+) -> TenantBusinessProfileSettings:
+    return TenantBusinessProfileSettings(
+        tenant_code=tenant_code,
+        sales_locations_count=source.sales_locations_count,
+        sells_to_consumers=source.sells_to_consumers,
+        daily_cash_turnover_covered_elsewhere=(
+            source.daily_cash_turnover_covered_elsewhere
+        ),
+        has_noncash_sales_to_legal_entities=(
+            source.has_noncash_sales_to_legal_entities
+        ),
+        effective_from=effective_from,
+        effective_to=None,
+    )
+
+
 @router.get("/business", response_model=BusinessProfileSettingsRead)
 def get_business_profile_settings(
     x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
@@ -836,11 +919,10 @@ def get_business_profile_settings(
     # GET mora biti read-only i ne smije kreirati nepoznat tenant.
     _require_existing_tenant_for_business_profile(db, tenant)
 
-    row = db.execute(
-        select(TenantBusinessProfileSettings).where(
-            TenantBusinessProfileSettings.tenant_code == tenant
-        )
-    ).scalar_one_or_none()
+    row = get_current_business_profile(
+        db,
+        tenant,
+    )
 
     if row is None:
         return BusinessProfileSettingsRead(tenant_code=tenant)
@@ -857,31 +939,83 @@ def upsert_business_profile_settings(
     tenant = require_tenant_code(x_tenant_code)
     _require_existing_tenant_for_business_profile(db, tenant)
 
-    row = db.execute(
-        select(TenantBusinessProfileSettings).where(
-            TenantBusinessProfileSettings.tenant_code == tenant
-        )
-    ).scalar_one_or_none()
+    # Tenant row lock serijalizuje create/confirm/rollover za isti tenant.
+    _lock_tenant_profile_write(db, tenant)
 
-    if row is None:
-        row = TenantBusinessProfileSettings(tenant_code=tenant)
-        db.add(row)
-
-    fields_set = payload.model_fields_set
-    editable_fields = (
-        "sales_locations_count",
-        "sells_to_consumers",
-        "daily_cash_turnover_covered_elsewhere",
-        "has_noncash_sales_to_legal_entities",
+    row = get_current_business_profile(
+        db,
+        tenant,
     )
 
-    for field_name in editable_fields:
-        if field_name in fields_set:
-            setattr(row, field_name, getattr(payload, field_name))
+    requested = _business_requested_values(payload)
+    requested_from = payload.effective_from
 
+    if row is None:
+        row = TenantBusinessProfileSettings(
+            tenant_code=tenant,
+            effective_from=requested_from,
+            effective_to=None,
+        )
+        _apply_business_requested_values(row, requested)
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row
+
+    # Legacy/current profil: početak važenja još nije potvrđen.
+    # Do potvrde zadržavamo postojeću backward-compatible PATCH semantiku.
+    if row.effective_from is None:
+        if requested_from is not None:
+            row.effective_from = requested_from
+
+        _apply_business_requested_values(row, requested)
+        db.commit()
+        db.refresh(row)
+        return row
+
+    # Verified profil bez datuma smije samo stvarni no-op.
+    if requested_from is None:
+        has_real_change = any(
+            getattr(row, field_name) != value
+            for field_name, value in requested.items()
+        )
+
+        if has_real_change:
+            _profile_conflict(
+                code="profile_effective_from_required",
+                profile="business",
+            )
+
+        return row
+
+    if requested_from < row.effective_from:
+        _profile_conflict(
+            code="profile_retroactive_change_not_supported",
+            profile="business",
+        )
+
+    # Correction unutar istog verified perioda.
+    if requested_from == row.effective_from:
+        _apply_business_requested_values(row, requested)
+        db.commit()
+        db.refresh(row)
+        return row
+
+    # Rollover: zatvori prethodni period pa napravi novi current red.
+    row.effective_to = requested_from - timedelta(days=1)
+    db.flush()
+
+    new_row = _copy_business_profile_state(
+        tenant_code=tenant,
+        source=row,
+        effective_from=requested_from,
+    )
+    _apply_business_requested_values(new_row, requested)
+
+    db.add(new_row)
     db.commit()
-    db.refresh(row)
-    return row
+    db.refresh(new_row)
+    return new_row
 
 
 @router.get(
@@ -916,6 +1050,53 @@ def get_promet_capability(
 # ======================================================
 #  TAX PROFILE
 # ======================================================
+def _tax_numeric_equal(
+    current,
+    requested: float | None,
+) -> bool:
+    if current is None or requested is None:
+        return current is None and requested is None
+
+    return Decimal(str(current)) == Decimal(str(requested))
+
+
+def _tax_profile_matches_payload(
+    row: TenantTaxProfileSettings,
+    payload: TaxProfileSettingsUpsert,
+) -> bool:
+    return (
+        row.entity == payload.entity
+        and row.regime == payload.regime
+        and row.scenario_key == payload.scenario_key
+        and row.has_additional_activity == payload.has_additional_activity
+        and _tax_numeric_equal(
+            row.monthly_pension,
+            payload.monthly_pension,
+        )
+        and _tax_numeric_equal(
+            row.monthly_health,
+            payload.monthly_health,
+        )
+        and _tax_numeric_equal(
+            row.monthly_unemployment,
+            payload.monthly_unemployment,
+        )
+    )
+
+
+def _apply_tax_profile_payload(
+    row: TenantTaxProfileSettings,
+    payload: TaxProfileSettingsUpsert,
+) -> None:
+    row.entity = payload.entity
+    row.regime = payload.regime
+    row.has_additional_activity = payload.has_additional_activity
+    row.monthly_pension = payload.monthly_pension
+    row.monthly_health = payload.monthly_health
+    row.monthly_unemployment = payload.monthly_unemployment
+    row.scenario_key = payload.scenario_key
+
+
 @router.get("/tax", response_model=TaxProfileSettingsRead)
 def get_tax_profile(
     x_tenant_code: Optional[str] = Header(None, alias="X-Tenant-Code"),
@@ -924,11 +1105,10 @@ def get_tax_profile(
     tenant = require_tenant_code(x_tenant_code)
     ensure_tenant_exists(db, tenant)
 
-    row = db.execute(
-        select(TenantTaxProfileSettings).where(
-            TenantTaxProfileSettings.tenant_code == tenant
-        )
-    ).scalar_one_or_none()
+    row = get_current_tax_profile(
+        db,
+        tenant,
+    )
 
     if row is None:
         return TaxProfileSettingsRead(
@@ -949,35 +1129,87 @@ def upsert_tax_profile(
     db: Session = Depends(get_session),
 ):
     tenant = require_tenant_code(x_tenant_code)
-    ensure_tenant_exists(db, tenant)
 
-    row = db.execute(
-        select(TenantTaxProfileSettings).where(
-            TenantTaxProfileSettings.tenant_code == tenant
-        )
-    ).scalar_one_or_none()
+    # Zadržavamo postojeći Tax behavior da PUT može osigurati tenant.
+    ensure_tenant_exists(db, tenant)
+    _lock_tenant_profile_write(db, tenant)
+
+    row = get_current_tax_profile(
+        db,
+        tenant,
+    )
+
+    requested_from = payload.effective_from
 
     if row is None:
         row = TenantTaxProfileSettings(
             tenant_code=tenant,
             entity=payload.entity,
             regime=payload.regime,
+            effective_from=requested_from,
+            effective_to=None,
         )
+        _apply_tax_profile_payload(row, payload)
+
         db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row
 
-    row.entity = payload.entity
-    row.regime = payload.regime
-    row.has_additional_activity = payload.has_additional_activity
-    row.monthly_pension = payload.monthly_pension
-    row.monthly_health = payload.monthly_health
-    row.monthly_unemployment = payload.monthly_unemployment
+    # Legacy/current profil ostaje editabilan dok početak nije potvrđen.
+    if row.effective_from is None:
+        if requested_from is not None:
+            row.effective_from = requested_from
 
-    # Novo: scenario_key (back-compat: može biti None)
-    row.scenario_key = payload.scenario_key
+        _apply_tax_profile_payload(row, payload)
+        db.commit()
+        db.refresh(row)
+        return row
 
+    # Verified full-state PUT bez datuma smije biti samo no-op.
+    if requested_from is None:
+        if not _tax_profile_matches_payload(row, payload):
+            _profile_conflict(
+                code="profile_effective_from_required",
+                profile="tax",
+            )
+
+        return row
+
+    if requested_from < row.effective_from:
+        _profile_conflict(
+            code="profile_retroactive_change_not_supported",
+            profile="tax",
+        )
+
+    # Correction istog verified perioda.
+    if requested_from == row.effective_from:
+        _apply_tax_profile_payload(row, payload)
+        db.commit()
+        db.refresh(row)
+        return row
+
+    # Kasniji datum = novi verified period.
+    row.effective_to = requested_from - timedelta(days=1)
+    db.flush()
+
+    new_row = TenantTaxProfileSettings(
+        tenant_code=tenant,
+        entity=payload.entity,
+        regime=payload.regime,
+        scenario_key=payload.scenario_key,
+        has_additional_activity=payload.has_additional_activity,
+        monthly_pension=payload.monthly_pension,
+        monthly_health=payload.monthly_health,
+        monthly_unemployment=payload.monthly_unemployment,
+        effective_from=requested_from,
+        effective_to=None,
+    )
+
+    db.add(new_row)
     db.commit()
-    db.refresh(row)
-    return row
+    db.refresh(new_row)
+    return new_row
 
 
 @router.get(
@@ -1012,25 +1244,34 @@ def get_tax_profile_ui_schema(
     tenant = require_tenant_code(x_tenant_code)
     ensure_tenant_exists(db, tenant)
 
-    # učitaj tenant tax settings (ako nema, default)
-    row = db.execute(
-        select(TenantTaxProfileSettings).where(TenantTaxProfileSettings.tenant_code == tenant)
-    ).scalar_one_or_none()
-
-    entity = (row.entity if row is not None else "RS") or "RS"
-    scenario_key = (row.scenario_key if row is not None else None)
-    if not scenario_key:
-        scenario_key = _default_scenario_for_entity(entity)
-
-    # parse as_of
+    # parse as_of prije izbora tenant profila.
     from datetime import date as _date  # local import to avoid clutter
     if as_of:
         try:
             as_of_date = _date.fromisoformat(as_of)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail="Invalid as_of. Expected YYYY-MM-DD.") from exc
+
+        # Eksplicitni istorijski datum zahtijeva verified profile period.
+        row = get_tax_profile_as_of(
+            db,
+            tenant,
+            as_of_date,
+        )
     else:
         as_of_date = _date.today()
+
+        # Bez eksplicitnog istorijskog datuma UI prikazuje current profil,
+        # uključujući legacy NULL/NULL current konfiguraciju.
+        row = get_current_tax_profile(
+            db,
+            tenant,
+        )
+
+    entity = (row.entity if row is not None else "RS") or "RS"
+    scenario_key = (row.scenario_key if row is not None else None)
+    if not scenario_key:
+        scenario_key = _default_scenario_for_entity(entity)
 
     jurisdiction = _entity_to_jurisdiction(entity)
     cur_set = _find_current_constants_set(

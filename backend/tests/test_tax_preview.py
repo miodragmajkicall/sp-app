@@ -8,6 +8,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import MetaData, Table
 
 from app.main import app
+from tests.tax_config_helpers import set_recognition_test_tax_rates
 from app.db import SessionLocal
 from app.routes.tax import TAX_DUMMY_CONFIG
 
@@ -418,9 +419,11 @@ def _set_tax_cash_profile(headers: dict[str, str]) -> None:
             "regime": "pausal",
             "scenario_key": "rs_primary",
             "has_additional_activity": False,
+            "effective_from": "2025-01-01",
         },
     )
     assert response.status_code == 200, response.text
+    set_recognition_test_tax_rates(client, headers)
 
 
 def _pay_tax_input_invoice(

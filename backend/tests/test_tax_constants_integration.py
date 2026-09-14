@@ -63,6 +63,7 @@ def test_tax_preview_uses_app_constants_set_when_no_tax_settings_override():
         headers={"X-Tenant-Code": tenant},
         json={
             "entity": "RS",
+            "effective_from": "2025-01-01",
             "regime": "pausal",
             "has_additional_activity": False,
             "monthly_pension": None,
@@ -241,6 +242,7 @@ def test_tax_preview_uses_matching_scenario_key_when_multiple_sets_exist():
         headers={"X-Tenant-Code": tenant},
         json={
             "entity": "RS",
+            "effective_from": "2025-01-01",
             "regime": "pausal",
             "scenario_key": "rs_supplementary",
             "has_additional_activity": True,
@@ -315,6 +317,7 @@ def test_tax_preview_supports_v2_constants_payload_shape():
         headers={"X-Tenant-Code": tenant},
         json={
             "entity": "RS",
+            "effective_from": "2025-01-01",
             "regime": "pausal",
             "scenario_key": "rs_primary",
             "has_additional_activity": False,

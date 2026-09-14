@@ -7,7 +7,11 @@ from enum import Enum
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import CashEntry, InputInvoice, TenantTaxProfileSettings
+from app.models import CashEntry, InputInvoice
+from app.services.profile_history import (
+    get_current_tax_profile,
+    get_tax_profile_as_of,
+)
 
 
 class RecognitionBasis(str, Enum):
@@ -44,12 +48,21 @@ _CASH_BASIS_REGIMES = {"pausal", "two_percent"}
 def resolve_tenant_recognition_context(
     db: Session,
     tenant_code: str,
+    *,
+    as_of: date | None = None,
 ) -> TenantRecognitionContext:
-    profile = db.execute(
-        select(TenantTaxProfileSettings).where(
-            TenantTaxProfileSettings.tenant_code == tenant_code
+    profile = (
+        get_current_tax_profile(
+            db,
+            tenant_code,
         )
-    ).scalar_one_or_none()
+        if as_of is None
+        else get_tax_profile_as_of(
+            db,
+            tenant_code,
+            as_of,
+        )
+    )
 
     if profile is None:
         return TenantRecognitionContext(RecognitionBasis.UNRESOLVED, None, None, None)
@@ -105,7 +118,15 @@ def resolve_stored_input_invoice_recognition(
             CashEntry.input_invoice_id == invoice.id,
         )
     ).scalar_one_or_none()
-    context = resolve_tenant_recognition_context(db, invoice.tenant_code)
+    # Za plaćenu fakturu poreski recognition događaj nastaje na payment_date,
+    # pa profil mora biti onaj koji je važio baš tog dana.
+    # Za neplaćenu fakturu recognition događaj još ne postoji; current profil
+    # služi samo za trenutni status/basis.
+    context = resolve_tenant_recognition_context(
+        db,
+        invoice.tenant_code,
+        as_of=payment_date,
+    )
     return resolve_input_invoice_recognition(
         context=context,
         payment_date=payment_date,

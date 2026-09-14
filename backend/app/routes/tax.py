@@ -46,6 +46,8 @@ from app.services.recognized_manual_cash import (
 )
 from app.tenant_security import require_tenant_code
 
+from app.services.profile_history import get_tax_profile_as_of
+
 router = APIRouter(
     tags=["tax"],
 )
@@ -319,7 +321,7 @@ def _resolve_tax_config(db: Session, tenant_code: str, as_of: date) -> TaxDummyC
       1) tax_settings (tenant override)
       2) app_constants_sets (effective-dated po jurisdikciji + scenario_key)
          **samo ako tenant ima /settings/tax profil**
-      3) DEFAULT_TAX_CONFIG (fallback)
+      3) DEFAULT_TAX_CONFIG (samo ako tenant nema Tax profile istoriju)
     """
     # 1) tenant override
     row = db.execute(select(TaxSettings).where(TaxSettings.tenant_code == tenant_code)).scalar_one_or_none()
@@ -334,9 +336,24 @@ def _resolve_tax_config(db: Session, tenant_code: str, as_of: date) -> TaxDummyC
         )
 
     # 2) constants set koristimo samo ako tenant eksplicitno ima tax profil (settings/tax)
-    prof = db.execute(
-        select(TenantTaxProfileSettings).where(TenantTaxProfileSettings.tenant_code == tenant_code)
-    ).scalar_one_or_none()
+    prof = get_tax_profile_as_of(
+        db,
+        tenant_code,
+        as_of,
+    )
+
+    if prof is None:
+        has_history = db.execute(
+            select(TenantTaxProfileSettings.id)
+            .where(TenantTaxProfileSettings.tenant_code == tenant_code)
+            .limit(1)
+        ).scalar_one_or_none() is not None
+        if has_history:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Verified Tax profile coverage is missing for {as_of.isoformat()}",
+            )
+        return DEFAULT_TAX_CONFIG
 
     if prof is not None and (prof.entity or "").strip():
         jurisdiction = _normalize_jurisdiction(prof.entity)
@@ -366,8 +383,10 @@ def _resolve_tax_config(db: Session, tenant_code: str, as_of: date) -> TaxDummyC
             if cfg is not None:
                 return cfg
 
-    # 3) fallback
-    return DEFAULT_TAX_CONFIG
+    raise HTTPException(
+        status_code=409,
+        detail=f"Tax constants are not configured for the profile on {as_of.isoformat()}",
+    )
 
 
 # ======================================================

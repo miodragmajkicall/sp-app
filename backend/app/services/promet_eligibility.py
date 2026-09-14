@@ -3,12 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models import (
-    TenantBusinessProfileSettings,
-    TenantTaxProfileSettings,
+from app.services.profile_history import (
+    get_current_business_profile,
+    get_current_tax_profile,
 )
 
 
@@ -292,17 +291,15 @@ def resolve_tenant_promet_eligibility(
     - ne koristi synthetic/default vrijednosti iz Settings API-ja;
     - odsustvo tax/business profila ostavlja kao nepoznate činjenice.
     """
-    tax_profile = db.execute(
-        select(TenantTaxProfileSettings).where(
-            TenantTaxProfileSettings.tenant_code == tenant_code
-        )
-    ).scalar_one_or_none()
+    tax_profile = get_current_tax_profile(
+        db,
+        tenant_code,
+    )
 
-    business_profile = db.execute(
-        select(TenantBusinessProfileSettings).where(
-            TenantBusinessProfileSettings.tenant_code == tenant_code
-        )
-    ).scalar_one_or_none()
+    business_profile = get_current_business_profile(
+        db,
+        tenant_code,
+    )
 
     return resolve_promet_eligibility(
         entity=tax_profile.entity if tax_profile is not None else None,

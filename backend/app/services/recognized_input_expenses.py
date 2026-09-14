@@ -69,14 +69,18 @@ def list_recognized_input_expenses(
     if not rows:
         return []
 
-    context = resolve_tenant_recognition_context(db, tenant_code)
-    if context.basis is not RecognitionBasis.CASH:
-        raise UnsupportedInputExpenseRecognitionError(
-            "Input invoice recognition policy is not configured for this tenant"
-        )
-
+    contexts = {}
     expenses: list[RecognizedInputExpense] = []
     for invoice, payment_date in rows:
+        if payment_date not in contexts:
+            contexts[payment_date] = resolve_tenant_recognition_context(
+                db, tenant_code, as_of=payment_date,
+            )
+        context = contexts[payment_date]
+        if context.basis is not RecognitionBasis.CASH:
+            raise UnsupportedInputExpenseRecognitionError(
+                "Input invoice recognition policy is not configured for this tenant"
+            )
         recognition = resolve_input_invoice_recognition(
             context=context,
             payment_date=payment_date,

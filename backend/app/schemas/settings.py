@@ -1,6 +1,8 @@
 # /home/miso/dev/sp-app/sp-app/backend/app/schemas/settings.py
 from __future__ import annotations
 
+from datetime import date
+
 from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -84,15 +86,20 @@ class BusinessProfileSettingsRead(BaseModel):
     sells_to_consumers: Optional[bool] = None
     daily_cash_turnover_covered_elsewhere: Optional[bool] = None
     has_noncash_sales_to_legal_entities: Optional[bool] = None
+    effective_from: Optional[date] = None
+    effective_to: Optional[date] = None
 
 
 class BusinessProfileSettingsUpsert(BaseModel):
-    # Sva polja su opciona zbog PATCH-semantike PUT endpointa.
+    # Sva poslovna polja su opciona zbog PATCH-semantike PUT endpointa.
     # Explicit null briše vrijednost; izostavljeno polje je ne mijenja.
     sales_locations_count: Optional[int] = Field(default=None, ge=0)
     sells_to_consumers: Optional[bool] = None
     daily_cash_turnover_covered_elsewhere: Optional[bool] = None
     has_noncash_sales_to_legal_entities: Optional[bool] = None
+
+    # effective_to nije korisnički editabilan; sistem ga zatvara pri rolloveru.
+    effective_from: Optional[date] = None
 
 
 class PrometCapabilityRead(BaseModel):
@@ -130,6 +137,8 @@ class TaxProfileSettingsRead(BaseModel):
     monthly_pension: Optional[float] = None
     monthly_health: Optional[float] = None
     monthly_unemployment: Optional[float] = None
+    effective_from: Optional[date] = None
+    effective_to: Optional[date] = None
 
 
 class TaxProfileSettingsUpsert(BaseModel):
@@ -146,6 +155,9 @@ class TaxProfileSettingsUpsert(BaseModel):
     monthly_pension: Optional[float] = None
     monthly_health: Optional[float] = None
     monthly_unemployment: Optional[float] = None
+
+    # effective_to nije korisnički editabilan; sistem ga zatvara pri rolloveru.
+    effective_from: Optional[date] = None
 
 
 class TaxScenarioOption(BaseModel):
