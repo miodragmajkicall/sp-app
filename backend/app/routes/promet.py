@@ -477,3 +477,151 @@ def export_promet(
             "Content-Disposition": f'attachment; filename="{filename}"',
         },
     )
+
+
+# ======================================================
+#  PDF EXPORT – /promet/export-pdf
+# ======================================================
+
+
+@router.get(
+    "/promet/export-pdf",
+    summary="PDF export Knjige prometa",
+    response_class=StreamingResponse,
+    description=(
+        "Generiše informativni PDF Knjige prometa koristeći isti "
+        "tenant, eligibility, canonical dataset i filter contract "
+        "kao `/promet` i `/promet/export`."
+    ),
+)
+def export_promet_pdf(
+    db: Session = Depends(_get_session_dep),
+    x_tenant_code: Optional[str] = Header(
+        None,
+        alias="X-Tenant-Code",
+    ),
+    year: Optional[int] = Query(None, ge=1900, le=2100),
+    month: Optional[int] = Query(None, ge=1, le=12),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    partner_query: Optional[str] = Query(None),
+) -> StreamingResponse:
+    from app.services.pdf_invoice import UnsupportedPdfGlyphError
+    from app.services.pdf_promet import render_promet_pdf
+
+    tenant = _require_tenant(x_tenant_code)
+
+    _require_existing_tenant(db, tenant)
+    mode = _resolve_promet_mode_or_raise(db, tenant)
+
+    partner_needle = (
+        partner_query.strip().casefold()
+        if partner_query and partner_query.strip()
+        else None
+    )
+
+    try:
+        events = list_canonical_promet_events(
+            db,
+            tenant_code=tenant,
+            mode=mode,
+            date_from=date_from,
+            date_to=date_to,
+        )
+    except UnsupportedPrometDatasetModeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "promet_dataset_not_implemented",
+                "mode": mode.value,
+            },
+        ) from exc
+
+    filtered_events: list[CanonicalPrometEvent] = []
+
+    for event in events:
+        if year is not None and event.event_date.year != year:
+            continue
+
+        if month is not None and event.event_date.month != month:
+            continue
+
+        if partner_needle is not None:
+            searchable_values = (
+                event.counterparty_name,
+                event.description,
+            )
+            if not any(
+                partner_needle in value.casefold()
+                for value in searchable_values
+                if value
+            ):
+                continue
+
+        filtered_events.append(event)
+
+    filtered_events.sort(
+        key=lambda event: (
+            event.event_date,
+            event.source_id,
+        )
+    )
+
+    rows = [
+        _canonical_event_to_promet_row(event)
+        for event in filtered_events
+    ]
+
+    filter_parts: list[str] = []
+
+    if year is not None:
+        filter_parts.append(f"Godina: {year}")
+
+    if month is not None:
+        filter_parts.append(f"Mjesec: {month:02d}")
+
+    if date_from is not None:
+        filter_parts.append(
+            f"Od: {date_from.isoformat()}"
+        )
+
+    if date_to is not None:
+        filter_parts.append(
+            f"Do: {date_to.isoformat()}"
+        )
+
+    if partner_query and partner_query.strip():
+        filter_parts.append(
+            f"Partner/opis: {partner_query.strip()}"
+        )
+
+    filter_label = (
+        "; ".join(filter_parts)
+        if filter_parts
+        else "Bez dodatnih filtera"
+    )
+
+    try:
+        pdf_bytes = render_promet_pdf(
+            tenant_code=tenant,
+            rows=rows,
+            filter_label=filter_label,
+        )
+    except UnsupportedPdfGlyphError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "Promet PDF cannot be generated because the document contains "
+                "characters unsupported by the PDF font"
+            ),
+        ) from exc
+
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": (
+                'attachment; filename="promet-export.pdf"'
+            ),
+        },
+    )

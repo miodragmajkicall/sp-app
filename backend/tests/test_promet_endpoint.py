@@ -1180,3 +1180,542 @@ def test_promet_csv_export_uses_same_eligibility_guards_as_list() -> None:
         "code": "promet_dataset_not_implemented",
         "mode": "fbih_kp1042_pausal_b2b",
     }
+
+
+# ============================================================
+# PROMET-6A — canonical PDF export
+# ============================================================
+
+
+def _read_promet_pdf_response(response):
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/pdf")
+    assert response.content.startswith(b"%PDF-")
+
+    reader = PdfReader(BytesIO(response.content))
+    text = "\n".join(
+        page.extract_text() or ""
+        for page in reader.pages
+    )
+    return reader, text
+
+
+def test_promet_pdf_export_uses_canonical_dataset_and_chronological_order() -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-pdf-canonical")
+    other_tenant = _create_tenant(client, "promet-pdf-other")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+
+        invoice = _add_invoice(
+            db,
+            tenant_code=tenant_code,
+            invoice_number="PR-PDF-001",
+            buyer_name="Canonical Kupac",
+        )
+
+        # Rani manualni canonical prihod.
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 9),
+            kind="income",
+            amount="25.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Rani ručni prihod",
+        )
+
+        # Linked outgoing invoice payment.
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 10),
+            kind="income",
+            amount="100.00",
+            account="bank",
+            recognition_class=None,
+            invoice_id=invoice.id,
+            description="Uplata fakture",
+        )
+
+        # Isti datum, kasniji canonical source_id.
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 10),
+            kind="income",
+            amount="30.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Kasniji isti datum",
+        )
+
+        # Ne smiju ući u canonical Promet PDF.
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 11),
+            kind="income",
+            amount="50.00",
+            account="cash",
+            recognition_class="cash_only",
+            description="Samo novčani tok",
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 12),
+            kind="expense",
+            amount="40.00",
+            account="bank",
+            recognition_class="business_activity",
+            description="Rashod ne pripada knjizi",
+        )
+        _add_cash(
+            db,
+            tenant_code=other_tenant,
+            entry_date=date(2026, 9, 8),
+            kind="income",
+            amount="999.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Drugi tenant",
+        )
+
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export-pdf",
+        headers={"X-Tenant-Code": tenant_code},
+    )
+
+    reader, pdf_text = _read_promet_pdf_response(response)
+
+    assert response.headers["content-disposition"] == (
+        'attachment; filename="promet-export.pdf"'
+    )
+    assert len(reader.pages) >= 1
+
+    assert "Knjiga prometa" in pdf_text
+    assert "Informativni izvještaj - nije službeni obrazac" in pdf_text
+
+    assert "PR-PDF-001" in pdf_text
+    assert "Canonical Kupac" in pdf_text
+    assert "Uplata fakture" in pdf_text
+    assert "Rani ručni prihod" in pdf_text
+    assert "Kasniji isti datum" in pdf_text
+
+    # Canonical export nema legacy/sintetičku semantiku.
+    assert "KP-1042" not in pdf_text
+    assert "bezgotovinskog prometa" not in pdf_text
+    assert "CE-" not in pdf_text
+    assert "Samo novčani tok" not in pdf_text
+    assert "Rashod ne pripada knjizi" not in pdf_text
+    assert "Drugi tenant" not in pdf_text
+
+    # Hronološki ASC, a isti datum razrješava canonical source_id ASC.
+    assert pdf_text.index("Rani ručni prihod") < pdf_text.index("Canonical Kupac")
+    assert pdf_text.index("Canonical Kupac") < pdf_text.index("Kasniji isti datum")
+
+    assert "155.00 BAM" in pdf_text
+
+
+def test_promet_pdf_export_applies_all_date_filters() -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-pdf-dates")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+
+        for event_date, description in (
+            (date(2026, 8, 31), "Avgust"),
+            (date(2026, 9, 1), "Septembar prvi"),
+            (date(2026, 9, 2), "Septembar drugi"),
+            (date(2026, 10, 1), "Oktobar"),
+            (date(2025, 9, 2), "Druga godina"),
+        ):
+            _add_cash(
+                db,
+                tenant_code=tenant_code,
+                entry_date=event_date,
+                kind="income",
+                amount="10.00",
+                account="cash",
+                recognition_class="business_activity",
+                description=description,
+            )
+
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export-pdf",
+        headers={"X-Tenant-Code": tenant_code},
+        params={
+            "year": 2026,
+            "month": 9,
+            "date_from": "2026-09-02",
+            "date_to": "2026-09-30",
+        },
+    )
+
+    _, pdf_text = _read_promet_pdf_response(response)
+
+    assert "Septembar drugi" in pdf_text
+    assert "Avgust" not in pdf_text
+    assert "Septembar prvi" not in pdf_text
+    assert "Oktobar" not in pdf_text
+    assert "Druga godina" not in pdf_text
+    assert "10.00 BAM" in pdf_text
+
+
+@pytest.mark.parametrize("partner_query", ["%", "_", " STRASSE "])
+def test_promet_pdf_export_partner_query_is_literal_casefold_substring(
+    partner_query: str,
+) -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-pdf-partner")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+
+        invoice = _add_invoice(
+            db,
+            tenant_code=tenant_code,
+            invoice_number="PR-PDF-LITERAL-001",
+            buyer_name="Straße%_ Kupac",
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 10),
+            kind="income",
+            amount="10.00",
+            account="bank",
+            recognition_class=None,
+            invoice_id=invoice.id,
+            description="Uplata fakture",
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 11),
+            kind="income",
+            amount="20.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Straße%_ usluga",
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 12),
+            kind="income",
+            amount="90.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Drugi kupac",
+        )
+
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export-pdf",
+        headers={"X-Tenant-Code": tenant_code},
+        params={"partner_query": partner_query},
+    )
+
+    _, pdf_text = _read_promet_pdf_response(response)
+
+    assert "Straße%_ Kupac" in pdf_text
+    assert "Straße%_ usluga" in pdf_text
+    assert "Drugi kupac" not in pdf_text
+    assert "30.00 BAM" in pdf_text
+
+
+def test_promet_pdf_export_is_not_limited_by_ui_pagination() -> None:
+    from datetime import timedelta
+
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-pdf-full-set")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+
+        start = date(2026, 1, 1)
+        for index in range(55):
+            _add_cash(
+                db,
+                tenant_code=tenant_code,
+                entry_date=start + timedelta(days=index),
+                kind="income",
+                amount="1.00",
+                account="cash",
+                recognition_class="business_activity",
+                description=f"PDF red {index + 1:02d}",
+            )
+
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export-pdf",
+        headers={"X-Tenant-Code": tenant_code},
+        params={"year": 2026},
+    )
+
+    reader, pdf_text = _read_promet_pdf_response(response)
+
+    assert len(reader.pages) >= 2
+    assert "PDF red 01" in pdf_text
+    assert "PDF red 55" in pdf_text
+    assert pdf_text.index("PDF red 01") < pdf_text.index("PDF red 55")
+    assert "55.00 BAM" in pdf_text
+
+
+def test_promet_pdf_export_empty_result_is_valid_pdf() -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-pdf-empty")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export-pdf",
+        headers={"X-Tenant-Code": tenant_code},
+        params={"year": 2028},
+    )
+
+    _, pdf_text = _read_promet_pdf_response(response)
+
+    assert "Knjiga prometa" in pdf_text
+    assert "Nema evidentiranih stavki za odabrani period." in pdf_text
+    assert "0.00 BAM" in pdf_text
+
+
+def test_promet_pdf_export_uses_same_eligibility_guards_as_list() -> None:
+    client = TestClient(app)
+
+    missing_tenant = f"promet-pdf-missing-{uuid4().hex[:8]}"
+    response = client.get(
+        "/promet/export-pdf",
+        headers={"X-Tenant-Code": missing_tenant},
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "Tenant not found"
+
+    unconfigured = _create_tenant(client, "promet-pdf-unconfigured")
+    response = client.get(
+        "/promet/export-pdf",
+        headers={"X-Tenant-Code": unconfigured},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "promet_needs_configuration"
+
+    not_applicable = _create_tenant(client, "promet-pdf-not-applicable")
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=not_applicable,
+            entity="RS",
+            regime="books",
+            scenario_key="rs_primary",
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export-pdf",
+        headers={"X-Tenant-Code": not_applicable},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "promet_not_applicable",
+        "reason_code": "rs_books_promet_not_applicable",
+    }
+
+    unsupported = _create_tenant(client, "promet-pdf-fbih")
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=unsupported,
+            entity="FBiH",
+            regime="pausal",
+            scenario_key="fbih_obrt",
+        )
+        db.add(
+            TenantBusinessProfileSettings(
+                tenant_code=unsupported,
+                has_noncash_sales_to_legal_entities=True,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export-pdf",
+        headers={"X-Tenant-Code": unsupported},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == {
+        "code": "promet_dataset_not_implemented",
+        "mode": "fbih_kp1042_pausal_b2b",
+    }
+
+
+def test_promet_pdf_export_preserves_unicode_and_long_text() -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-pdf-text")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+
+        invoice = _add_invoice(
+            db,
+            tenant_code=tenant_code,
+            invoice_number="DUGI-DOKUMENT-BROJ-ZAVRSNI_TOKEN",
+            buyer_name=(
+                "Željeznička poslovna organizacija sa dugim nazivom "
+                "PARTNER_ZAVRSNI_TOKEN"
+            ),
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 14),
+            kind="income",
+            amount="123.45",
+            account="bank",
+            recognition_class=None,
+            invoice_id=invoice.id,
+            description=(
+                "Dugačka napomena sa čćšđž znakovima i završetkom "
+                "NAPOMENA_ZAVRSNI_TOKEN"
+            ),
+        )
+
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export-pdf",
+        headers={"X-Tenant-Code": tenant_code},
+    )
+
+    _, pdf_text = _read_promet_pdf_response(response)
+
+    assert "Željeznička" in pdf_text
+    assert "čćšđž" in pdf_text
+    # PDF layout smije prelomiti dugačak broj dokumenta preko više linija.
+    # Uklanjamo samo layout whitespace kako bismo dokazali da vrijednost
+    # nije skraćena niti izgubljena.
+    pdf_text_without_layout_whitespace = "".join(pdf_text.split())
+
+    assert (
+        "DUGI-DOKUMENT-BROJ-ZAVRSNI_TOKEN"
+        in pdf_text_without_layout_whitespace
+    )
+    assert "PARTNER_ZAVRSNI_TOKEN" in pdf_text
+    assert "NAPOMENA_ZAVRSNI_TOKEN" in pdf_text
+
+
+def test_promet_pdf_unsupported_glyph_returns_422() -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-pdf-glyph")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 14),
+            kind="income",
+            amount="10.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="Nepodržani znak 😀",
+        )
+
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        "/promet/export-pdf",
+        headers={"X-Tenant-Code": tenant_code},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == (
+        "Promet PDF cannot be generated because the document contains "
+        "characters unsupported by the PDF font"
+    )
