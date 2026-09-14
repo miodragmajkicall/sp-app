@@ -14,6 +14,7 @@ import {
 
 import {
   exportPrometCsv,
+  exportPrometPdf,
   fetchPromet,
   type ExportPrometParams,
   type FetchPrometParams,
@@ -65,6 +66,7 @@ function PrometPage() {
 
   const [loading, setLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const [year, setYear] = useState<string>("");
@@ -159,6 +161,32 @@ function PrometPage() {
       setError(getPrometErrorMessage(err));
     } finally {
       setExporting(false);
+    }
+  };
+
+  const handleExportPdf = async () => {
+    setExportingPdf(true);
+    setError(null);
+
+    try {
+      const blob = await exportPrometPdf(appliedFilters);
+      const url = URL.createObjectURL(blob);
+
+      try {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = "promet-export.pdf";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    } catch (err: unknown) {
+      console.error(err);
+      setError(getPrometErrorMessage(err));
+    } finally {
+      setExportingPdf(false);
     }
   };
 
@@ -298,7 +326,7 @@ function PrometPage() {
               <button
                 type="button"
                 onClick={() => void handleExport()}
-                disabled={loading || exporting}
+                disabled={loading || exporting || exportingPdf}
                 className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <Download className="h-4 w-4" />
@@ -307,8 +335,18 @@ function PrometPage() {
 
               <button
                 type="button"
+                onClick={() => void handleExportPdf()}
+                disabled={loading || exporting || exportingPdf}
+                className="inline-flex items-center gap-2 rounded-2xl border border-slate-200 bg-white px-5 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <Download className="h-4 w-4" />
+                {exportingPdf ? "Priprema PDF..." : "Preuzmi PDF"}
+              </button>
+
+              <button
+                type="button"
                 onClick={handleRefresh}
-                disabled={loading || exporting}
+                disabled={loading || exporting || exportingPdf}
                 className="inline-flex items-center gap-2 rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 <RefreshCw className="h-4 w-4" />
