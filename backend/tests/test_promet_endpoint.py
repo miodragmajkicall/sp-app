@@ -89,6 +89,7 @@ def _add_cash(
     account: str,
     recognition_class: str | None,
     invoice_id: int | None = None,
+    input_invoice_id: int | None = None,
     description: str | None = None,
 ) -> CashEntry:
     row = CashEntry(
@@ -100,7 +101,7 @@ def _add_cash(
         recognition_class=recognition_class,
         tax_treatment=None,
         invoice_id=invoice_id,
-        input_invoice_id=None,
+        input_invoice_id=input_invoice_id,
         description=description,
     )
     db.add(row)
@@ -1841,3 +1842,105 @@ def test_promet_blank_manual_description_is_normalized_across_list_csv_pdf() -> 
     _, pdf_text = _read_promet_pdf_response(response)
 
     assert "23.00 BAM" in pdf_text
+
+
+# ---------------------------------------------------------------------------
+# PROMET-FINAL-3:
+# Contradictory persisted source with both outgoing and input invoice links
+# must never be interpreted as a valid outgoing-invoice payment.
+#
+# LIST uses the optimized query path; CSV/PDF use the collector path.
+# All three outputs must fail closed with the same public contract.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("path", "params"),
+    [
+        ("/promet", {}),
+        ("/promet", {"partner_query": "does-not-match"}),
+        ("/promet/export", {}),
+        ("/promet/export-pdf", {}),
+    ],
+)
+def test_promet_conflicting_invoice_links_fail_closed_across_outputs(
+    path: str,
+    params: dict[str, str],
+) -> None:
+    client = TestClient(app)
+    tenant_code = _create_tenant(
+        client,
+        "promet-conflicting-links",
+    )
+    headers = {
+        "X-Tenant-Code": tenant_code,
+    }
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+
+        outgoing_invoice = _add_invoice(
+            db,
+            tenant_code=tenant_code,
+            invoice_number="PR-CONFLICT-001",
+            buyer_name="Conflict buyer",
+        )
+        outgoing_invoice_id = outgoing_invoice.id
+
+        db.commit()
+    finally:
+        db.close()
+
+    input_response = client.post(
+        "/input-invoices",
+        headers=headers,
+        json={
+            "supplier_name": "Conflict supplier",
+            "invoice_number": "UL-CONFLICT-001",
+            "issue_date": "2026-09-01",
+            "posting_date": "2026-09-01",
+            "total_base": "100.00",
+            "total_vat": "17.00",
+            "total_amount": "117.00",
+        },
+    )
+    assert input_response.status_code == 201, input_response.text
+    input_invoice_id = input_response.json()["id"]
+
+    db = SessionLocal()
+    try:
+        # Ovo stanje trenutna DB šema dozvoljava, iako ga normalni
+        # payment lifecycle ne bi trebao proizvesti.
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 15),
+            kind="income",
+            amount="117.00",
+            account="bank",
+            recognition_class=None,
+            invoice_id=outgoing_invoice_id,
+            input_invoice_id=input_invoice_id,
+            description="Namjerno kontradiktoran source",
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get(
+        path,
+        headers=headers,
+        params=params,
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "promet_source_integrity_error",
+        "reason": "conflicting_invoice_links",
+    }

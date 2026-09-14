@@ -22,6 +22,14 @@ class PrometSourceType(str, Enum):
     MANUAL_BUSINESS_INCOME = "manual_business_income"
 
 
+class PrometSourceIntegrityError(RuntimeError):
+    def __init__(self, reason: str) -> None:
+        self.reason = reason
+        super().__init__(
+            f"Promet source integrity error: {reason}"
+        )
+
+
 @dataclass(frozen=True)
 class CanonicalPrometEvent:
     mode: PrometMode
@@ -105,6 +113,14 @@ def _canonical_promet_event_from_row(
     invoice: Invoice | None,
     mode: PrometMode,
 ) -> CanonicalPrometEvent:
+    if (
+        cash_entry.invoice_id is not None
+        and cash_entry.input_invoice_id is not None
+    ):
+        raise PrometSourceIntegrityError(
+            "conflicting_invoice_links"
+        )
+
     amount = Decimal(str(cash_entry.amount))
 
     if amount <= 0:
@@ -190,9 +206,15 @@ def query_canonical_promet_page(
             CashEntry.amount.label("amount"),
             CashEntry.account.label("payment_channel"),
             CashEntry.invoice_id.label("invoice_id"),
+            CashEntry.input_invoice_id.label("input_invoice_id"),
             Invoice.id.label("joined_invoice_id"),
         ),
     ).cte("promet_source")
+
+    conflicting_invoice_links = and_(
+        source.c.invoice_id.is_not(None),
+        source.c.input_invoice_id.is_not(None),
+    )
 
     missing_invoice = and_(
         source.c.invoice_id.is_not(None),
@@ -200,6 +222,10 @@ def query_canonical_promet_page(
     )
 
     invalid_code = case(
+        (
+            conflicting_invoice_links,
+            "conflicting_invoice_links",
+        ),
         (source.c.amount <= 0, "nonpositive_amount"),
         (missing_invoice, "missing_invoice"),
         else_=None,
@@ -209,6 +235,7 @@ def query_canonical_promet_page(
         select(invalid_code)
         .where(
             or_(
+                conflicting_invoice_links,
                 source.c.amount <= 0,
                 missing_invoice,
             )
@@ -331,6 +358,11 @@ def query_canonical_promet_page(
         raise RuntimeError("Promet optimized query returned no stats row")
 
     invalid = rows[0].invalid_code
+
+    if invalid == "conflicting_invoice_links":
+        raise PrometSourceIntegrityError(
+            "conflicting_invoice_links"
+        )
 
     if invalid == "nonpositive_amount":
         raise RuntimeError(

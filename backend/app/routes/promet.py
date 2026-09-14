@@ -22,6 +22,7 @@ from app.schemas.promet import (
 from app.services.csv_security import csv_safe_text
 from app.services.promet_dataset import (
     CanonicalPrometEvent,
+    PrometSourceIntegrityError,
     UnsupportedPrometDatasetModeError,
     list_canonical_promet_events,
     query_canonical_promet_page,
@@ -287,6 +288,14 @@ def list_promet(
                 limit=query_limit,
                 offset=query_offset,
             )
+        except PrometSourceIntegrityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail={
+                    "code": "promet_source_integrity_error",
+                    "reason": exc.reason,
+                },
+            ) from exc
         except UnsupportedPrometDatasetModeError as exc:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -323,6 +332,14 @@ def list_promet(
             date_from=date_from,
             date_to=date_to,
         )
+    except PrometSourceIntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "promet_source_integrity_error",
+                "reason": exc.reason,
+            },
+        ) from exc
     except UnsupportedPrometDatasetModeError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -460,6 +477,14 @@ def export_promet(
             date_from=date_from,
             date_to=date_to,
         )
+    except PrometSourceIntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "promet_source_integrity_error",
+                "reason": exc.reason,
+            },
+        ) from exc
     except UnsupportedPrometDatasetModeError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -600,6 +625,14 @@ def export_promet_pdf(
             date_from=date_from,
             date_to=date_to,
         )
+    except PrometSourceIntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "code": "promet_source_integrity_error",
+                "reason": exc.reason,
+            },
+        ) from exc
     except UnsupportedPrometDatasetModeError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
