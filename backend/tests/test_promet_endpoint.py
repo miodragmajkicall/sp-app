@@ -1719,3 +1719,123 @@ def test_promet_pdf_unsupported_glyph_returns_422() -> None:
         "Promet PDF cannot be generated because the document contains "
         "characters unsupported by the PDF font"
     )
+
+
+# ============================================================
+# PROMET-FINAL-1 — semantički prazan manual description
+# ============================================================
+
+
+def test_promet_blank_manual_description_is_normalized_across_list_csv_pdf() -> None:
+    import csv
+    from decimal import Decimal
+    from io import StringIO
+
+    client = TestClient(app)
+    tenant_code = _create_tenant(client, "promet-blank-description")
+
+    db = SessionLocal()
+    try:
+        _add_tax_profile(
+            db,
+            tenant_code=tenant_code,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+        )
+
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 14),
+            kind="income",
+            amount="11.00",
+            account="cash",
+            recognition_class="business_activity",
+            description="",
+        )
+
+        _add_cash(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 15),
+            kind="income",
+            amount="12.00",
+            account="bank",
+            recognition_class="business_activity",
+            description="   ",
+        )
+
+        db.commit()
+    finally:
+        db.close()
+
+    headers = {"X-Tenant-Code": tenant_code}
+
+    # LIST — oba događaja ostaju u Prometu, ali prazni UI tekst postaje None.
+    response = client.get(
+        "/promet",
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+
+    payload = response.json()
+    assert payload["total"] == 2
+    assert Decimal(str(payload["summary"]["total_amount"])) == Decimal("23.00")
+
+    assert len(payload["items"]) == 2
+
+    for item in payload["items"]:
+        assert item["document_number"] is None
+        assert item["partner_name"] is None
+        assert item["note"] is None
+
+    assert {
+        Decimal(str(item["amount"]))
+        for item in payload["items"]
+    } == {
+        Decimal("11.00"),
+        Decimal("12.00"),
+    }
+
+    # CSV — događaji ostaju prisutni; prazna tekstualna polja ostaju prazna.
+    response = client.get(
+        "/promet/export",
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+
+    csv_rows = list(
+        csv.reader(
+            StringIO(response.content.decode("utf-8-sig")),
+            delimiter=";",
+        )
+    )
+
+    assert csv_rows[0] == [
+        "Datum",
+        "Broj dokumenta",
+        "Partner",
+        "Iznos",
+        "Napomena",
+    ]
+    assert len(csv_rows) == 3
+
+    for row in csv_rows[1:]:
+        assert row[1] == ""
+        assert row[2] == ""
+        assert row[4] == ""
+
+    assert {row[3] for row in csv_rows[1:]} == {"11.00", "12.00"}
+
+    # PDF — isti canonical događaji i isti zbir, bez validacione greške.
+    response = client.get(
+        "/promet/export-pdf",
+        headers=headers,
+    )
+
+    _, pdf_text = _read_promet_pdf_response(response)
+
+    assert "23.00 BAM" in pdf_text

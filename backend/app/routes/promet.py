@@ -99,13 +99,28 @@ def _resolve_promet_mode_or_raise(
 def _canonical_event_to_promet_row(
     event: CanonicalPrometEvent,
 ) -> PrometRow:
-    # Za linked invoice prikazujemo stvarnog kupca, dok kod manualnog
-    # prihoda eksplicitni description služi kao opis događaja.
-    partner_name = event.counterparty_name or event.description
+    # Promet projekcija semantički prazne tekstualne vrijednosti prikazuje
+    # kao odsutne, bez izmjene izvornog CashEntry/Invoice podatka.
+    counterparty_name = (
+        event.counterparty_name
+        if event.counterparty_name is not None
+        and event.counterparty_name.strip()
+        else None
+    )
+    description = (
+        event.description
+        if event.description is not None
+        and event.description.strip()
+        else None
+    )
+
+    # Za linked invoice prikazujemo stvarnog kupca. Ako partner ne postoji,
+    # kod manualnog prihoda opis događaja služi kao prikazani naziv.
+    partner_name = counterparty_name or description
 
     note = (
-        event.description
-        if event.counterparty_name is not None
+        description
+        if counterparty_name is not None
         else None
     )
 
