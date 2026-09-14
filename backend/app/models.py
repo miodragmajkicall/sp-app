@@ -13,6 +13,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -786,7 +787,6 @@ class TenantBusinessProfileSettings(Base):
         String(64),
         ForeignKey("tenants.code", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
     )
 
     # Poslovne činjenice potrebne za scenario/capability odluke.
@@ -796,6 +796,11 @@ class TenantBusinessProfileSettings(Base):
     daily_cash_turnover_covered_elsewhere = Column(Boolean, nullable=True)
     has_noncash_sales_to_legal_entities = Column(Boolean, nullable=True)
 
+    # NULL effective_from označava legacy/current profil čiji početak
+    # važenja još nije potvrđen. effective_to je inkluzivan.
+    effective_from = Column(Date, nullable=True)
+    effective_to = Column(Date, nullable=True)
+
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -804,6 +809,24 @@ class TenantBusinessProfileSettings(Base):
         CheckConstraint(
             "sales_locations_count IS NULL OR sales_locations_count >= 0",
             name="ck_tenant_business_profile_sales_locations_count",
+        ),
+        CheckConstraint(
+            "effective_to IS NULL OR "
+            "(effective_from IS NOT NULL AND effective_to >= effective_from)",
+            name="ck_tenant_business_profile_effective_range",
+        ),
+        Index(
+            "uq_tenant_business_profile_open_period",
+            "tenant_code",
+            unique=True,
+            postgresql_where=effective_to.is_(None),
+        ),
+        Index(
+            "ix_tenant_business_profile_effective_period",
+            "tenant_code",
+            "effective_from",
+            "effective_to",
+            unique=False,
         ),
     )
 
@@ -820,7 +843,6 @@ class TenantTaxProfileSettings(Base):
         String(64),
         ForeignKey("tenants.code", ondelete="CASCADE"),
         nullable=False,
-        unique=True,
     )
 
     entity = Column(String(16), nullable=False)  # RS / FBiH / Brcko
@@ -835,8 +857,34 @@ class TenantTaxProfileSettings(Base):
     monthly_health = Column(Numeric(14, 2), nullable=True)
     monthly_unemployment = Column(Numeric(14, 2), nullable=True)
 
+    # NULL effective_from označava legacy/current profil čiji početak
+    # važenja još nije potvrđen. effective_to je inkluzivan.
+    effective_from = Column(Date, nullable=True)
+    effective_to = Column(Date, nullable=True)
+
     created_at = Column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    __table_args__ = (
+        CheckConstraint(
+            "effective_to IS NULL OR "
+            "(effective_from IS NOT NULL AND effective_to >= effective_from)",
+            name="ck_tenant_tax_profile_effective_range",
+        ),
+        Index(
+            "uq_tenant_tax_profile_open_period",
+            "tenant_code",
+            unique=True,
+            postgresql_where=effective_to.is_(None),
+        ),
+        Index(
+            "ix_tenant_tax_profile_effective_period",
+            "tenant_code",
+            "effective_from",
+            "effective_to",
+            unique=False,
+        ),
     )
 
 
