@@ -1,9 +1,12 @@
 # /home/miso/dev/sp-app/sp-app/backend/tests/test_admin_constants.py
+from datetime import date
+
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from app.main import app
 from app.db import SessionLocal
+from app.models import AppConstantsSet
 
 
 def _wipe_constants():
@@ -132,41 +135,65 @@ def test_admin_constants_overlap_allowed_across_different_scenarios():
     assert r2.status_code == 200, r2.text
 
 
-def test_admin_constants_update_changes_payload_and_audit():
+
+def test_admin_constants_update_rejects_in_place_policy_mutation():
     _wipe_constants()
     client = TestClient(app)
 
-    res = client.post(
+    create_response = client.post(
         "/admin/constants",
         json={
             "jurisdiction": "RS",
             "scenario_key": "rs_primary",
             "effective_from": "2025-01-01",
             "effective_to": None,
-            "payload": {"scenario_key": "rs_primary", "vat": {"standard_rate": 0.17}},
+            "payload": {
+                "scenario_key": "rs_primary",
+                "vat": {"standard_rate": 0.17},
+            },
             "created_by": "tester",
-            "created_reason": "init RS open-ended",
+            "created_reason": "initial immutable revision",
         },
     )
-    assert res.status_code == 200
-    created = res.json()
-    cid = created["id"]
+    assert create_response.status_code == 200, create_response.text
 
-    res = client.put(
-        f"/admin/constants/{cid}",
+    created = create_response.json()
+    constants_id = created["id"]
+
+    update_response = client.put(
+        f"/admin/constants/{constants_id}",
         json={
-            "payload": {"scenario_key": "rs_primary", "vat": {"standard_rate": 0.20}},
+            "payload": {
+                "scenario_key": "rs_primary",
+                "vat": {"standard_rate": 0.20},
+            },
             "updated_by": "tester2",
-            "updated_reason": "change rate",
+            "updated_reason": "attempt in-place rate change",
         },
     )
-    assert res.status_code == 200
-    updated = res.json()
-    assert updated["id"] == cid
-    assert updated["payload"]["vat"]["standard_rate"] == 0.20
-    assert updated["updated_by"] == "tester2"
-    assert updated["updated_reason"] == "change rate"
 
+    assert update_response.status_code == 409, update_response.text
+    detail = update_response.json()["detail"]
+    assert detail["code"] == "constants_set_immutable"
+
+    list_response = client.get(
+        "/admin/constants",
+        params={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+        },
+    )
+    assert list_response.status_code == 200, list_response.text
+
+    stored = next(
+        item
+        for item in list_response.json()["items"]
+        if item["id"] == constants_id
+    )
+
+    assert stored["payload"]["vat"]["standard_rate"] == 0.17
+    assert stored["updated_by"] is None
+    assert stored["updated_reason"] is None
 
 def test_admin_constants_create_with_rollover_closes_previous_and_creates_new_same_scenario():
     _wipe_constants()
@@ -524,7 +551,8 @@ def test_admin_constants_legacy_payload_without_schema_version_remains_supported
     assert "schema_version" not in response.json()["payload"]
 
 
-def test_admin_constants_update_validates_complete_canonical_candidate_before_mutation():
+
+def test_admin_constants_update_rejects_canonical_revision_mutation():
     _wipe_constants()
     client = TestClient(app)
 
@@ -537,27 +565,28 @@ def test_admin_constants_update_validates_complete_canonical_candidate_before_mu
             "effective_to": None,
             "payload": _canonical_rs_primary_payload(),
             "created_by": "tester",
-            "created_reason": "canonical original",
+            "created_reason": "canonical immutable revision",
         },
     )
     assert create_response.status_code == 200, create_response.text
 
-    constants_id = create_response.json()["id"]
+    created = create_response.json()
+    constants_id = created["id"]
 
-    # Outer scenario change without matching canonical payload must fail.
     update_response = client.put(
         f"/admin/constants/{constants_id}",
         json={
             "scenario_key": "rs_supplementary",
             "updated_by": "tester2",
-            "updated_reason": "invalid outer-only scenario change",
+            "updated_reason": "attempt scenario rewrite",
         },
     )
 
-    assert update_response.status_code == 400, update_response.text
-    assert "must match outer scenario_key" in update_response.json()["detail"]
+    assert update_response.status_code == 409, update_response.text
 
-    # Failed validation must not partially mutate the stored row.
+    detail = update_response.json()["detail"]
+    assert detail["code"] == "constants_set_immutable"
+
     list_response = client.get(
         "/admin/constants",
         params={
@@ -567,8 +596,153 @@ def test_admin_constants_update_validates_complete_canonical_candidate_before_mu
     )
     assert list_response.status_code == 200, list_response.text
 
-    items = list_response.json()["items"]
-    stored = next(item for item in items if item["id"] == constants_id)
+    stored = next(
+        item
+        for item in list_response.json()["items"]
+        if item["id"] == constants_id
+    )
 
     assert stored["scenario_key"] == "rs_primary"
+    assert stored["effective_from"] == "2026-01-01"
+    assert stored["effective_to"] is None
     assert stored["payload"]["scenario_key"] == "rs_primary"
+    assert stored["updated_by"] is None
+    assert stored["updated_reason"] is None
+
+
+
+def test_admin_constants_update_rejects_metadata_only_mutation():
+    _wipe_constants()
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+            "effective_from": "2026-01-01",
+            "effective_to": None,
+            "payload": {
+                "scenario_key": "rs_primary",
+                "vat": {"standard_rate": 0.17},
+            },
+            "created_by": "tester",
+            "created_reason": "immutable revision",
+        },
+    )
+    assert create_response.status_code == 200, create_response.text
+
+    constants_id = create_response.json()["id"]
+
+    update_response = client.put(
+        f"/admin/constants/{constants_id}",
+        json={
+            "updated_by": "tester2",
+            "updated_reason": "metadata-only attempt",
+        },
+    )
+
+    assert update_response.status_code == 409, update_response.text
+    assert (
+        update_response.json()["detail"]["code"]
+        == "constants_set_immutable"
+    )
+
+
+def test_constants_current_fails_closed_on_overlapping_database_rows():
+    _wipe_constants()
+
+    db = SessionLocal()
+    try:
+        db.add_all(
+            [
+                AppConstantsSet(
+                    jurisdiction="RS",
+                    scenario_key="rs_primary",
+                    effective_from=date(2026, 1, 1),
+                    effective_to=None,
+                    payload={"scenario_key": "rs_primary", "revision": 1},
+                    created_by="test",
+                    created_reason="intentional overlap fixture 1",
+                ),
+                AppConstantsSet(
+                    jurisdiction="RS",
+                    scenario_key="rs_primary",
+                    effective_from=date(2026, 6, 1),
+                    effective_to=None,
+                    payload={"scenario_key": "rs_primary", "revision": 2},
+                    created_by="test",
+                    created_reason="intentional overlap fixture 2",
+                ),
+            ]
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    try:
+        client = TestClient(app)
+
+        response = client.get(
+            "/constants/current",
+            params={
+                "jurisdiction": "RS",
+                "scenario_key": "rs_primary",
+                "as_of": "2026-09-16",
+            },
+        )
+
+        assert response.status_code == 409, response.text
+        assert response.json()["detail"] == (
+            "Overlapping Tax constants periods for "
+            "jurisdiction=RS, scenario=rs_primary, as_of=2026-09-16"
+        )
+    finally:
+        _wipe_constants()
+
+
+def test_admin_constants_update_immutability_is_not_gated_by_legacy_body_schema():
+    _wipe_constants()
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+            "effective_from": "2026-01-01",
+            "effective_to": None,
+            "payload": {
+                "scenario_key": "rs_primary",
+                "vat": {"standard_rate": 0.17},
+            },
+            "created_by": "tester",
+            "created_reason": "immutable revision",
+        },
+    )
+    assert create_response.status_code == 200, create_response.text
+
+    constants_id = create_response.json()["id"]
+
+    # Empty JSON would fail the old AppConstantsSetUpdate schema because
+    # updated_reason was required. Immutability must take precedence now.
+    response = client.put(
+        f"/admin/constants/{constants_id}",
+        json={},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "constants_set_immutable"
+
+
+def test_admin_constants_update_missing_revision_returns_404_without_legacy_body_requirements():
+    _wipe_constants()
+    client = TestClient(app)
+
+    response = client.put(
+        "/admin/constants/999999999",
+        json={},
+    )
+
+    assert response.status_code == 404, response.text
+    assert response.json()["detail"] == "Constants set not found"

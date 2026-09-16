@@ -50,12 +50,31 @@ def _find_current_set(
             AppConstantsSet.jurisdiction == jurisdiction,
             AppConstantsSet.scenario_key == scenario_key,
             AppConstantsSet.effective_from <= as_of,
-            or_(AppConstantsSet.effective_to.is_(None), AppConstantsSet.effective_to >= as_of),
+            or_(
+                AppConstantsSet.effective_to.is_(None),
+                AppConstantsSet.effective_to >= as_of,
+            ),
         )
-        .order_by(AppConstantsSet.effective_from.desc(), AppConstantsSet.id.desc())
-        .limit(1)
+        .order_by(
+            AppConstantsSet.effective_from.desc(),
+            AppConstantsSet.id.desc(),
+        )
+        .limit(2)
     )
-    return db.execute(stmt).scalar_one_or_none()
+
+    rows = db.execute(stmt).scalars().all()
+
+    if len(rows) > 1:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Overlapping Tax constants periods for "
+                f"jurisdiction={jurisdiction}, scenario={scenario_key}, "
+                f"as_of={as_of.isoformat()}"
+            ),
+        )
+
+    return rows[0] if rows else None
 
 
 @router.get(
@@ -63,6 +82,9 @@ def _find_current_set(
     response_model=AppConstantsCurrentResponse,
     summary="Vraća trenutno važeći set konstanti za jurisdikciju, scenario i datum",
     operation_id="constants_current",
+    responses={
+        409: {"description": "Overlapping constants periods"},
+    },
 )
 def constants_current(
     jurisdiction: str = Query(..., description="RS / FBiH / BD"),

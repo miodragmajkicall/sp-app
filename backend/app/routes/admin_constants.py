@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -15,7 +15,6 @@ from app.schemas.constants import (
     AppConstantsSetCreate,
     AppConstantsSetListResponse,
     AppConstantsSetRead,
-    AppConstantsSetUpdate,
     validate_legal_constants_payload,
 )
 
@@ -352,68 +351,49 @@ def admin_constants_create(payload: AppConstantsSetCreate) -> AppConstantsSetRea
 @router.put(
     "/admin/constants/{constants_id}",
     response_model=AppConstantsSetRead,
-    summary="Admin: update postojećeg seta (bez overlap-a) u okviru scenario_key",
+    summary="Admin: legacy update endpoint — constants revisions are immutable",
     operation_id="admin_constants_update",
-    responses={400: {"description": "Validation / overlap error"}},
+    responses={
+        404: {"description": "Constants set not found"},
+        409: {"description": "Constants set revision is immutable"},
+    },
 )
-def admin_constants_update(constants_id: int, payload: AppConstantsSetUpdate) -> AppConstantsSetRead:
+def admin_constants_update(
+    constants_id: int,
+    _payload: Any = Body(default=None),
+) -> AppConstantsSetRead:
+    """
+    Existing AppConstantsSet rows are immutable legal-policy revisions.
+
+    Any legal/policy change must create a new revision through
+    POST /admin/constants. The create/rollover path closes the previous
+    open-ended revision when appropriate and assigns a new row ID.
+
+    The legacy PUT route is retained temporarily. Its request body is ignored
+    so obsolete mutable-field validation cannot bypass the immutable domain error.
+    """
     db = _get_db()
     try:
-        row = db.execute(select(AppConstantsSet).where(AppConstantsSet.id == constants_id)).scalar_one_or_none()
+        row = db.execute(
+            select(AppConstantsSet).where(AppConstantsSet.id == constants_id)
+        ).scalar_one_or_none()
+
         if row is None:
-            raise HTTPException(status_code=404, detail="Constants set not found")
+            raise HTTPException(
+                status_code=404,
+                detail="Constants set not found",
+            )
 
-        new_j = payload.jurisdiction if payload.jurisdiction is not None else row.jurisdiction
-        new_s = payload.scenario_key if payload.scenario_key is not None else row.scenario_key
-        new_from = payload.effective_from if payload.effective_from is not None else row.effective_from
-        new_to = payload.effective_to if payload.effective_to is not None else row.effective_to
-
-        _validate_scenario(new_j, new_s)
-
-        candidate_payload = (
-            payload.payload
-            if payload.payload is not None
-            else row.payload
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "constants_set_immutable",
+                "message": (
+                    "Constants set revisions are immutable. "
+                    "Create a new revision with POST /admin/constants; "
+                    "the rollover path closes the previous open-ended revision."
+                ),
+            },
         )
-
-        # Validate the complete candidate state before mutating the row.
-        _validate_payload_semantics(
-            jurisdiction=new_j,
-            payload=candidate_payload,
-        )
-        _validate_versioned_payload_contract(
-            jurisdiction=new_j,
-            scenario_key=new_s,
-            payload=candidate_payload,
-        )
-
-        _ensure_no_overlap(
-            db=db,
-            jurisdiction=new_j,
-            scenario_key=new_s,
-            effective_from=new_from,
-            effective_to=new_to,
-            exclude_id=row.id,
-        )
-
-        if payload.jurisdiction is not None:
-            row.jurisdiction = payload.jurisdiction
-        if payload.scenario_key is not None:
-            row.scenario_key = payload.scenario_key
-        if payload.effective_from is not None:
-            row.effective_from = payload.effective_from
-        if payload.effective_to is not None:
-            row.effective_to = payload.effective_to
-
-        if payload.payload is not None:
-            row.payload = payload.payload  # 1:1 with FE (no mutation)
-
-        row.updated_by = payload.updated_by
-        row.updated_reason = payload.updated_reason
-        row.updated_at = datetime.utcnow()
-
-        db.commit()
-        db.refresh(row)
-        return AppConstantsSetRead.model_validate(row)
     finally:
         db.close()
