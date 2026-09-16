@@ -5,6 +5,7 @@ from sqlalchemy import or_, select
 
 from app.db import SessionLocal
 from app.models import AppConstantsSet
+from app.schemas.constants import validate_legal_constants_payload
 
 
 def set_recognition_test_tax_rates(client: TestClient, headers: dict[str, str]) -> None:
@@ -24,63 +25,34 @@ def set_recognition_test_tax_rates(client: TestClient, headers: dict[str, str]) 
     assert response.status_code == 200, response.text
 
 
-def _first_present(*values):
-    for value in values:
-        if value is not None:
-            return value
-    return None
+def _strict_test_constants_payload_is_complete(
+    payload: dict,
+    *,
+    scenario_key: str,
+) -> bool:
+    """Accept only canonical policy that the live TAX calculator can consume."""
+    try:
+        canonical = validate_legal_constants_payload(
+            jurisdiction="RS",
+            scenario_key=scenario_key,
+            payload=payload,
+        )
+    except ValueError:
+        return False
 
+    if canonical is None:
+        return False
 
-def _strict_test_constants_payload_is_complete(payload: dict) -> bool:
-    """Check only whether the current legacy TAX calculator can consume the set."""
-    tax_block = payload.get("tax") if isinstance(payload.get("tax"), dict) else {}
-    contrib_block = (
-        payload.get("contributions")
-        if isinstance(payload.get("contributions"), dict)
-        else {}
-    )
-    base_block = payload.get("base") if isinstance(payload.get("base"), dict) else {}
-
-    income_tax_rate = _first_present(
-        tax_block.get("income_tax_rate"),
-        payload.get("income_tax_rate"),
-    )
-    pension_rate = _first_present(
-        tax_block.get("pension_contribution_rate"),
-        contrib_block.get("pension_rate"),
-        contrib_block.get("pension_contribution_rate"),
-        payload.get("pension_contribution_rate"),
-    )
-    health_rate = _first_present(
-        tax_block.get("health_contribution_rate"),
-        contrib_block.get("health_rate"),
-        contrib_block.get("health_contribution_rate"),
-        payload.get("health_contribution_rate"),
-    )
-    unemployment_rate = _first_present(
-        tax_block.get("unemployment_contribution_rate"),
-        contrib_block.get("unemployment_rate"),
-        contrib_block.get("unemployment_contribution_rate"),
-        payload.get("unemployment_contribution_rate"),
-    )
-    flat_costs_rate = _first_present(
-        tax_block.get("flat_costs_rate"),
-        payload.get("flat_costs_rate"),
-    )
-    currency = _first_present(
-        base_block.get("currency"),
-        tax_block.get("currency"),
-        payload.get("currency"),
-    )
-
-    return (
-        income_tax_rate is not None
-        and pension_rate is not None
-        and health_rate is not None
-        and unemployment_rate is not None
-        and flat_costs_rate is not None
-        and currency is not None
-        and bool(str(currency).strip())
+    return all(
+        value is not None
+        for value in (
+            canonical.base.currency,
+            canonical.tax.income_tax_rate,
+            canonical.tax.flat_costs_rate,
+            canonical.contributions.pension_rate,
+            canonical.contributions.health_rate,
+            canonical.contributions.unemployment_rate,
+        )
     )
 
 
@@ -141,7 +113,8 @@ def set_strict_tax_test_context(
                 )
 
             if not _strict_test_constants_payload_is_complete(
-                existing.payload or {}
+                existing.payload or {},
+                scenario_key=scenario_key,
             ):
                 raise AssertionError(
                     "Strict TAX test fixture found incomplete existing constants "
@@ -158,14 +131,20 @@ def set_strict_tax_test_context(
                 "effective_from": effective_from,
                 "effective_to": None,
                 "payload": {
+                    "schema_version": "legal-constants-v1",
+                    "scenario_key": scenario_key,
+                    "base": {
+                        "currency": "BAM",
+                    },
                     "tax": {
                         "income_tax_rate": 0.10,
-                        "pension_contribution_rate": 0.18,
-                        "health_contribution_rate": 0.12,
-                        "unemployment_contribution_rate": 0.015,
                         "flat_costs_rate": 0.30,
-                        "currency": "BAM",
-                    }
+                    },
+                    "contributions": {
+                        "pension_rate": 0.18,
+                        "health_rate": 0.12,
+                        "unemployment_rate": 0.015,
+                    },
                 },
                 "created_by": "tax-test",
                 "created_reason": "Deterministic strict TAX test context",
@@ -188,5 +167,3 @@ def set_strict_tax_test_context(
         },
     )
     assert profile_response.status_code == 200, profile_response.text
-
-    set_recognition_test_tax_rates(client, headers)

@@ -36,6 +36,7 @@ from app.schemas.tax import (
     TaxMonthlyPaymentUpsert,
 )
 from app.schemas.tax_settings import TaxSettingsRead, TaxSettingsUpsert
+from app.schemas.constants import validate_legal_constants_payload
 from app.services.recognized_input_expenses import (
     UnsupportedInputExpenseRecognitionError,
     list_recognized_input_expenses,
@@ -328,11 +329,11 @@ def _resolve_tax_config(db: Session, tenant_code: str, as_of: date) -> TaxDummyC
       2) eksplicitno poznata jurisdikcija,
       3) eksplicitan scenario_key,
       4) tačno odgovarajući effective-dated constants set,
-      5) kompletan constants payload za trenutni legacy calculator.
+      5) canonical `legal-constants-v1` payload,
+      6) sva polja koja trenutni TAX calculator stvarno koristi.
 
-    Legacy TaxSettings override privremeno ostaje podržan, ali tek nakon
-    uspješne validacije kompletnog poreskog konteksta. Time više ne može
-    samostalno omogućiti obračun bez profila/constants.
+    Tenant TaxSettings je legacy konfiguracija i ne smije pregaziti
+    zakonske stope iz verified Admin Constants policy revizije.
     """
     try:
         prof = get_tax_profile_as_of(
@@ -382,38 +383,66 @@ def _resolve_tax_config(db: Session, tenant_code: str, as_of: date) -> TaxDummyC
             ),
         )
 
-    constants_cfg = _tax_config_from_constants_payload(
-        constants_set.payload or {}
-    )
-    if constants_cfg is None:
+    try:
+        canonical = validate_legal_constants_payload(
+            jurisdiction=jurisdiction,
+            scenario_key=scenario_key,
+            payload=constants_set.payload or {},
+        )
+    except ValueError as exc:
         raise HTTPException(
             status_code=409,
             detail=(
-                "Tax constants are incomplete or invalid for "
+                "Canonical Tax constants policy is invalid for "
+                f"jurisdiction={jurisdiction}, scenario={scenario_key}, "
+                f"as_of={as_of.isoformat()}: {exc}"
+            ),
+        ) from exc
+
+    if canonical is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Tax constants policy is legacy/unverified for "
+                f"jurisdiction={jurisdiction}, scenario={scenario_key}, "
+                f"as_of={as_of.isoformat()}; "
+                "live TAX calculation requires schema_version=legal-constants-v1"
+            ),
+        )
+
+    required_values = {
+        "base.currency": canonical.base.currency,
+        "tax.income_tax_rate": canonical.tax.income_tax_rate,
+        "tax.flat_costs_rate": canonical.tax.flat_costs_rate,
+        "contributions.pension_rate": canonical.contributions.pension_rate,
+        "contributions.health_rate": canonical.contributions.health_rate,
+        "contributions.unemployment_rate": canonical.contributions.unemployment_rate,
+    }
+    missing = [
+        field_name
+        for field_name, value in required_values.items()
+        if value is None
+    ]
+
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Canonical Tax constants policy is incomplete for the current "
+                f"calculator: missing={','.join(missing)}; "
                 f"jurisdiction={jurisdiction}, scenario={scenario_key}, "
                 f"as_of={as_of.isoformat()}"
             ),
         )
 
-    # Legacy override ostaje samo kao privremena kompatibilnost.
-    # TAX-2B će odlučiti njegov konačni status u production calculation path-u.
-    row = db.execute(
-        select(TaxSettings).where(
-            TaxSettings.tenant_code == tenant_code
-        )
-    ).scalar_one_or_none()
-
-    if row is not None:
-        return TaxDummyConfig(
-            income_tax_rate=Decimal(str(row.income_tax_rate)),
-            pension_contribution_rate=Decimal(str(row.pension_contribution_rate)),
-            health_contribution_rate=Decimal(str(row.health_contribution_rate)),
-            unemployment_contribution_rate=Decimal(str(row.unemployment_contribution_rate)),
-            flat_costs_rate=Decimal(str(row.flat_costs_rate)),
-            currency=row.currency,
-        )
-
-    return constants_cfg
+    return TaxDummyConfig(
+        income_tax_rate=canonical.tax.income_tax_rate,
+        pension_contribution_rate=canonical.contributions.pension_rate,
+        health_contribution_rate=canonical.contributions.health_rate,
+        unemployment_contribution_rate=canonical.contributions.unemployment_rate,
+        flat_costs_rate=canonical.tax.flat_costs_rate,
+        currency=canonical.base.currency,
+    )
 
 
 # ======================================================

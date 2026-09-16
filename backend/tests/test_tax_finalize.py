@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import MetaData, Table, select
 
 from app.main import app
-from tests.tax_config_helpers import set_recognition_test_tax_rates
+from tests.tax_config_helpers import set_strict_tax_test_context
 from app.db import SessionLocal
 
 client = TestClient(app)
@@ -248,19 +248,14 @@ def test_tax_monthly_finalize_persists_result_and_marks_final() -> None:
         db.commit()
 
         headers = {"X-Tenant-Code": tenant_code}
-        tax_profile = client.put(
-            "/settings/tax",
-            headers=headers,
-            json={
-                "entity": "RS",
-                "regime": "pausal",
-                "scenario_key": "rs_primary",
-                "has_additional_activity": False,
-                "effective_from": "2025-01-01",
-            },
+        set_strict_tax_test_context(
+            client,
+            headers,
+            effective_from="2025-01-01",
+            regime="pausal",
+            scenario_key="rs_primary",
+            has_additional_activity=False,
         )
-        assert tax_profile.status_code == 200, tax_profile.text
-        set_recognition_test_tax_rates(client, headers)
 
         params = {"year": 2025, "month": 1}
 
@@ -362,19 +357,14 @@ def test_tax_monthly_finalize_cannot_double_finalize_same_period() -> None:
         db.commit()
 
         headers = {"X-Tenant-Code": tenant_code}
-        tax_profile = client.put(
-            "/settings/tax",
-            headers=headers,
-            json={
-                "entity": "RS",
-                "regime": "pausal",
-                "scenario_key": "rs_primary",
-                "has_additional_activity": False,
-                "effective_from": "2025-01-01",
-            },
+        set_strict_tax_test_context(
+            client,
+            headers,
+            effective_from="2025-01-01",
+            regime="pausal",
+            scenario_key="rs_primary",
+            has_additional_activity=False,
         )
-        assert tax_profile.status_code == 200, tax_profile.text
-        set_recognition_test_tax_rates(client, headers)
 
         params = {"year": 2025, "month": 1}
 

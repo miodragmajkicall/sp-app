@@ -1,6 +1,7 @@
 # /home/miso/dev/sp-app/sp-app/backend/tests/test_tax_constants_integration.py
 from decimal import Decimal
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 
@@ -23,11 +24,48 @@ def _wipe_tables():
         s.close()
 
 
+@pytest.fixture(autouse=True)
+def _isolate_tax_constants_integration_state():
+    _wipe_tables()
+    try:
+        yield
+    finally:
+        _wipe_tables()
+
+
 def _d(v) -> Decimal:
     return Decimal(str(v))
 
 
-def test_tax_preview_uses_app_constants_set_when_no_tax_settings_override():
+def _canonical_policy(
+    scenario_key: str,
+    *,
+    income_tax_rate: float,
+    pension_rate: float,
+    health_rate: float,
+    unemployment_rate: float,
+    flat_costs_rate: float = 0.0,
+    currency: str = "BAM",
+) -> dict:
+    return {
+        "schema_version": "legal-constants-v1",
+        "scenario_key": scenario_key,
+        "base": {
+            "currency": currency,
+        },
+        "tax": {
+            "income_tax_rate": income_tax_rate,
+            "flat_costs_rate": flat_costs_rate,
+        },
+        "contributions": {
+            "pension_rate": pension_rate,
+            "health_rate": health_rate,
+            "unemployment_rate": unemployment_rate,
+        },
+    }
+
+
+def test_tax_preview_uses_canonical_admin_constants_policy():
     _wipe_tables()
     client = TestClient(app)
 
@@ -41,16 +79,14 @@ def test_tax_preview_uses_app_constants_set_when_no_tax_settings_override():
             "scenario_key": "rs_primary",
             "effective_from": "2025-01-01",
             "effective_to": None,
-            "payload": {
-                "tax": {
-                    "income_tax_rate": 0.20,
-                    "pension_contribution_rate": 0.10,
-                    "health_contribution_rate": 0.05,
-                    "unemployment_contribution_rate": 0.01,
-                    "flat_costs_rate": 0.00,
-                    "currency": "BAM",
-                }
-            },
+            "payload": _canonical_policy(
+                "rs_primary",
+                income_tax_rate=0.20,
+                pension_rate=0.10,
+                health_rate=0.05,
+                unemployment_rate=0.01,
+                flat_costs_rate=0.00,
+            ),
             "created_by": "tester",
             "created_reason": "RS tax constants 2025+",
         },
@@ -102,7 +138,7 @@ def test_tax_preview_uses_app_constants_set_when_no_tax_settings_override():
     assert body["currency"] == "BAM"
 
 
-def test_tax_settings_override_beats_app_constants_set():
+def test_tax_settings_cannot_override_canonical_admin_constants_policy():
     _wipe_tables()
     client = TestClient(app)
 
@@ -116,16 +152,14 @@ def test_tax_settings_override_beats_app_constants_set():
             "scenario_key": "rs_primary",
             "effective_from": "2025-01-01",
             "effective_to": None,
-            "payload": {
-                "tax": {
-                    "income_tax_rate": 0.20,
-                    "pension_contribution_rate": 0.10,
-                    "health_contribution_rate": 0.05,
-                    "unemployment_contribution_rate": 0.01,
-                    "flat_costs_rate": 0.00,
-                    "currency": "BAM",
-                }
-            },
+            "payload": _canonical_policy(
+                "rs_primary",
+                income_tax_rate=0.20,
+                pension_rate=0.10,
+                health_rate=0.05,
+                unemployment_rate=0.01,
+                flat_costs_rate=0.00,
+            ),
             "created_by": "tester",
             "created_reason": "RS tax constants 2025+",
         },
@@ -149,7 +183,8 @@ def test_tax_settings_override_beats_app_constants_set():
     )
     assert res.status_code == 200, res.text
 
-    # upsert /tax/settings override: income_tax_rate=0.10 (pregazi constants)
+    # Legacy /tax/settings may still exist, but it must not override
+    # the verified canonical Admin Constants policy.
     res = client.put(
         "/tax/settings",
         headers={"X-Tenant-Code": tenant},
@@ -164,7 +199,8 @@ def test_tax_settings_override_beats_app_constants_set():
     )
     assert res.status_code == 200, res.text
 
-    # preview: taxable_base=1000, income_tax=100 (ne 200)
+    # Canonical Admin Constants remain authoritative:
+    # taxable_base=1000, income_tax=200 despite legacy tenant TaxSettings=10%.
     res = client.get(
         "/tax/monthly/preview",
         headers={"X-Tenant-Code": tenant},
@@ -179,9 +215,9 @@ def test_tax_settings_override_beats_app_constants_set():
     body = res.json()
 
     assert _d(body["taxable_base"]) == Decimal("1000.00")
-    assert _d(body["income_tax"]) == Decimal("100.00")  # override pobjeđuje
+    assert _d(body["income_tax"]) == Decimal("200.00")
     assert _d(body["contributions_total"]) == Decimal("160.00")
-    assert _d(body["total_due"]) == Decimal("260.00")
+    assert _d(body["total_due"]) == Decimal("360.00")
     assert body["currency"] == "BAM"
 
 
@@ -199,16 +235,14 @@ def test_tax_preview_uses_matching_scenario_key_when_multiple_sets_exist():
             "scenario_key": "rs_primary",
             "effective_from": "2025-01-01",
             "effective_to": None,
-            "payload": {
-                "tax": {
-                    "income_tax_rate": 0.20,
-                    "pension_contribution_rate": 0.10,
-                    "health_contribution_rate": 0.05,
-                    "unemployment_contribution_rate": 0.01,
-                    "flat_costs_rate": 0.00,
-                    "currency": "BAM",
-                }
-            },
+            "payload": _canonical_policy(
+                "rs_primary",
+                income_tax_rate=0.20,
+                pension_rate=0.10,
+                health_rate=0.05,
+                unemployment_rate=0.01,
+                flat_costs_rate=0.00,
+            ),
             "created_by": "tester",
             "created_reason": "RS primary constants",
         },
@@ -223,16 +257,14 @@ def test_tax_preview_uses_matching_scenario_key_when_multiple_sets_exist():
             "scenario_key": "rs_supplementary",
             "effective_from": "2025-01-01",
             "effective_to": None,
-            "payload": {
-                "tax": {
-                    "income_tax_rate": 0.08,
-                    "pension_contribution_rate": 0.07,
-                    "health_contribution_rate": 0.00,
-                    "unemployment_contribution_rate": 0.00,
-                    "flat_costs_rate": 0.00,
-                    "currency": "BAM",
-                }
-            },
+            "payload": _canonical_policy(
+                "rs_supplementary",
+                income_tax_rate=0.08,
+                pension_rate=0.07,
+                health_rate=0.00,
+                unemployment_rate=0.00,
+                flat_costs_rate=0.00,
+            ),
             "created_by": "tester",
             "created_reason": "RS supplementary constants",
         },
@@ -277,13 +309,13 @@ def test_tax_preview_uses_matching_scenario_key_when_multiple_sets_exist():
     assert body["currency"] == "BAM"
 
 
-def test_tax_preview_supports_v2_constants_payload_shape():
+def test_tax_preview_supports_canonical_legal_constants_v1_payload():
     _wipe_tables()
     client = TestClient(app)
 
     tenant = "t-const-v2"
 
-    # V2 payload: tax + contributions + base.currency
+    # Canonical legal-constants-v1 policy.
     res = client.post(
         "/admin/constants",
         json={
@@ -291,24 +323,14 @@ def test_tax_preview_supports_v2_constants_payload_shape():
             "scenario_key": "rs_primary",
             "effective_from": "2025-01-01",
             "effective_to": None,
-            "payload": {
-                "scenario_key": "rs_primary",
-                "base": {
-                    "currency": "BAM",
-                    "avg_gross_wage_prev_year_bam": 2000,
-                    "contrib_base_percent_of_avg_gross": 80,
-                },
-                "tax": {
-                    "income_tax_rate": 0.15,
-                    "flat_tax_monthly_amount_bam": None,
-                    "flat_costs_rate": 0.00,
-                },
-                "contributions": {
-                    "pension_rate": 0.09,
-                    "health_rate": 0.04,
-                    "unemployment_rate": 0.01,
-                },
-            },
+            "payload": _canonical_policy(
+                "rs_primary",
+                income_tax_rate=0.15,
+                pension_rate=0.09,
+                health_rate=0.04,
+                unemployment_rate=0.01,
+                flat_costs_rate=0.00,
+            ),
             "created_by": "tester",
             "created_reason": "RS primary V2 payload",
         },
@@ -356,3 +378,72 @@ def test_tax_preview_supports_v2_constants_payload_shape():
     # total_due = 290
     assert _d(body["total_due"]) == Decimal("290.00")
     assert body["currency"] == "BAM"
+
+
+def test_tax_preview_rejects_legacy_unversioned_constants_payload():
+    _wipe_tables()
+    client = TestClient(app)
+
+    tenant = "t-const-legacy-rejected"
+
+    create_response = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+            "effective_from": "2025-01-01",
+            "effective_to": None,
+            # Structurally consumable by the old parser, but intentionally
+            # missing schema_version and therefore legacy/unverified.
+            "payload": {
+                "scenario_key": "rs_primary",
+                "base": {
+                    "currency": "BAM",
+                },
+                "tax": {
+                    "income_tax_rate": 0.15,
+                    "flat_costs_rate": 0.00,
+                },
+                "contributions": {
+                    "pension_rate": 0.09,
+                    "health_rate": 0.04,
+                    "unemployment_rate": 0.01,
+                },
+            },
+            "created_by": "tester",
+            "created_reason": "legacy unversioned policy rejection fixture",
+        },
+    )
+    assert create_response.status_code == 200, create_response.text
+
+    profile_response = client.put(
+        "/settings/tax",
+        headers={"X-Tenant-Code": tenant},
+        json={
+            "entity": "RS",
+            "effective_from": "2025-01-01",
+            "regime": "pausal",
+            "scenario_key": "rs_primary",
+            "has_additional_activity": False,
+            "monthly_pension": None,
+            "monthly_health": None,
+            "monthly_unemployment": None,
+        },
+    )
+    assert profile_response.status_code == 200, profile_response.text
+
+    response = client.get(
+        "/tax/monthly/preview",
+        headers={"X-Tenant-Code": tenant},
+        params={
+            "year": 2025,
+            "month": 1,
+            "total_income": "1000.00",
+            "total_expense": "0.00",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert "legacy/unverified" in detail
+    assert "schema_version=legal-constants-v1" in detail

@@ -171,14 +171,20 @@ def test_tax_config_resolver_selects_profile_for_requested_as_of(
         )
         return SimpleNamespace(
             payload={
+                "schema_version": "legal-constants-v1",
+                "scenario_key": scenario_key,
+                "base": {
+                    "currency": "BAM",
+                },
                 "tax": {
                     "income_tax_rate": 0.10,
-                    "pension_contribution_rate": 0.18,
-                    "health_contribution_rate": 0.12,
-                    "unemployment_contribution_rate": 0.015,
                     "flat_costs_rate": 0.30,
-                    "currency": "BAM",
-                }
+                },
+                "contributions": {
+                    "pension_rate": 0.18,
+                    "health_rate": 0.12,
+                    "unemployment_rate": 0.015,
+                },
             }
         )
 
