@@ -8,7 +8,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import MetaData, Table
 
 from app.main import app
-from tests.tax_config_helpers import set_recognition_test_tax_rates
+from tests.tax_config_helpers import (
+    set_recognition_test_tax_rates,
+    set_strict_tax_test_context,
+)
 from app.db import SessionLocal
 from app.routes.tax import TAX_DUMMY_CONFIG
 
@@ -222,6 +225,7 @@ def test_tax_monthly_preview_formula_basic() -> None:
         "total_expense": "200.00",
     }
     headers = {"X-Tenant-Code": tenant_code}
+    set_strict_tax_test_context(client, headers)
 
     resp = client.get("/tax/monthly/preview", params=params, headers=headers)
     assert resp.status_code == 200
@@ -411,19 +415,13 @@ def _create_tax_input_invoice(
 
 
 def _set_tax_cash_profile(headers: dict[str, str]) -> None:
-    response = client.put(
-        "/settings/tax",
-        headers=headers,
-        json={
-            "entity": "RS",
-            "regime": "pausal",
-            "scenario_key": "rs_primary",
-            "has_additional_activity": False,
-            "effective_from": "2025-01-01",
-        },
+    set_strict_tax_test_context(
+        client,
+        headers,
+        regime="pausal",
+        scenario_key="rs_primary",
+        has_additional_activity=False,
     )
-    assert response.status_code == 200, response.text
-    set_recognition_test_tax_rates(client, headers)
 
 
 def _pay_tax_input_invoice(
@@ -554,6 +552,13 @@ def test_tax_auto_unpaid_cash_basis_invoice_is_not_issue_month_expense() -> None
 def test_tax_auto_unresolved_context_fails_closed_for_paid_input_expense() -> None:
     tenant = f"tax-unresolved-{uuid4().hex[:12]}"
     headers = {"X-Tenant-Code": tenant}
+    set_strict_tax_test_context(
+        client,
+        headers,
+        regime="books",
+        scenario_key="rs_primary",
+    )
+
     invoice_id = _create_tax_input_invoice(
         headers=headers,
         issue_date="2026-05-10",
@@ -666,6 +671,12 @@ def test_tax_cash_only_entry_is_not_recognized() -> None:
 def test_tax_business_activity_cash_with_unresolved_context_fails_closed() -> None:
     tenant = f"tax-cash-unresolved-{uuid4().hex[:12]}"
     headers = {"X-Tenant-Code": tenant}
+    set_strict_tax_test_context(
+        client,
+        headers,
+        regime="books",
+        scenario_key="rs_primary",
+    )
 
     cash = client.post(
         "/cash/",

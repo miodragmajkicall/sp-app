@@ -10,6 +10,7 @@ from app.db import SessionLocal
 from app.main import app
 from app.models import CashEntry, Invoice, TaxMonthlyResult
 from app.tenant_security import ensure_tenant_exists
+from tests.tax_config_helpers import set_strict_tax_test_context
 
 
 @pytest.fixture
@@ -438,6 +439,12 @@ def test_output_payment_is_not_double_counted_in_tax_auto(
     client: TestClient,
 ) -> None:
     headers = _headers("output-payment-tax")
+    set_strict_tax_test_context(
+        client,
+        headers,
+        effective_from="2026-01-01",
+    )
+
     invoice_id = _create_invoice(
         headers["X-Tenant-Code"],
         issue_date=date(2026, 8, 10),

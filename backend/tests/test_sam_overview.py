@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from app.db import SessionLocal
 from app.main import app
 from app.tenant_security import ensure_tenant_exists
+from tests.tax_config_helpers import set_strict_tax_test_context
 
 client = TestClient(app)
 
@@ -109,6 +110,11 @@ def test_sam_overview_with_one_finalized_month_uses_tax_monthly_results() -> Non
     headers = {"X-Tenant-Code": tenant_code}
 
     _ensure_test_tenant(tenant_code)
+    set_strict_tax_test_context(
+        client,
+        headers,
+        effective_from="2099-01-01",
+    )
 
     # 1) Pokušamo finalize za (year, month, tenant)
     finalize_resp = client.post(

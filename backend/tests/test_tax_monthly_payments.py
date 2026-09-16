@@ -1,7 +1,13 @@
 # /home/miso/dev/sp-app/sp-app/backend/tests/test_tax_monthly_payments.py
-from fastapi.testclient import TestClient
+from uuid import uuid4
 
+from fastapi.testclient import TestClient
+from sqlalchemy import select
+
+from app.db import SessionLocal
 from app.main import app
+from app.models import TaxMonthlyPayment
+from tests.tax_config_helpers import set_strict_tax_test_context
 
 client = TestClient(app)
 
@@ -9,6 +15,7 @@ client = TestClient(app)
 def test_tax_monthly_overview_returns_12_months_with_default_payment_status():
     tenant = "tax-payments-demo-a"
     headers = {"X-Tenant-Code": tenant}
+    set_strict_tax_test_context(client, headers)
 
     r = client.get("/tax/monthly?year=2025", headers=headers)
     assert r.status_code == 200, r.text
@@ -28,6 +35,7 @@ def test_tax_monthly_overview_returns_12_months_with_default_payment_status():
 def test_tax_monthly_payment_upsert_sets_and_clears_paid_at():
     tenant = "tax-payments-demo-b"
     headers = {"X-Tenant-Code": tenant}
+    set_strict_tax_test_context(client, headers)
 
     # set paid with explicit paid_at
     payload = {"is_paid": True, "paid_at": "2025-01-15"}
@@ -48,12 +56,40 @@ def test_tax_monthly_payment_upsert_sets_and_clears_paid_at():
     assert row["paid_at"] is None
 
 
+def test_tax_monthly_payment_validation_failure_does_not_persist_row():
+    tenant = f"tax-payment-invalid-{uuid4().hex[:12]}"
+    headers = {"X-Tenant-Code": tenant}
+
+    response = client.put(
+        "/tax/monthly/2025/1/payment",
+        json={"is_paid": True, "paid_at": "2025-01-10"},
+        headers=headers,
+    )
+
+    assert response.status_code == 409, response.text
+    assert "profile" in response.json()["detail"].lower()
+
+    with SessionLocal() as db:
+        stored = db.execute(
+            select(TaxMonthlyPayment).where(
+                TaxMonthlyPayment.tenant_code == tenant,
+                TaxMonthlyPayment.year == 2025,
+                TaxMonthlyPayment.month == 1,
+            )
+        ).scalar_one_or_none()
+
+    assert stored is None
+
+
 def test_tax_monthly_payment_is_tenant_isolated():
     tenant_a = "tax-payments-iso-a"
     tenant_b = "tax-payments-iso-b"
 
     headers_a = {"X-Tenant-Code": tenant_a}
     headers_b = {"X-Tenant-Code": tenant_b}
+
+    set_strict_tax_test_context(client, headers_a)
+    set_strict_tax_test_context(client, headers_b)
 
     # A marks Jan as paid
     r = client.put(

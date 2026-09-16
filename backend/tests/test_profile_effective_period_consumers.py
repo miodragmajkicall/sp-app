@@ -169,7 +169,18 @@ def test_tax_config_resolver_selects_profile_for_requested_as_of(
                 "scenario_key": scenario_key,
             }
         )
-        return SimpleNamespace(payload={"tax": {"income_tax_rate": 0.10}})
+        return SimpleNamespace(
+            payload={
+                "tax": {
+                    "income_tax_rate": 0.10,
+                    "pension_contribution_rate": 0.18,
+                    "health_contribution_rate": 0.12,
+                    "unemployment_contribution_rate": 0.015,
+                    "flat_costs_rate": 0.30,
+                    "currency": "BAM",
+                }
+            }
+        )
 
     monkeypatch.setattr(
         tax_routes,
@@ -314,12 +325,194 @@ def test_tax_preview_rejects_unverified_or_missing_profile_coverage(periods):
     assert "profile" in response.json()["detail"].lower()
 
 
-def test_tax_default_fallback_is_tenant_scoped_and_requires_no_history():
+def test_tax_preview_requires_verified_profile_even_when_tenant_has_no_history():
     _, other_headers = _create_tenant("tax-other-history")
     _put_tax(other_headers, effective_from="2026-01-01")
-    tenant, _ = _create_tenant("tax-no-history")
+
+    _, headers = _create_tenant("tax-no-history")
+
+    response = client.get(
+        "/tax/monthly/preview",
+        headers=headers,
+        params={
+            "year": 2026,
+            "month": 3,
+            "total_income": "1000",
+            "total_expense": "0",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "profile" in response.json()["detail"].lower()
+
+
+def test_tax_settings_override_cannot_bypass_missing_verified_profile():
+    _, headers = _create_tenant("tax-override-no-profile")
+
+    settings_response = client.put(
+        "/tax/settings",
+        headers=headers,
+        json={
+            "income_tax_rate": "0.10",
+            "pension_contribution_rate": "0.18",
+            "health_contribution_rate": "0.12",
+            "unemployment_contribution_rate": "0.015",
+            "flat_costs_rate": "0.30",
+            "currency": "BAM",
+        },
+    )
+    assert settings_response.status_code == 200, settings_response.text
+
+    response = client.get(
+        "/tax/monthly/preview",
+        headers=headers,
+        params={
+            "year": 2026,
+            "month": 3,
+            "total_income": "1000",
+            "total_expense": "0",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "profile" in response.json()["detail"].lower()
+
+
+def test_tax_preview_rejects_profile_without_explicit_scenario_key():
+    tenant, headers = _create_tenant("tax-missing-scenario")
+
     with SessionLocal() as db:
-        assert tax_routes._resolve_tax_config(db, tenant, date(2026, 3, 1)) == tax_routes.DEFAULT_TAX_CONFIG
+        db.add(
+            TenantTaxProfileSettings(
+                tenant_code=tenant,
+                entity="RS",
+                regime="pausal",
+                scenario_key=None,
+                has_additional_activity=False,
+                effective_from=date(2026, 1, 1),
+                effective_to=None,
+            )
+        )
+        db.commit()
+
+    response = client.get(
+        "/tax/monthly/preview",
+        headers=headers,
+        params={
+            "year": 2026,
+            "month": 3,
+            "total_income": "1000",
+            "total_expense": "0",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "scenario_key" in response.json()["detail"]
+
+
+def test_tax_preview_rejects_unknown_profile_jurisdiction():
+    tenant, headers = _create_tenant("tax-unknown-jurisdiction")
+
+    with SessionLocal() as db:
+        db.add(
+            TenantTaxProfileSettings(
+                tenant_code=tenant,
+                entity="UNKNOWN",
+                regime="pausal",
+                scenario_key="rs_primary",
+                has_additional_activity=False,
+                effective_from=date(2026, 1, 1),
+                effective_to=None,
+            )
+        )
+        db.commit()
+
+    response = client.get(
+        "/tax/monthly/preview",
+        headers=headers,
+        params={
+            "year": 2026,
+            "month": 3,
+            "total_income": "1000",
+            "total_expense": "0",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert "jurisdiction" in response.json()["detail"].lower()
+
+
+def test_tax_constants_payload_does_not_fill_missing_values_from_dummy_defaults():
+    cfg = tax_routes._tax_config_from_constants_payload(
+        {
+            "tax": {
+                "income_tax_rate": 0.10,
+            }
+        }
+    )
+
+    assert cfg is None
+
+
+def test_tax_resolver_does_not_fallback_to_other_scenario_constants(monkeypatch):
+    tenant, headers = _create_tenant("tax-exact-scenario-only")
+
+    _put_tax(
+        headers,
+        effective_from="2026-01-01",
+        entity="RS",
+        regime="pausal",
+        scenario_key="rs_supplementary",
+        has_additional_activity=True,
+    )
+
+    calls: list[str | None] = []
+
+    def fake_find_current_constants_set(
+        *,
+        db,
+        jurisdiction,
+        as_of,
+        scenario_key=None,
+    ):
+        calls.append(scenario_key)
+
+        if scenario_key is None:
+            return SimpleNamespace(
+                payload={
+                    "tax": {
+                        "income_tax_rate": 0.10,
+                        "pension_contribution_rate": 0.18,
+                        "health_contribution_rate": 0.12,
+                        "unemployment_contribution_rate": 0.015,
+                        "flat_costs_rate": 0.30,
+                        "currency": "BAM",
+                    }
+                }
+            )
+
+        return None
+
+    monkeypatch.setattr(
+        tax_routes,
+        "_find_current_constants_set",
+        fake_find_current_constants_set,
+    )
+
+    response = client.get(
+        "/tax/monthly/preview",
+        headers=headers,
+        params={
+            "year": 2026,
+            "month": 3,
+            "total_income": "1000",
+            "total_expense": "0",
+        },
+    )
+
+    assert response.status_code == 409, response.text
+    assert calls == ["rs_supplementary"]
+    assert "constants" in response.json()["detail"].lower()
 
 
 def test_tax_verified_profile_without_constants_cannot_use_default(monkeypatch):

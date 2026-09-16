@@ -7,6 +7,7 @@ from sqlalchemy import MetaData, Table
 
 from app.db import SessionLocal
 from app.main import app
+from tests.tax_config_helpers import set_strict_tax_test_context
 from tests.test_tax_preview import _ensure_tenant, _cleanup_tax_test_data
 
 client = TestClient(app)
@@ -63,6 +64,7 @@ def test_tax_monthly_history_and_status_for_year() -> None:
         db.commit()
 
         headers = {"X-Tenant-Code": tenant_code}
+        set_strict_tax_test_context(client, headers)
 
         # 1) Finalizuj januar i februar 2025 preko API-ja
         for month in (1, 2):

@@ -46,7 +46,10 @@ from app.services.recognized_manual_cash import (
 )
 from app.tenant_security import require_tenant_code
 
-from app.services.profile_history import get_tax_profile_as_of
+from app.services.profile_history import (
+    ProfilePeriodIntegrityError,
+    get_tax_profile_as_of,
+)
 
 router = APIRouter(
     tags=["tax"],
@@ -102,48 +105,29 @@ TAX_DUMMY_CONFIG = DEFAULT_TAX_CONFIG
 # ======================================================
 #  APP CONSTANTS (effective-dated) helpers
 # ======================================================
-def _normalize_jurisdiction(entity_value: str) -> str:
+def _normalize_jurisdiction(entity_value: str) -> Optional[str]:
     """
-    Normalizacija vrijednosti iz settings/tax (entity) na jurisdikciju u app_constants_sets.
+    Normalizuje eksplicitno poznatu poresku jurisdikciju.
 
-    Očekujemo:
-      - RS
-      - FBiH
-      - BD  (Brčko distrikt)
+    TAX V3 live calculation ne smije:
+    - prazan profil tretirati kao RS,
+    - nepoznatu vrijednost tretirati kao RS.
+
+    Nepoznata/prazna vrijednost vraća None, a strict context resolver
+    zatim fail-closed prekida obračun.
     """
     v = (entity_value or "").strip()
     if not v:
-        return "RS"
+        return None
 
     upper = v.upper()
 
-    if upper in {"RS"}:
+    if upper == "RS":
         return "RS"
     if upper in {"FBIH", "FEDERACIJA", "FEDERACIJA BIH"}:
         return "FBiH"
     if upper in {"BD", "BRCKO", "BRČKO", "BRCKO DISTRIKT", "BRČKO DISTRIKT"}:
         return "BD"
-
-    # Ako dođe nešto neočekivano, držimo se defaulta
-    return "RS"
-
-
-def _default_scenario_key_for_profile(prof: TenantTaxProfileSettings) -> Optional[str]:
-    """
-    Fallback mapiranje za profile koji još nemaju eksplicitno postavljen scenario_key.
-
-    Važno za backward compatibility:
-    - stari testovi i stari podaci mogu imati entity + has_additional_activity,
-      bez scenario_key.
-    """
-    entity = (prof.entity or "").strip()
-
-    if entity == "RS":
-        return "rs_supplementary" if bool(prof.has_additional_activity) else "rs_primary"
-    if entity == "FBiH":
-        return "fbih_obrt"
-    if entity in {"Brcko", "BD"}:
-        return "bd_samostalna"
 
     return None
 
@@ -156,29 +140,42 @@ def _find_current_constants_set(
     scenario_key: Optional[str] = None,
 ) -> Optional[AppConstantsSet]:
     """
-    Vraća set koji je aktivan na datum `as_of`:
-      effective_from <= as_of AND (effective_to IS NULL OR effective_to >= as_of)
+    Vraća nedvosmislen constants set aktivan na datum `as_of`.
 
-    Ako je scenario_key zadat, lookup je strožiji:
-      jurisdiction + scenario_key + date
-
-    Ako ih ima više (ne bi smjelo), uzima najnoviji po effective_from.
+    TAX V3 live calculation fail-closed odbija overlapping coverage umjesto
+    da proizvoljno izabere "najnoviji" red.
     """
-    stmt = (
-        select(AppConstantsSet)
-        .where(
-            AppConstantsSet.jurisdiction == jurisdiction,
-            AppConstantsSet.effective_from <= as_of,
-            or_(AppConstantsSet.effective_to.is_(None), AppConstantsSet.effective_to >= as_of),
-        )
-        .order_by(AppConstantsSet.effective_from.desc(), AppConstantsSet.id.desc())
-        .limit(1)
+    stmt = select(AppConstantsSet).where(
+        AppConstantsSet.jurisdiction == jurisdiction,
+        AppConstantsSet.effective_from <= as_of,
+        or_(
+            AppConstantsSet.effective_to.is_(None),
+            AppConstantsSet.effective_to >= as_of,
+        ),
     )
 
     if scenario_key:
         stmt = stmt.where(AppConstantsSet.scenario_key == scenario_key)
 
-    return db.execute(stmt).scalar_one_or_none()
+    rows = db.execute(
+        stmt.order_by(
+            AppConstantsSet.effective_from.desc(),
+            AppConstantsSet.id.desc(),
+        ).limit(2)
+    ).scalars().all()
+
+    if len(rows) > 1:
+        scenario_label = scenario_key or "<unspecified>"
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Overlapping Tax constants periods for "
+                f"jurisdiction={jurisdiction}, scenario={scenario_label}, "
+                f"as_of={as_of.isoformat()}"
+            ),
+        )
+
+    return rows[0] if rows else None
 
 
 def _decimal_from_payload(val: Any) -> Optional[Decimal]:
@@ -305,26 +302,107 @@ def _tax_config_from_constants_payload(payload: dict[str, Any]) -> Optional[TaxD
         or payload.get("currency")
     )
 
+    required_values = (inc, pen, hea, une, flat)
+    if any(value is None for value in required_values):
+        return None
+
+    if cur is None or not str(cur).strip():
+        return None
+
     return TaxDummyConfig(
-        income_tax_rate=inc if inc is not None else DEFAULT_TAX_CONFIG.income_tax_rate,
-        pension_contribution_rate=pen if pen is not None else DEFAULT_TAX_CONFIG.pension_contribution_rate,
-        health_contribution_rate=hea if hea is not None else DEFAULT_TAX_CONFIG.health_contribution_rate,
-        unemployment_contribution_rate=une if une is not None else DEFAULT_TAX_CONFIG.unemployment_contribution_rate,
-        flat_costs_rate=flat if flat is not None else DEFAULT_TAX_CONFIG.flat_costs_rate,
-        currency=str(cur) if cur is not None else DEFAULT_TAX_CONFIG.currency,
+        income_tax_rate=inc,
+        pension_contribution_rate=pen,
+        health_contribution_rate=hea,
+        unemployment_contribution_rate=une,
+        flat_costs_rate=flat,
+        currency=str(cur).strip(),
     )
 
 
 def _resolve_tax_config(db: Session, tenant_code: str, as_of: date) -> TaxDummyConfig:
     """
-    Hijerarhija izvora konfiguracije (prioritet):
-      1) tax_settings (tenant override)
-      2) app_constants_sets (effective-dated po jurisdikciji + scenario_key)
-         **samo ako tenant ima /settings/tax profil**
-      3) DEFAULT_TAX_CONFIG (samo ako tenant nema Tax profile istoriju)
+    TAX V3 strict live-calculation context.
+
+    Obračun je dozvoljen samo kada postoji:
+      1) verified tax profile koji pokriva `as_of`,
+      2) eksplicitno poznata jurisdikcija,
+      3) eksplicitan scenario_key,
+      4) tačno odgovarajući effective-dated constants set,
+      5) kompletan constants payload za trenutni legacy calculator.
+
+    Legacy TaxSettings override privremeno ostaje podržan, ali tek nakon
+    uspješne validacije kompletnog poreskog konteksta. Time više ne može
+    samostalno omogućiti obračun bez profila/constants.
     """
-    # 1) tenant override
-    row = db.execute(select(TaxSettings).where(TaxSettings.tenant_code == tenant_code)).scalar_one_or_none()
+    try:
+        prof = get_tax_profile_as_of(
+            db,
+            tenant_code,
+            as_of,
+        )
+    except ProfilePeriodIntegrityError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    if prof is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Verified Tax profile coverage is missing for {as_of.isoformat()}",
+        )
+
+    jurisdiction = _normalize_jurisdiction(prof.entity)
+    if jurisdiction is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Tax profile jurisdiction is missing or unsupported for "
+                f"{as_of.isoformat()}"
+            ),
+        )
+
+    scenario_key = (prof.scenario_key or "").strip()
+    if not scenario_key:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Tax profile scenario_key is missing for {as_of.isoformat()}",
+        )
+
+    constants_set = _find_current_constants_set(
+        db=db,
+        jurisdiction=jurisdiction,
+        scenario_key=scenario_key,
+        as_of=as_of,
+    )
+    if constants_set is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Tax constants are not configured for "
+                f"jurisdiction={jurisdiction}, scenario={scenario_key}, "
+                f"as_of={as_of.isoformat()}"
+            ),
+        )
+
+    constants_cfg = _tax_config_from_constants_payload(
+        constants_set.payload or {}
+    )
+    if constants_cfg is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Tax constants are incomplete or invalid for "
+                f"jurisdiction={jurisdiction}, scenario={scenario_key}, "
+                f"as_of={as_of.isoformat()}"
+            ),
+        )
+
+    # Legacy override ostaje samo kao privremena kompatibilnost.
+    # TAX-2B će odlučiti njegov konačni status u production calculation path-u.
+    row = db.execute(
+        select(TaxSettings).where(
+            TaxSettings.tenant_code == tenant_code
+        )
+    ).scalar_one_or_none()
+
     if row is not None:
         return TaxDummyConfig(
             income_tax_rate=Decimal(str(row.income_tax_rate)),
@@ -332,61 +410,10 @@ def _resolve_tax_config(db: Session, tenant_code: str, as_of: date) -> TaxDummyC
             health_contribution_rate=Decimal(str(row.health_contribution_rate)),
             unemployment_contribution_rate=Decimal(str(row.unemployment_contribution_rate)),
             flat_costs_rate=Decimal(str(row.flat_costs_rate)),
-            currency=row.currency or DEFAULT_TAX_CONFIG.currency,
+            currency=row.currency,
         )
 
-    # 2) constants set koristimo samo ako tenant eksplicitno ima tax profil (settings/tax)
-    prof = get_tax_profile_as_of(
-        db,
-        tenant_code,
-        as_of,
-    )
-
-    if prof is None:
-        has_history = db.execute(
-            select(TenantTaxProfileSettings.id)
-            .where(TenantTaxProfileSettings.tenant_code == tenant_code)
-            .limit(1)
-        ).scalar_one_or_none() is not None
-        if has_history:
-            raise HTTPException(
-                status_code=409,
-                detail=f"Verified Tax profile coverage is missing for {as_of.isoformat()}",
-            )
-        return DEFAULT_TAX_CONFIG
-
-    if prof is not None and (prof.entity or "").strip():
-        jurisdiction = _normalize_jurisdiction(prof.entity)
-        scenario_key = (prof.scenario_key or "").strip() or _default_scenario_key_for_profile(prof)
-
-        cs = _find_current_constants_set(
-            db=db,
-            jurisdiction=jurisdiction,
-            scenario_key=scenario_key,
-            as_of=as_of,
-        )
-        if cs is not None:
-            cfg = _tax_config_from_constants_payload(cs.payload or {})
-            if cfg is not None:
-                return cfg
-
-        # Backward fallback:
-        # ako za taj scenario nema seta, pokušaj po jurisdikciji (stari podaci)
-        cs_fallback = _find_current_constants_set(
-            db=db,
-            jurisdiction=jurisdiction,
-            as_of=as_of,
-            scenario_key=None,
-        )
-        if cs_fallback is not None:
-            cfg = _tax_config_from_constants_payload(cs_fallback.payload or {})
-            if cfg is not None:
-                return cfg
-
-    raise HTTPException(
-        status_code=409,
-        detail=f"Tax constants are not configured for the profile on {as_of.isoformat()}",
-    )
+    return constants_cfg
 
 
 # ======================================================
@@ -757,6 +784,26 @@ def upsert_monthly_payment(
 
     tenant = _require_tenant(x_tenant_code)
 
+    # TAX-2A: validate the complete calculation context before mutating
+    # payment state. A failed validation must not persist a payment row.
+    as_of = date(year, month, 1)
+    cfg = _resolve_tax_config(db, tenant, as_of=as_of)
+
+    summary = _get_monthly_summary_any(
+        year=year,
+        month=month,
+        tenant_code=tenant,
+        db=db,
+    )
+
+    income_tax, pension, health, unemployment = (
+        _compute_monthly_components_from_base(
+            taxable_base=Decimal(str(summary.taxable_base)),
+            cfg=cfg,
+        )
+    )
+    total_due = income_tax + pension + health + unemployment
+
     # FK safety: tax_monthly_payments.tenant_code -> tenants.code
     _ensure_tenant_exists(db, tenant)
 
@@ -786,17 +833,6 @@ def upsert_monthly_payment(
 
     db.commit()
     db.refresh(row)
-
-    as_of = date(year, month, 1)
-    cfg = _resolve_tax_config(db, tenant, as_of=as_of)
-
-    summary = _get_monthly_summary_any(year=year, month=month, tenant_code=tenant, db=db)
-
-    income_tax, pension, health, unemployment = _compute_monthly_components_from_base(
-        taxable_base=Decimal(str(summary.taxable_base)),
-        cfg=cfg,
-    )
-    total_due = income_tax + pension + health + unemployment
 
     return TaxMonthlyOverviewItem(
         year=year,
