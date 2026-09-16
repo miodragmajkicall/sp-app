@@ -366,3 +366,209 @@ def test_admin_constants_bd_percent_bounds_rejected():
     )
     assert res.status_code == 400, res.text
     assert "base.base_percent_of_avg_gross" in res.json()["detail"]
+
+
+def _canonical_rs_primary_payload() -> dict:
+    return {
+        "schema_version": "legal-constants-v1",
+        "scenario_key": "rs_primary",
+        "base": {
+            "currency": "BAM",
+            "avg_gross_wage_prev_year_bam": 2000,
+            "contrib_base_percent_of_avg_gross": 80,
+            "calculated_contrib_base_bam": 1600,
+        },
+        "tax": {
+            "income_tax_rate": 0.10,
+            "flat_costs_rate": 0,
+            "flat_tax_monthly_amount_bam": 0,
+        },
+        "contributions": {
+            "pension_rate": 0.18,
+            "health_rate": 0.12,
+            "unemployment_rate": 0.015,
+        },
+        "vat": {
+            "standard_rate": 0.17,
+            "entry_threshold_bam": 0,
+        },
+        "meta": {
+            "source_note": "typed contract test",
+            "source_reference": "test",
+        },
+    }
+
+
+def test_admin_constants_create_accepts_canonical_versioned_payload():
+    _wipe_constants()
+    client = TestClient(app)
+
+    response = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+            "effective_from": "2026-01-01",
+            "effective_to": None,
+            "payload": _canonical_rs_primary_payload(),
+            "created_by": "tester",
+            "created_reason": "canonical typed payload",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+
+    created = response.json()
+    assert created["payload"]["schema_version"] == "legal-constants-v1"
+    assert created["payload"]["scenario_key"] == "rs_primary"
+    assert created["payload"]["tax"]["flat_costs_rate"] == 0
+    assert created["payload"]["vat"]["entry_threshold_bam"] == 0
+
+
+def test_admin_constants_create_rejects_unknown_declared_schema_version():
+    _wipe_constants()
+    client = TestClient(app)
+
+    payload = _canonical_rs_primary_payload()
+    payload["schema_version"] = "legal-constants-v999"
+
+    response = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+            "effective_from": "2026-01-01",
+            "effective_to": None,
+            "payload": payload,
+            "created_by": "tester",
+            "created_reason": "invalid schema version",
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert "schema_version" in response.json()["detail"]
+
+
+def test_admin_constants_create_rejects_canonical_payload_scenario_mismatch():
+    _wipe_constants()
+    client = TestClient(app)
+
+    payload = _canonical_rs_primary_payload()
+    payload["scenario_key"] = "rs_supplementary"
+
+    response = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+            "effective_from": "2026-01-01",
+            "effective_to": None,
+            "payload": payload,
+            "created_by": "tester",
+            "created_reason": "scenario mismatch",
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert "must match outer scenario_key" in response.json()["detail"]
+
+
+def test_admin_constants_create_rejects_unknown_canonical_field():
+    _wipe_constants()
+    client = TestClient(app)
+
+    payload = _canonical_rs_primary_payload()
+    payload["tax"]["invented_rate"] = 0.25
+
+    response = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+            "effective_from": "2026-01-01",
+            "effective_to": None,
+            "payload": payload,
+            "created_by": "tester",
+            "created_reason": "unknown field",
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert "invented_rate" in response.json()["detail"]
+
+
+def test_admin_constants_legacy_payload_without_schema_version_remains_supported():
+    _wipe_constants()
+    client = TestClient(app)
+
+    response = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+            "effective_from": "2026-01-01",
+            "effective_to": None,
+            "payload": {
+                "scenario_key": "rs_primary",
+                "tax": {
+                    "income_tax_rate": 0.10,
+                    "flat_costs_rate": 0.30,
+                },
+            },
+            "created_by": "tester",
+            "created_reason": "legacy compatibility",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert "schema_version" not in response.json()["payload"]
+
+
+def test_admin_constants_update_validates_complete_canonical_candidate_before_mutation():
+    _wipe_constants()
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/admin/constants",
+        json={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+            "effective_from": "2026-01-01",
+            "effective_to": None,
+            "payload": _canonical_rs_primary_payload(),
+            "created_by": "tester",
+            "created_reason": "canonical original",
+        },
+    )
+    assert create_response.status_code == 200, create_response.text
+
+    constants_id = create_response.json()["id"]
+
+    # Outer scenario change without matching canonical payload must fail.
+    update_response = client.put(
+        f"/admin/constants/{constants_id}",
+        json={
+            "scenario_key": "rs_supplementary",
+            "updated_by": "tester2",
+            "updated_reason": "invalid outer-only scenario change",
+        },
+    )
+
+    assert update_response.status_code == 400, update_response.text
+    assert "must match outer scenario_key" in update_response.json()["detail"]
+
+    # Failed validation must not partially mutate the stored row.
+    list_response = client.get(
+        "/admin/constants",
+        params={
+            "jurisdiction": "RS",
+            "scenario_key": "rs_primary",
+        },
+    )
+    assert list_response.status_code == 200, list_response.text
+
+    items = list_response.json()["items"]
+    stored = next(item for item in items if item["id"] == constants_id)
+
+    assert stored["scenario_key"] == "rs_primary"
+    assert stored["payload"]["scenario_key"] == "rs_primary"

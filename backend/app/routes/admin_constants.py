@@ -16,6 +16,7 @@ from app.schemas.constants import (
     AppConstantsSetListResponse,
     AppConstantsSetRead,
     AppConstantsSetUpdate,
+    validate_legal_constants_payload,
 )
 
 router = APIRouter(tags=["admin"])
@@ -191,6 +192,28 @@ def _validate_positive(*, name: str, v: Any) -> None:
         raise HTTPException(status_code=400, detail=f"{name} must be > 0. Got {n}.")
 
 
+def _validate_versioned_payload_contract(
+    *,
+    jurisdiction: str,
+    scenario_key: str,
+    payload: Any,
+) -> None:
+    """
+    Validate explicitly versioned canonical legal-constants payloads.
+
+    Payloads without schema_version remain legacy/unverified in TAX-2B-1
+    and are intentionally left to the existing compatibility validation.
+    """
+    try:
+        validate_legal_constants_payload(
+            jurisdiction=jurisdiction,
+            scenario_key=scenario_key,
+            payload=payload,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 def _validate_payload_semantics(*, jurisdiction: str, payload: Any) -> None:
     """
     Minimalne validacije koje nisu "computed":
@@ -275,8 +298,16 @@ def admin_constants_create(payload: AppConstantsSetCreate) -> AppConstantsSetRea
     try:
         _validate_scenario(payload.jurisdiction, payload.scenario_key)
 
-        # Minimal semantic validation BEFORE any rollover mutation
-        _validate_payload_semantics(jurisdiction=payload.jurisdiction, payload=payload.payload)
+        # Validate before any rollover mutation.
+        _validate_payload_semantics(
+            jurisdiction=payload.jurisdiction,
+            payload=payload.payload,
+        )
+        _validate_versioned_payload_contract(
+            jurisdiction=payload.jurisdiction,
+            scenario_key=payload.scenario_key,
+            payload=payload.payload,
+        )
 
         # 1) Rollover only within same (jurisdiction+scenario)
         _rollover_close_previous_if_needed(
@@ -339,6 +370,23 @@ def admin_constants_update(constants_id: int, payload: AppConstantsSetUpdate) ->
 
         _validate_scenario(new_j, new_s)
 
+        candidate_payload = (
+            payload.payload
+            if payload.payload is not None
+            else row.payload
+        )
+
+        # Validate the complete candidate state before mutating the row.
+        _validate_payload_semantics(
+            jurisdiction=new_j,
+            payload=candidate_payload,
+        )
+        _validate_versioned_payload_contract(
+            jurisdiction=new_j,
+            scenario_key=new_s,
+            payload=candidate_payload,
+        )
+
         _ensure_no_overlap(
             db=db,
             jurisdiction=new_j,
@@ -358,7 +406,6 @@ def admin_constants_update(constants_id: int, payload: AppConstantsSetUpdate) ->
             row.effective_to = payload.effective_to
 
         if payload.payload is not None:
-            _validate_payload_semantics(jurisdiction=new_j, payload=payload.payload)
             row.payload = payload.payload  # 1:1 with FE (no mutation)
 
         row.updated_by = payload.updated_by
