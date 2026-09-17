@@ -51,6 +51,10 @@ from app.services.profile_history import (
     ProfilePeriodIntegrityError,
     get_tax_profile_as_of,
 )
+from app.services.tax_profile_scenario import (
+    TenantTaxScenarioIntegrityError,
+    validate_tenant_tax_scenario,
+)
 
 router = APIRouter(
     tags=["tax"],
@@ -360,12 +364,23 @@ def _resolve_tax_config(db: Session, tenant_code: str, as_of: date) -> TaxDummyC
             ),
         )
 
-    scenario_key = (prof.scenario_key or "").strip()
-    if not scenario_key:
+    try:
+        scenario_key = validate_tenant_tax_scenario(
+            jurisdiction=jurisdiction,
+            scenario_key=prof.scenario_key,
+            has_additional_activity=prof.has_additional_activity,
+            require_explicit=True,
+        )
+    except TenantTaxScenarioIntegrityError as exc:
         raise HTTPException(
             status_code=409,
-            detail=f"Tax profile scenario_key is missing for {as_of.isoformat()}",
-        )
+            detail=(
+                f"Tax profile scenario integrity error ({exc.code}) for "
+                f"{as_of.isoformat()}: {exc}"
+            ),
+        ) from exc
+
+    assert scenario_key is not None
 
     constants_set = _find_current_constants_set(
         db=db,

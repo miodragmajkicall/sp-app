@@ -59,6 +59,11 @@ from app.services.profile_history import (
     get_current_tax_profile,
     get_tax_profile_as_of,
 )
+from app.services.tax_profile_scenario import (
+    TenantTaxScenarioIntegrityError,
+    normalize_tenant_tax_jurisdiction,
+    validate_tenant_tax_scenario,
+)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -1129,6 +1134,23 @@ def upsert_tax_profile(
     db: Session = Depends(get_session),
 ):
     tenant = require_tenant_code(x_tenant_code)
+
+    jurisdiction = normalize_tenant_tax_jurisdiction(payload.entity)
+    try:
+        canonical_scenario = validate_tenant_tax_scenario(
+            jurisdiction=jurisdiction,
+            scenario_key=payload.scenario_key,
+            has_additional_activity=payload.has_additional_activity,
+            require_explicit=payload.effective_from is not None,
+        )
+    except TenantTaxScenarioIntegrityError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"{exc.code}: {exc}",
+        ) from exc
+
+    # Canonicalize whitespace without deriving an unknown scenario.
+    payload.scenario_key = canonical_scenario
 
     # Zadržavamo postojeći Tax behavior da PUT može osigurati tenant.
     ensure_tenant_exists(db, tenant)
