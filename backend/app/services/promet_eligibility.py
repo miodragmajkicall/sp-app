@@ -9,6 +9,12 @@ from app.services.profile_history import (
     get_current_business_profile,
     get_current_tax_profile,
 )
+from app.services.tax_profile_scenario import (
+    ALLOWED_TENANT_TAX_SCENARIOS,
+    TenantTaxScenarioIntegrityError,
+    normalize_tenant_tax_jurisdiction,
+    validate_tenant_tax_scenario,
+)
 
 
 class PrometEligibilityStatus(str, Enum):
@@ -33,32 +39,15 @@ class PrometEligibility:
     blocking_fields: tuple[str, ...] = ()
 
 
-_ALLOWED_SCENARIOS: dict[str, set[str]] = {
-    "RS": {"rs_primary", "rs_supplementary"},
-    "FBIH": {"fbih_obrt", "fbih_slobodna"},
-    "BD": {"bd_samostalna"},
-}
-
-
 def _normalize_entity(value: str | None) -> str | None:
-    raw = (value or "").strip().upper()
+    jurisdiction = normalize_tenant_tax_jurisdiction(value)
 
-    if raw == "RS":
-        return "RS"
-
-    if raw in {"FBIH", "FEDERACIJA", "FEDERACIJA BIH"}:
+    # Promet interni kod istorijski koristi "FBIH", dok centralni tenant
+    # scenario contract koristi canonical "FBiH".
+    if jurisdiction == "FBiH":
         return "FBIH"
 
-    if raw in {
-        "BD",
-        "BRCKO",
-        "BRČKO",
-        "BRCKO DISTRIKT",
-        "BRČKO DISTRIKT",
-    }:
-        return "BD"
-
-    return None
+    return jurisdiction
 
 
 def _normalize_regime(
@@ -123,6 +112,22 @@ def _applicable(
     )
 
 
+def _scenario_integrity_needs(
+    exc: TenantTaxScenarioIntegrityError,
+) -> PrometEligibility:
+    if exc.code == "tax_profile_jurisdiction_unsupported":
+        return _needs(exc.code, "entity")
+
+    if exc.code == "tax_profile_scenario_fact_mismatch":
+        return _needs(
+            exc.code,
+            "scenario_key",
+            "has_additional_activity",
+        )
+
+    return _needs(exc.code, "scenario_key")
+
+
 def _resolve_multi_location_books(
     *,
     entity: str,
@@ -180,26 +185,46 @@ def resolve_promet_eligibility(
     entity: str | None,
     regime: str | None,
     scenario_key: str | None,
+    has_additional_activity: bool | None = None,
     sales_locations_count: int | None = None,
     sells_to_consumers: bool | None = None,
     daily_cash_turnover_covered_elsewhere: bool | None = None,
     has_noncash_sales_to_legal_entities: bool | None = None,
 ) -> PrometEligibility:
+    jurisdiction = normalize_tenant_tax_jurisdiction(entity)
     normalized_entity = _normalize_entity(entity)
 
-    if normalized_entity is None:
+    if jurisdiction is None or normalized_entity is None:
         return _needs("unsupported_or_missing_entity", "entity")
 
     scenario = (scenario_key or "").strip()
 
-    if not scenario:
-        return _needs("scenario_missing", "scenario_key")
+    # Kada consumer ima stvarni tenant fact, koristi se isti canonical
+    # scenario-integrity contract kao Settings, TAX i recognition.
+    if has_additional_activity is not None:
+        try:
+            canonical_scenario = validate_tenant_tax_scenario(
+                jurisdiction=jurisdiction,
+                scenario_key=scenario or None,
+                has_additional_activity=has_additional_activity,
+                require_explicit=True,
+            )
+        except TenantTaxScenarioIntegrityError as exc:
+            return _scenario_integrity_needs(exc)
 
-    if scenario not in _ALLOWED_SCENARIOS[normalized_entity]:
-        return _needs(
-            "scenario_not_valid_for_entity",
-            "scenario_key",
-        )
+        assert canonical_scenario is not None
+        scenario = canonical_scenario
+    else:
+        # Čisti rule-level resolver zadržava postojeći API za testiranje
+        # Promet pravila kada tenant fact nije dio ulaza.
+        if not scenario:
+            return _needs("scenario_missing", "scenario_key")
+
+        if scenario not in ALLOWED_TENANT_TAX_SCENARIOS[jurisdiction]:
+            return _needs(
+                "scenario_not_valid_for_entity",
+                "scenario_key",
+            )
 
     normalized_regime = _normalize_regime(
         normalized_entity,
@@ -306,6 +331,11 @@ def resolve_tenant_promet_eligibility(
         regime=tax_profile.regime if tax_profile is not None else None,
         scenario_key=(
             tax_profile.scenario_key
+            if tax_profile is not None
+            else None
+        ),
+        has_additional_activity=(
+            tax_profile.has_additional_activity
             if tax_profile is not None
             else None
         ),

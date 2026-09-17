@@ -271,6 +271,7 @@ def _eligibility_as_of(
         entity=tax_profile.entity,
         regime=tax_profile.regime,
         scenario_key=tax_profile.scenario_key,
+        has_additional_activity=tax_profile.has_additional_activity,
     )
 
     # Neke eligibility odluke su potpuno određene Tax profilom.
@@ -312,6 +313,7 @@ def _eligibility_as_of(
         entity=tax_profile.entity,
         regime=tax_profile.regime,
         scenario_key=tax_profile.scenario_key,
+        has_additional_activity=tax_profile.has_additional_activity,
         sales_locations_count=(
             business_profile.sales_locations_count
             if business_profile is not None

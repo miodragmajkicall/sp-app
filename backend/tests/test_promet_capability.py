@@ -267,3 +267,77 @@ def test_promet_capability_is_isolated_between_tenants() -> None:
     assert fbih_response.json()["blocking_fields"] == [
         "has_noncash_sales_to_legal_entities"
     ]
+
+def test_promet_capability_corrupt_rs_fact_mismatch_needs_configuration() -> None:
+    client = TestClient(app)
+    headers = _create_tenant(client, "capability-rs-corrupt")
+    tenant_code = headers["X-Tenant-Code"]
+
+    _put_tax_profile(
+        client,
+        headers,
+        entity="RS",
+        regime="two_percent",
+        scenario_key="rs_primary",
+    )
+
+    with SessionLocal() as db:
+        row = db.execute(
+            select(TenantTaxProfileSettings).where(
+                TenantTaxProfileSettings.tenant_code == tenant_code,
+                TenantTaxProfileSettings.effective_to.is_(None),
+            )
+        ).scalar_one()
+        row.has_additional_activity = True
+        db.commit()
+
+    response = client.get(
+        "/settings/business/promet-capability",
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "needs_configuration"
+    assert body["mode"] is None
+    assert body["reason_code"] == "tax_profile_scenario_fact_mismatch"
+    assert body["blocking_fields"] == [
+        "scenario_key",
+        "has_additional_activity",
+    ]
+
+
+def test_promet_capability_corrupt_cross_jurisdiction_scenario_needs_configuration() -> None:
+    client = TestClient(app)
+    headers = _create_tenant(client, "capability-fbih-corrupt")
+    tenant_code = headers["X-Tenant-Code"]
+
+    _put_tax_profile(
+        client,
+        headers,
+        entity="FBiH",
+        regime="books",
+        scenario_key="fbih_obrt",
+    )
+
+    with SessionLocal() as db:
+        row = db.execute(
+            select(TenantTaxProfileSettings).where(
+                TenantTaxProfileSettings.tenant_code == tenant_code,
+                TenantTaxProfileSettings.effective_to.is_(None),
+            )
+        ).scalar_one()
+        row.scenario_key = "rs_primary"
+        db.commit()
+
+    response = client.get(
+        "/settings/business/promet-capability",
+        headers=headers,
+    )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "needs_configuration"
+    assert body["mode"] is None
+    assert body["reason_code"] == "tax_profile_scenario_jurisdiction_mismatch"
+    assert body["blocking_fields"] == ["scenario_key"]

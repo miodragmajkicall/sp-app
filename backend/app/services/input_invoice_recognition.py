@@ -13,6 +13,12 @@ from app.services.profile_history import (
     get_tax_profile_as_of,
 )
 
+from app.services.tax_profile_scenario import (
+    TenantTaxScenarioIntegrityError,
+    normalize_tenant_tax_jurisdiction,
+    validate_tenant_tax_scenario,
+)
+
 
 class RecognitionBasis(str, Enum):
     CASH = "cash"
@@ -70,6 +76,18 @@ def resolve_tenant_recognition_context(
     entity = (profile.entity or "").strip().upper()
     regime = (profile.regime or "").strip().lower()
     scenario_key = (profile.scenario_key or "").strip() or None
+    try:
+        scenario_key = validate_tenant_tax_scenario(
+            jurisdiction=normalize_tenant_tax_jurisdiction(profile.entity),
+            scenario_key=scenario_key,
+            has_additional_activity=profile.has_additional_activity,
+            require_explicit=True,
+        )
+    except TenantTaxScenarioIntegrityError:
+        return TenantRecognitionContext(
+            RecognitionBasis.UNRESOLVED, entity or None, regime or None, scenario_key,
+        )
+
     basis = (
         RecognitionBasis.CASH
         if entity in _SUPPORTED_ENTITIES and regime in _CASH_BASIS_REGIMES

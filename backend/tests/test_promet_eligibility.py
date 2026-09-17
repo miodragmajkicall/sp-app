@@ -273,3 +273,19 @@ def test_bd_legacy_two_percent_needs_configuration() -> None:
 
     assert result.status is PrometEligibilityStatus.NEEDS_CONFIGURATION
     assert result.blocking_fields == ("regime",)
+
+def test_rs_scenario_fact_mismatch_needs_configuration_when_fact_is_known() -> None:
+    result = resolve_promet_eligibility(
+        entity="RS",
+        regime="two_percent",
+        scenario_key="rs_primary",
+        has_additional_activity=True,
+    )
+
+    assert result.status is PrometEligibilityStatus.NEEDS_CONFIGURATION
+    assert result.mode is None
+    assert result.reason_code == "tax_profile_scenario_fact_mismatch"
+    assert result.blocking_fields == (
+        "scenario_key",
+        "has_additional_activity",
+    )

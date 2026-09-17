@@ -257,6 +257,56 @@ def test_input_invoice_recognition_context_uses_profile_as_of() -> None:
         db.close()
 
 
+@pytest.mark.parametrize("as_of", [None, date(2026, 8, 18)])
+@pytest.mark.parametrize("entity,scenario,additional,expected", [
+    ("RS", None, False, RecognitionBasis.UNRESOLVED),
+    ("RS", "   ", False, RecognitionBasis.UNRESOLVED),
+    ("RS", "unknown", False, RecognitionBasis.UNRESOLVED),
+    ("RS", "fbih_obrt", False, RecognitionBasis.UNRESOLVED),
+    ("RS", "rs_primary", True, RecognitionBasis.UNRESOLVED),
+    ("RS", "rs_supplementary", False, RecognitionBasis.UNRESOLVED),
+    ("FBiH", "rs_primary", False, RecognitionBasis.UNRESOLVED),
+    ("BD", "rs_primary", False, RecognitionBasis.UNRESOLVED),
+    ("UNKNOWN", "rs_primary", False, RecognitionBasis.UNRESOLVED),
+    ("RS", "rs_primary", False, RecognitionBasis.CASH),
+    ("RS", "rs_supplementary", True, RecognitionBasis.CASH),
+    ("FBiH", "fbih_obrt", False, RecognitionBasis.CASH),
+    ("FBiH", "fbih_slobodna", False, RecognitionBasis.CASH),
+    ("BD", "bd_samostalna", False, RecognitionBasis.CASH),
+    ("BRČKO", "bd_samostalna", False, RecognitionBasis.CASH),
+])
+def test_input_recognition_validates_profile_scenario(
+    as_of, entity, scenario, additional, expected,
+):
+    tenant, _ = _create_tenant("input-scenario")
+    payment_date = date(2026, 8, 18)
+    with SessionLocal() as db:
+        db.add(TenantTaxProfileSettings(
+            tenant_code=tenant, entity=entity, regime="pausal",
+            scenario_key=scenario, has_additional_activity=additional,
+            effective_from=date(2026, 1, 1),
+        ))
+        db.commit()
+        context = resolve_tenant_recognition_context(db, tenant, as_of=as_of)
+
+    assert context.basis is expected
+    for paid_on in (None, payment_date):
+        result = recognition_service.resolve_input_invoice_recognition(
+            context=context, payment_date=paid_on,
+        )
+        assert result.basis is expected
+        assert result.integrity_date == paid_on
+        if expected is RecognitionBasis.UNRESOLVED:
+            assert result.status is recognition_service.RecognitionStatus.UNSUPPORTED
+            assert result.recognition_date is None
+        else:
+            assert result.recognition_date == paid_on
+            assert result.status is (
+                recognition_service.RecognitionStatus.RECOGNIZED
+                if paid_on else recognition_service.RecognitionStatus.NOT_RECOGNIZED
+            )
+
+
 def test_stored_input_invoice_recognition_anchors_context_to_payment_date(
     monkeypatch,
 ) -> None:

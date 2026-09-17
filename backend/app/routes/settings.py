@@ -1285,10 +1285,26 @@ def get_tax_profile_ui_schema(
     entity = (row.entity if row is not None else "RS") or "RS"
     raw_scenario_key = row.scenario_key if row is not None else None
     scenario_key = (raw_scenario_key or "").strip() or None
+    jurisdiction: Optional[str] = None
 
-    # Nepotvrđen scenario mora ostati nepotvrđen.
-    # Dok scenario nije eksplicitno izabran, ne biramo Admin Constants
-    # niti izmišljamo scenario-specific UI polja.
+    if row is not None:
+        jurisdiction = normalize_tenant_tax_jurisdiction(entity)
+        try:
+            scenario_key = validate_tenant_tax_scenario(
+                jurisdiction=jurisdiction,
+                scenario_key=scenario_key,
+                has_additional_activity=row.has_additional_activity,
+                require_explicit=row.effective_from is not None,
+            )
+        except TenantTaxScenarioIntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail=f"{exc.code}: {exc}",
+            ) from exc
+
+    # Nepotvrđen legacy scenario mora ostati nepotvrđen.
+    # Dok scenario nije eksplicitno i konzistentno izabran, ne biramo
+    # Admin Constants niti izmišljamo scenario-specific UI polja.
     cur_set = None
     currency: Optional[str] = None
     components: list[str] = []
@@ -1299,7 +1315,7 @@ def get_tax_profile_ui_schema(
     resolved_values: list[UiResolvedValue] = []
 
     if scenario_key is not None:
-        jurisdiction = _entity_to_jurisdiction(entity)
+        assert jurisdiction is not None
         cur_set = _find_current_constants_set(
             db=db,
             jurisdiction=jurisdiction,

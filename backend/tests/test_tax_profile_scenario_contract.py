@@ -234,3 +234,42 @@ def test_tax_live_resolver_rejects_historical_rs_fact_mismatch() -> None:
     detail = response.json()["detail"]
     assert "tax_profile_scenario_fact_mismatch" in detail
     assert "has_additional_activity=True" in detail
+
+def test_tax_ui_schema_rejects_verified_rs_fact_mismatch() -> None:
+    tenant = f"tax-ui-corrupt-scenario-{uuid4().hex[:10]}"
+    headers = {"X-Tenant-Code": tenant}
+
+    create_response = client.put(
+        "/settings/tax",
+        headers=headers,
+        json={
+            "entity": "RS",
+            "regime": "pausal",
+            "scenario_key": "rs_primary",
+            "has_additional_activity": False,
+            "effective_from": "2026-01-01",
+        },
+    )
+    assert create_response.status_code == 200, create_response.text
+
+    # Simulate legacy/direct-DB corruption that bypassed Settings validation.
+    with SessionLocal() as db:
+        row = db.execute(
+            select(TenantTaxProfileSettings).where(
+                TenantTaxProfileSettings.tenant_code == tenant,
+                TenantTaxProfileSettings.effective_to.is_(None),
+            )
+        ).scalar_one()
+
+        row.has_additional_activity = True
+        db.commit()
+
+    response = client.get(
+        "/settings/tax/ui-schema",
+        headers=headers,
+    )
+
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert "tax_profile_scenario_fact_mismatch" in detail
+    assert "has_additional_activity=True" in detail

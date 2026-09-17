@@ -49,6 +49,7 @@ def _add_tax_period(
     entity: str = "RS",
     regime: str = "two_percent",
     scenario_key: str = "rs_primary",
+    has_additional_activity: bool = False,
 ) -> None:
     db.add(
         TenantTaxProfileSettings(
@@ -56,7 +57,7 @@ def _add_tax_period(
             entity=entity,
             regime=regime,
             scenario_key=scenario_key,
-            has_additional_activity=False,
+            has_additional_activity=has_additional_activity,
             effective_from=effective_from,
             effective_to=effective_to,
         )
@@ -751,4 +752,41 @@ def test_promet_verified_historical_unsupported_mode_stays_fail_closed(
     assert response.json()["detail"] == {
         "code": "promet_dataset_not_implemented",
         "mode": expected_mode,
+    }
+
+def test_promet_historical_rs_fact_mismatch_fails_closed() -> None:
+    tenant_code = _create_tenant("promet-period-rs-corrupt")
+
+    with SessionLocal() as db:
+        _add_tax_period(
+            db,
+            tenant_code=tenant_code,
+            effective_from=date(2026, 1, 1),
+            effective_to=None,
+            entity="RS",
+            regime="two_percent",
+            scenario_key="rs_primary",
+            has_additional_activity=True,
+        )
+        _add_manual_income(
+            db,
+            tenant_code=tenant_code,
+            entry_date=date(2026, 9, 14),
+        )
+        db.commit()
+
+    response = client.get(
+        "/promet",
+        headers=_headers(tenant_code),
+        params={"year": 2026},
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"] == {
+        "code": "promet_needs_configuration",
+        "reason_code": "tax_profile_scenario_fact_mismatch",
+        "blocking_fields": [
+            "scenario_key",
+            "has_additional_activity",
+        ],
     }

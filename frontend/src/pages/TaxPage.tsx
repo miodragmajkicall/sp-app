@@ -201,7 +201,8 @@ export default function TaxPage() {
     setTaxUiSchemaError(null);
 
     try {
-      const data = await getTaxProfileUiSchema();
+      const asOf = `${year}-${String(month).padStart(2, "0")}-01`;
+      const data = await getTaxProfileUiSchema({ asOf });
       setTaxUiSchema(data);
     } catch (err: any) {
       console.error("Failed to load tax profile UI schema:", err);
@@ -339,7 +340,6 @@ export default function TaxPage() {
     fetchAutoMonthly().catch(() => {});
     fetchHistoryForYear().catch(() => {});
     fetchYearlyPreview().catch(() => {});
-    fetchTaxProfileContext().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -348,6 +348,11 @@ export default function TaxPage() {
     fetchYearlyPreview().catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [year]);
+
+  useEffect(() => {
+    fetchTaxProfileContext().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [year, month]);
 
   const sortedHistory = useMemo(
     () => [...history].sort((a, b) => a.month - b.month),
@@ -428,7 +433,7 @@ export default function TaxPage() {
 
             <div className="grid gap-2 sm:grid-cols-2 xl:min-w-[420px]">
               <div className="rounded-2xl border border-white/10 bg-white/10 p-4 backdrop-blur">
-                <p className="text-xs text-slate-300">Aktivni profil</p>
+                <p className="text-xs text-slate-300">Profil za izabrani period</p>
                 <p className="mt-1 truncate text-lg font-semibold text-white">
                   {taxUiSchemaLoading
                     ? "Učitavam..."
@@ -448,12 +453,12 @@ export default function TaxPage() {
                     ? "Provjera..."
                     : taxUiSchema?.constants_set_id
                     ? `Admin Constants #${taxUiSchema.constants_set_id}`
-                    : "Fallback"}
+                    : "Nije konfigurisan"}
                 </p>
                 <p className="mt-1 truncate text-[11px] text-slate-400">
                   {taxUiSchema?.constants_set_id
-                    ? "Aktivni effective-dated set"
-                    : "Nema aktivnog seta konstanti"}
+                    ? "Effective-dated set za izabrani period"
+                    : "Nema seta konstanti za izabrani period"}
                 </p>
               </div>
             </div>
@@ -682,7 +687,7 @@ export default function TaxPage() {
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
             <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Aktivni poreski profil
+              Poreski profil za izabrani period
             </p>
             <h2 className="mt-1 text-lg font-semibold text-slate-900">
               {taxUiSchemaLoading
@@ -692,8 +697,8 @@ export default function TaxPage() {
                   )}`}
             </h2>
             <p className="mt-1 text-xs leading-5 text-slate-500">
-              Obračun se prikazuje na osnovu aktivnog poreskog profila i važećih
-              Admin konstanti za tenant.
+              Obračun se prikazuje na osnovu poreskog profila i Admin konstanti
+              koje važe za izabrani mjesec.
             </p>
           </div>
 
@@ -704,7 +709,7 @@ export default function TaxPage() {
               ? "Provjera izvora obračuna..."
               : taxUiSchema?.constants_set_id
               ? `Admin Constants #${taxUiSchema.constants_set_id}`
-              : "Fallback konfiguracija"}
+              : "Nema Admin Constants seta"}
           </div>
         </div>
 
@@ -729,7 +734,7 @@ export default function TaxPage() {
 
           <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
             <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
-              Aktivni set
+              Set za izabrani period
             </p>
             <p className="mt-2 text-sm font-semibold text-slate-900">
               {taxUiSchemaLoading
@@ -741,7 +746,7 @@ export default function TaxPage() {
             <p className="mt-1 text-[11px] text-slate-500">
               {taxUiSchema?.constants_set_id
                 ? "Effective-dated set"
-                : "Fallback / default"}
+                : "Nema seta za izabrani period"}
             </p>
           </div>
 
