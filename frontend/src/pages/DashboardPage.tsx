@@ -528,25 +528,11 @@ export default function DashboardPage() {
     staleTime: 60_000,
   });
 
-  const manualPension = taxProfileQuery.data?.monthly_pension ?? null;
-  const manualHealth = taxProfileQuery.data?.monthly_health ?? null;
-  const manualUnemployment = taxProfileQuery.data?.monthly_unemployment ?? null;
-
-  const hasAnyManualContrib =
-    manualPension != null || manualHealth != null || manualUnemployment != null;
-
-  const manualContributionsPlan = hasAnyManualContrib
-    ? toNumber(manualPension) +
-      toNumber(manualHealth) +
-      toNumber(manualUnemployment)
-    : null;
-
   const resolvedContributionsPlan = computeResolvedContributionsPlan(
     taxUiSchemaQuery.data,
   );
 
-  const contributionsPlan =
-    resolvedContributionsPlan ?? manualContributionsPlan ?? null;
+  const contributionsPlan = resolvedContributionsPlan;
 
   const resolvedMonthlyTax = readResolvedMonthlyTax(taxUiSchemaQuery.data);
 
