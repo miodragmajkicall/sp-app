@@ -142,7 +142,7 @@ export async function getTaxProfileUiSchema(params?: {
 
   return {
     entity: (r.entity ?? "RS") as any,
-    scenario_key: r.scenario_key ?? "",
+    scenario_key: r.scenario_key ?? null,
     allowed_regimes: Array.isArray(r.allowed_regimes) ? r.allowed_regimes : [],
     scenario_options: Array.isArray(r.scenario_options) ? r.scenario_options : [],
     contribution_components: Array.isArray(r.contribution_components)

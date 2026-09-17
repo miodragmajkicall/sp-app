@@ -47,7 +47,7 @@ export interface UiResolvedValue {
 
 export interface TaxProfileUiSchemaResponse {
   entity: TenantEntity;
-  scenario_key: ScenarioKey | string;
+  scenario_key: ScenarioKey | string | null;
 
   allowed_regimes: TaxRegime[];
 

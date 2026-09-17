@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import date
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
@@ -76,7 +77,12 @@ def _insert_rs_primary_constants() -> None:
         db.close()
 
 
-def _upsert_tax_profile_rs_primary(client: TestClient) -> None:
+def _upsert_tax_profile_rs_primary(
+    client: TestClient,
+    *,
+    tenant_code: str = "t-demo",
+    effective_from: str | None = None,
+) -> None:
     payload = {
         "entity": "RS",
         "regime": "pausal",
@@ -86,8 +92,15 @@ def _upsert_tax_profile_rs_primary(client: TestClient) -> None:
         "monthly_health": None,
         "monthly_unemployment": None,
     }
-    res = client.put("/settings/tax", json=payload, headers={"X-Tenant-Code": "t-demo"})
-    assert res.status_code == 200
+    if effective_from is not None:
+        payload["effective_from"] = effective_from
+
+    res = client.put(
+        "/settings/tax",
+        json=payload,
+        headers={"X-Tenant-Code": tenant_code},
+    )
+    assert res.status_code == 200, res.text
 
 
 def test_get_settings_tax_includes_scenario_key(client: TestClient):
@@ -133,11 +146,17 @@ def test_get_settings_tax_ui_schema_returns_resolved_values_from_active_constant
 ):
     _cleanup_constants_for_scenarios()
     _insert_rs_primary_constants()
-    _upsert_tax_profile_rs_primary(client)
+
+    tenant = f"tax-ui-resolved-{uuid4().hex[:10]}"
+    _upsert_tax_profile_rs_primary(
+        client,
+        tenant_code=tenant,
+        effective_from="2026-01-01",
+    )
 
     res = client.get(
         "/settings/tax/ui-schema?as_of=2026-04-23",
-        headers={"X-Tenant-Code": "t-demo"},
+        headers={"X-Tenant-Code": tenant},
     )
     assert res.status_code == 200
 
@@ -172,11 +191,17 @@ def test_get_settings_tax_ui_schema_returns_empty_resolved_values_when_no_active
     client: TestClient,
 ):
     _cleanup_constants_for_scenarios()
-    _upsert_tax_profile_rs_primary(client)
+
+    tenant = f"tax-ui-no-constants-{uuid4().hex[:10]}"
+    _upsert_tax_profile_rs_primary(
+        client,
+        tenant_code=tenant,
+        effective_from="2026-01-01",
+    )
 
     res = client.get(
         "/settings/tax/ui-schema?as_of=2026-04-23",
-        headers={"X-Tenant-Code": "t-demo"},
+        headers={"X-Tenant-Code": tenant},
     )
     assert res.status_code == 200
 
@@ -187,6 +212,87 @@ def test_get_settings_tax_ui_schema_returns_empty_resolved_values_when_no_active
     assert data["constants_effective_from"] is None
     assert data["constants_effective_to"] is None
     assert data["constants_currency"] == "BAM"
+    assert data["resolved_values"] == []
+
+
+def test_get_settings_tax_ui_schema_does_not_default_missing_scenario(
+    client: TestClient,
+):
+    _cleanup_constants_for_scenarios()
+    _insert_rs_primary_constants()
+
+    tenant = f"tax-ui-no-scenario-{uuid4().hex[:10]}"
+    res = client.get(
+        "/settings/tax/ui-schema",
+        headers={"X-Tenant-Code": tenant},
+    )
+
+    assert res.status_code == 200, res.text
+
+    data = res.json()
+    assert data["entity"] == "RS"
+    assert data["scenario_key"] is None
+
+    scenario_keys = {item["key"] for item in data["scenario_options"]}
+    assert "rs_primary" in scenario_keys
+    assert "rs_supplementary" in scenario_keys
+
+    # rs_primary constants postoje, ali bez tenant izbora ne smiju biti
+    # implicitno povezane sa profilom.
+    assert data["constants_set_id"] is None
+    assert data["constants_effective_from"] is None
+    assert data["constants_effective_to"] is None
+    assert data["constants_currency"] is None
+    assert data["resolved_values"] == []
+
+    assert data["contribution_components"] == []
+    assert data["base_fields"] == []
+    assert data["contribution_rate_fields"] == []
+    assert data["tax_fields"] == []
+    assert data["vat_fields"] == []
+
+
+def test_get_settings_tax_ui_schema_preserves_legacy_null_scenario(
+    client: TestClient,
+):
+    tenant = f"tax-ui-legacy-null-{uuid4().hex[:10]}"
+    headers = {"X-Tenant-Code": tenant}
+
+    create = client.put(
+        "/settings/tax",
+        headers=headers,
+        json={
+            "entity": "FBiH",
+            "regime": "pausal",
+            "scenario_key": None,
+            "has_additional_activity": False,
+            "monthly_pension": None,
+            "monthly_health": None,
+            "monthly_unemployment": None,
+        },
+    )
+
+    assert create.status_code == 200, create.text
+    assert create.json()["scenario_key"] is None
+    assert create.json()["effective_from"] is None
+
+    res = client.get(
+        "/settings/tax/ui-schema",
+        headers=headers,
+    )
+
+    assert res.status_code == 200, res.text
+
+    data = res.json()
+    assert data["entity"] == "FBiH"
+    assert data["scenario_key"] is None
+
+    scenario_keys = {item["key"] for item in data["scenario_options"]}
+    assert "fbih_obrt" in scenario_keys
+    assert "fbih_slobodna" in scenario_keys
+
+    assert data["constants_set_id"] is None
+    assert data["constants_currency"] is None
     assert data["resolved_values"] == []
 
 

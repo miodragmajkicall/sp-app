@@ -47,7 +47,7 @@ class TaxProfileUiSchemaResponse(BaseModel):
     - admin constants payload (aktivni set za taj scenario)
     """
     entity: TenantEntity
-    scenario_key: str
+    scenario_key: Optional[str] = None
 
     # UI: koji režimi se nude
     allowed_regimes: list[TaxRegime] = Field(default_factory=list)

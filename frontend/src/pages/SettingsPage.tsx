@@ -160,10 +160,6 @@ function isScenarioValidForEntity(
   return SCENARIOS_BY_ENTITY[entity].includes(scenario);
 }
 
-function getDefaultScenarioForEntity(entity: TenantEntity): ScenarioKey {
-  return SCENARIOS_BY_ENTITY[entity][0];
-}
-
 export default function SettingsPage() {
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -240,16 +236,19 @@ export default function SettingsPage() {
     const entity = t.entity;
     const rawScenario = (t.scenario_key ?? null) as ScenarioKey | null;
 
-    const scenarioToUse = isScenarioValidForEntity(entity, rawScenario)
+    const scenarioToUse: ScenarioKey | "" = isScenarioValidForEntity(
+      entity,
+      rawScenario,
+    )
       ? (rawScenario as ScenarioKey)
-      : getDefaultScenarioForEntity(entity);
+      : "";
 
     setTaxForm({
       entity,
       regime: t.regime,
       scenario_key: scenarioToUse,
       has_additional_activity:
-        entity === "RS"
+        entity === "RS" && scenarioToUse
           ? scenarioToUse === "rs_supplementary"
           : t.has_additional_activity,
       monthly_pension: t.monthly_pension == null ? "" : String(t.monthly_pension),
@@ -271,28 +270,11 @@ export default function SettingsPage() {
 
     setTaxForm((t) => ({
       ...t,
-      scenario_key: getDefaultScenarioForEntity(entity),
+      scenario_key: "",
       has_additional_activity:
-        entity === "RS"
-          ? getDefaultScenarioForEntity(entity) === "rs_supplementary"
-          : false,
+        entity === "RS" ? t.has_additional_activity : false,
     }));
   }, [taxForm.entity]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  useEffect(() => {
-    if (taxForm.entity !== "RS") return;
-
-    const expectedScenario = taxForm.has_additional_activity
-      ? "rs_supplementary"
-      : "rs_primary";
-
-    if (taxForm.scenario_key === expectedScenario) return;
-
-    setTaxForm((t) => ({
-      ...t,
-      scenario_key: expectedScenario,
-    }));
-  }, [taxForm.entity, taxForm.has_additional_activity]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const tenantCode = useMemo(() => {
     return (
@@ -947,7 +929,7 @@ export default function SettingsPage() {
                     onChange={(e) =>
                       setTaxForm((t) => ({
                         ...t,
-                        scenario_key: e.target.value as ScenarioKey,
+                        scenario_key: e.target.value as ScenarioKey | "",
                       }))
                     }
                     className="w-full rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 shadow-sm outline-none transition focus:border-slate-400 focus:ring-2 focus:ring-slate-100"
@@ -986,12 +968,16 @@ export default function SettingsPage() {
                     type="checkbox"
                     checked={taxForm.has_additional_activity}
                     disabled={taxForm.entity !== "RS"}
-                    onChange={(e) =>
+                    onChange={(e) => {
+                      const checked = e.target.checked;
                       setTaxForm((t) => ({
                         ...t,
-                        has_additional_activity: e.target.checked,
-                      }))
-                    }
+                        has_additional_activity: checked,
+                        scenario_key: checked
+                          ? "rs_supplementary"
+                          : "rs_primary",
+                      }));
+                    }}
                   />
                   <span>
                     Dopunska djelatnost

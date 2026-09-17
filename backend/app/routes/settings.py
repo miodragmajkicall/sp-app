@@ -196,14 +196,6 @@ def _entity_to_jurisdiction(entity: str) -> str:
     return "BD"  # Brcko -> BD
 
 
-def _default_scenario_for_entity(entity: str) -> str:
-    if entity == "RS":
-        return "rs_primary"
-    if entity == "FBiH":
-        return "fbih_obrt"
-    return "bd_samostalna"
-
-
 def _ui_scenario_options_for_entity(entity: str) -> list[UiScenarioOption]:
     # Namjerno: vraćamo kompletan katalog po entitetu (usklađeno sa FE dropdown-om)
     if entity == "RS":
@@ -1291,36 +1283,48 @@ def get_tax_profile_ui_schema(
         )
 
     entity = (row.entity if row is not None else "RS") or "RS"
-    scenario_key = (row.scenario_key if row is not None else None)
-    if not scenario_key:
-        scenario_key = _default_scenario_for_entity(entity)
+    raw_scenario_key = row.scenario_key if row is not None else None
+    scenario_key = (raw_scenario_key or "").strip() or None
 
-    jurisdiction = _entity_to_jurisdiction(entity)
-    cur_set = _find_current_constants_set(
-        db=db,
-        jurisdiction=jurisdiction,
-        scenario_key=scenario_key,
-        as_of=as_of_date,
-    )
+    # Nepotvrđen scenario mora ostati nepotvrđen.
+    # Dok scenario nije eksplicitno izabran, ne biramo Admin Constants
+    # niti izmišljamo scenario-specific UI polja.
+    cur_set = None
+    currency: Optional[str] = None
+    components: list[str] = []
+    base_fields: list[UiField] = []
+    contrib_rate_fields: list[UiField] = []
+    tax_fields: list[UiField] = []
+    vat_fields: list[UiField] = []
+    resolved_values: list[UiResolvedValue] = []
 
-    payload = cur_set.payload if cur_set is not None else None
-    currency = _payload_currency(payload) or "BAM"
+    if scenario_key is not None:
+        jurisdiction = _entity_to_jurisdiction(entity)
+        cur_set = _find_current_constants_set(
+            db=db,
+            jurisdiction=jurisdiction,
+            scenario_key=scenario_key,
+            as_of=as_of_date,
+        )
 
-    components, base_fields, contrib_rate_fields, tax_fields, vat_fields = _ui_fields_for(
-        entity=entity,
-        scenario_key=scenario_key,
-    )
+        payload = cur_set.payload if cur_set is not None else None
+        currency = _payload_currency(payload) or "BAM"
 
-    resolved_values = _resolved_values_from_payload(
-        payload=payload,
-        entity=entity,
-        scenario_key=scenario_key,
-        currency=currency,
-        base_fields=base_fields,
-        contrib_rate_fields=contrib_rate_fields,
-        tax_fields=tax_fields,
-        vat_fields=vat_fields,
-    )
+        components, base_fields, contrib_rate_fields, tax_fields, vat_fields = _ui_fields_for(
+            entity=entity,
+            scenario_key=scenario_key,
+        )
+
+        resolved_values = _resolved_values_from_payload(
+            payload=payload,
+            entity=entity,
+            scenario_key=scenario_key,
+            currency=currency,
+            base_fields=base_fields,
+            contrib_rate_fields=contrib_rate_fields,
+            tax_fields=tax_fields,
+            vat_fields=vat_fields,
+        )
 
     return TaxProfileUiSchemaResponse(
         entity=entity,  # type: ignore[arg-type]
