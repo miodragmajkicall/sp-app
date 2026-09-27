@@ -9,9 +9,11 @@ from sqlalchemy.orm import Session
 
 from app.models import CashEntry, InputInvoice
 from app.services.input_invoice_recognition import (
+    resolve_input_invoice_recognition,
+)
+from app.services.tax_recognition import (
     RecognitionBasis,
     RecognitionStatus,
-    resolve_input_invoice_recognition,
     resolve_tenant_recognition_context,
 )
 

@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models import CashEntry
-from app.services.input_invoice_recognition import (
+from app.services.tax_recognition import (
     RecognitionBasis,
     resolve_tenant_recognition_context,
 )

@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date
+from enum import Enum
+
+from sqlalchemy.orm import Session
+
+from app.services.profile_history import (
+    get_current_tax_profile,
+    get_tax_profile_as_of,
+)
+from app.services.tax_profile_scenario import (
+    TenantTaxScenarioIntegrityError,
+    normalize_tenant_tax_jurisdiction,
+    validate_tenant_tax_scenario,
+)
+
+
+class RecognitionBasis(str, Enum):
+    CASH = "cash"
+    UNRESOLVED = "unresolved"
+
+
+class RecognitionStatus(str, Enum):
+    RECOGNIZED = "recognized"
+    NOT_RECOGNIZED = "not_recognized"
+    UNSUPPORTED = "unsupported"
+
+
+@dataclass(frozen=True)
+class TenantRecognitionContext:
+    basis: RecognitionBasis
+    jurisdiction: str | None
+    regime: str | None
+    scenario_key: str | None
+
+
+_SUPPORTED_ENTITIES = {"RS", "FBIH", "BD", "BRCKO", "BRČKO"}
+_CASH_BASIS_REGIMES = {"pausal", "two_percent"}
+
+
+def resolve_tenant_recognition_context(
+    db: Session,
+    tenant_code: str,
+    *,
+    as_of: date | None = None,
+) -> TenantRecognitionContext:
+    profile = (
+        get_current_tax_profile(
+            db,
+            tenant_code,
+        )
+        if as_of is None
+        else get_tax_profile_as_of(
+            db,
+            tenant_code,
+            as_of,
+        )
+    )
+
+    if profile is None:
+        return TenantRecognitionContext(
+            RecognitionBasis.UNRESOLVED,
+            None,
+            None,
+            None,
+        )
+
+    entity = (profile.entity or "").strip().upper()
+    regime = (profile.regime or "").strip().lower()
+    scenario_key = (profile.scenario_key or "").strip() or None
+
+    try:
+        scenario_key = validate_tenant_tax_scenario(
+            jurisdiction=normalize_tenant_tax_jurisdiction(profile.entity),
+            scenario_key=scenario_key,
+            has_additional_activity=profile.has_additional_activity,
+            require_explicit=True,
+        )
+    except TenantTaxScenarioIntegrityError:
+        return TenantRecognitionContext(
+            RecognitionBasis.UNRESOLVED,
+            entity or None,
+            regime or None,
+            scenario_key,
+        )
+
+    basis = (
+        RecognitionBasis.CASH
+        if entity in _SUPPORTED_ENTITIES and regime in _CASH_BASIS_REGIMES
+        else RecognitionBasis.UNRESOLVED
+    )
+
+    return TenantRecognitionContext(
+        basis,
+        entity or None,
+        regime or None,
+        scenario_key,
+    )
