@@ -66,7 +66,7 @@ def _insert_invoice_january_2025(
     db, *, tenant_code: str, total_amount: Decimal
 ) -> None:
     """
-    Ubacuje jednu fakturu u `invoices` za januar 2025.
+    Ubacuje izlaznu fakturu i canonical linked payment za januar 2025.
     """
     bind = db.get_bind()
     metadata = MetaData()
@@ -104,7 +104,31 @@ def _insert_invoice_january_2025(
             else:
                 row[col.name] = "dummy"
 
-    db.execute(invoices.insert().values(**row))
+    invoice_id = db.execute(
+        invoices.insert()
+        .values(**row)
+        .returning(invoices.c.id)
+    ).scalar_one()
+
+    cash_entries = Table(
+        "cash_entries",
+        MetaData(),
+        autoload_with=bind,
+    )
+    db.execute(
+        cash_entries.insert().values(
+            tenant_code=tenant_code,
+            entry_date=date(2025, 1, 10),
+            kind="income",
+            amount=total_amount,
+            account="bank",
+            recognition_class=None,
+            tax_treatment=None,
+            invoice_id=invoice_id,
+            input_invoice_id=None,
+            description="Canonical output invoice payment for TAX test",
+        )
+    )
 
 
 def _insert_cash_entry_january_2025(

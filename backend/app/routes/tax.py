@@ -37,6 +37,10 @@ from app.schemas.tax import (
 )
 from app.schemas.tax_settings import TaxSettingsRead, TaxSettingsUpsert
 from app.schemas.constants import validate_legal_constants_payload
+from app.services.recognized_output_income import (
+    UnsupportedOutputIncomeRecognitionError,
+    list_recognized_output_income,
+)
 from app.services.recognized_input_expenses import (
     UnsupportedInputExpenseRecognitionError,
     list_recognized_input_expenses,
@@ -612,13 +616,20 @@ def _aggregate_monthly_income_and_expense(
 ) -> Tuple[Decimal, Decimal]:
     month_start, month_end = _month_bounds(year, month)
 
-    stmt_invoices = select(func.coalesce(func.sum(Invoice.total_amount), 0).label("invoice_income")).where(
-        Invoice.tenant_code == tenant_code,
-        Invoice.issue_date >= month_start,
-        Invoice.issue_date < month_end,
+    try:
+        recognized_output_income = list_recognized_output_income(
+            db,
+            tenant_code=tenant_code,
+            date_from=month_start,
+            date_to=month_end,
+        )
+    except UnsupportedOutputIncomeRecognitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    invoice_income = sum(
+        (income.amount for income in recognized_output_income),
+        Decimal("0.00"),
     )
-    invoice_row = db.execute(stmt_invoices).one()
-    invoice_income = invoice_row.invoice_income or Decimal("0.00")
 
     try:
         recognized_manual_cash = list_recognized_manual_cash(
@@ -699,7 +710,7 @@ def _get_monthly_summary_any(
     """
     Vraća summary za mjesec:
       - ako postoji finalizovan zapis u tax_monthly_results → vrati ga
-      - inače izračunaj iz invoices + cash + priznatih input_invoices koristeći cfg za taj mjesec (as_of = 1. dan mjeseca)
+      - inače izračunaj iz priznatih izlaznih faktura + manual cash + priznatih input_invoices koristeći cfg za taj mjesec (as_of = 1. dan mjeseca)
     """
     existing = db.execute(
         select(TaxMonthlyResult).where(
@@ -929,7 +940,7 @@ def preview_monthly_tax(
 @router.get(
     "/tax/monthly/auto",
     response_model=MonthlyTaxSummaryRead,
-    summary="Automatski mjesečni obračun iz invoices + cash + input_invoices",
+    summary="Automatski mjesečni obračun iz priznatih izlaznih faktura, cash i input_invoices",
     operation_id="tax_monthly_auto",
     responses={400: {"model": ErrorResponse}},
 )
