@@ -533,6 +533,16 @@ def test_kpr_global_order_and_pagination():
     assert invoice.status_code == 201, invoice.text
     invoice_id = invoice.json()["id"]
 
+    invoice_payment = client.post(
+        f"/invoices/{invoice_id}/payment",
+        headers=headers,
+        json={
+            "payment_date": "2026-09-10",
+            "account": "bank",
+        },
+    )
+    assert invoice_payment.status_code == 201, invoice_payment.text
+
     input_invoice = client.post(
         "/input-invoices",
         headers=headers,
@@ -1171,6 +1181,16 @@ def test_kpr_month_only_collects_all_years_before_pagination() -> None:
     )
     assert invoice.status_code == 201, invoice.text
     invoice_id = invoice.json()["id"]
+
+    invoice_payment = client.post(
+        f"/invoices/{invoice_id}/payment",
+        headers=headers,
+        json={
+            "payment_date": "2025-09-05",
+            "account": "bank",
+        },
+    )
+    assert invoice_payment.status_code == 201, invoice_payment.text
 
     input_id = _kpr3_create_paid_input(headers, "2026-09-12")
 

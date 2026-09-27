@@ -115,6 +115,10 @@ def test_kpr7_two_tenants_all_sources_exports():
             "items": [{"description": "KPR7 service", "quantity": "1",
                        "unit_price": str(Decimal(100) * scale), "vat_rate": "0.17"}],
         })
+        _post(f"/invoices/{invoice['id']}/payment", headers, {
+            "payment_date": "2025-12-31",
+            "account": "bank",
+        })
         incoming = _post("/input-invoices", headers, {
             "supplier_name": f"{tag} Supplier",
             "invoice_number": f"K7-U-{uuid4().hex[:8]}",

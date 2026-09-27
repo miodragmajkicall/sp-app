@@ -397,6 +397,12 @@ def test_output_payment_is_not_double_counted_in_kpr(
     client: TestClient,
 ) -> None:
     headers = _headers("output-payment-kpr")
+    set_strict_tax_test_context(
+        client,
+        headers,
+        effective_from="2026-01-01",
+    )
+
     invoice_id = _create_invoice(
         headers["X-Tenant-Code"],
         issue_date=date(2026, 8, 10),

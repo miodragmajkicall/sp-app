@@ -16,6 +16,10 @@ from app.db import get_session as _get_session_dep
 from app.models import Invoice
 from app.schemas.kpr import KprListResponse, KprRowItem, KprSummary
 from app.services.csv_security import csv_safe_text as _csv_safe_text
+from app.services.recognized_output_income import (
+    UnsupportedOutputIncomeRecognitionError,
+    list_recognized_output_income,
+)
 from app.services.recognized_input_expenses import (
     UnsupportedInputExpenseRecognitionError,
     list_recognized_input_expenses,
@@ -94,46 +98,12 @@ def _collect_kpr_rows(
     Sakuplja sve stavke za KPR za datog tenanta i opcioni year/month filter.
 
     Izvori:
-    - Invoice      → prihodi,
-    - InputInvoice → rashodi,
-    - CashEntry    → dodatni prihodi/rashodi koji nisu pokriveni fakturama.
+    - recognized output invoice income → prihodi,
+    - recognized InputInvoice expenses → rashodi,
+    - recognized manual CashEntry      → dodatni prihodi/rashodi.
     """
     rows: List[KprRowItem] = []
 
-    # ---------------------------
-    # 1) Izlazne fakture (Invoice) – income
-    # ---------------------------
-    inv_filters = [Invoice.tenant_code == tenant_code]
-    if year is not None:
-        inv_filters.append(func.extract("year", Invoice.issue_date) == year)
-    if month is not None:
-        inv_filters.append(func.extract("month", Invoice.issue_date) == month)
-
-    inv_stmt = (
-        select(Invoice)
-        .where(*inv_filters)
-        .order_by(Invoice.issue_date.asc(), Invoice.id.asc())
-    )
-    for inv in db.execute(inv_stmt).scalars().all():
-        rows.append(
-            KprRowItem(
-                date=inv.issue_date,
-                kind="income",
-                category="invoice",
-                counterparty=getattr(inv, "buyer_name", None),
-                document_number=getattr(inv, "invoice_number", None),
-                description=None,
-                amount=_as_decimal(getattr(inv, "total_amount", 0)),
-                currency="BAM",
-                tax_deductible=False,
-                source="invoice",
-                source_id=inv.id,
-            )
-        )
-
-    # ---------------------------
-    # 2) Ulazne fakture (InputInvoice) – expense
-    # ---------------------------
     date_from = None
     date_to = None
     if year is not None and month is not None:
@@ -142,6 +112,43 @@ def _collect_kpr_rows(
     elif year is not None:
         date_from = date(year, 1, 1)
         date_to = date(year + 1, 1, 1)
+
+    # ---------------------------
+    # 1) Izlazne fakture – recognized income
+    # ---------------------------
+    try:
+        recognized_output_income = list_recognized_output_income(
+            db,
+            tenant_code=tenant_code,
+            date_from=date_from,
+            date_to=date_to,
+            month=month if year is None else None,
+        )
+    except UnsupportedOutputIncomeRecognitionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+    for inv in recognized_output_income:
+        if month is not None and year is None and inv.recognition_date.month != month:
+            continue
+        rows.append(
+            KprRowItem(
+                date=inv.recognition_date,
+                kind="income",
+                category="invoice",
+                counterparty=inv.buyer_name,
+                document_number=inv.invoice_number,
+                description=inv.note,
+                amount=_as_decimal(inv.amount),
+                currency="BAM",
+                tax_deductible=False,
+                source="invoice",
+                source_id=inv.invoice_id,
+            )
+        )
+
+    # ---------------------------
+    # 2) Ulazne fakture (InputInvoice) – expense
+    # ---------------------------
 
     try:
         recognized_input_expenses = list_recognized_input_expenses(
